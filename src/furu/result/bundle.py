@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import (
@@ -10,6 +12,7 @@ from typing import (
     Any,
     Final,
     Literal,
+    NamedTuple,
     assert_never,
     cast,
     get_args,
@@ -20,16 +23,22 @@ import pydantic
 
 from furu._declared_types import cached_type_hints, child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
+from furu.logging import get_logger
 from furu.result.codec import Codec, CodecMeta
 from furu.result.ref import Ref
 from furu.storage._layout import scratch_dir_in
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
+# artifacts/<position>: what a codec merged for every row with a value there.
 ARTIFACTS_DIR_NAME: Final = "artifacts"
+# rows/<row>/<position>: one value that was not merged.
+ROWS_DIR_NAME: Final = "rows"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
+_LARGE_FALLBACK_FOLDERS: Final = 100
 type ValuePath = tuple[str, ...]
+_WARNED_FALLBACKS: set[tuple[str, str]] = set()  # label and field, once per process
 type WrapperKind = Literal[
     "artifact",
     "dataclass",
@@ -41,6 +50,37 @@ type WrapperKind = Literal[
     "set",
     "frozenset",
 ]
+
+
+class _Cell(NamedTuple):
+    """One codec value, and the manifest entry that will say where it went."""
+
+    row: int
+    codec: type[Codec]
+    value: object
+    body: dict[str, JsonValue]
+
+
+@dataclasses.dataclass
+class _Writer:
+    """Sets aside the codec values of every row, by their position in the result."""
+
+    result_codecs: tuple[type[Codec], ...]
+    data_dir: Path
+    row: int = 0
+    columns: dict[ValuePath, list[_Cell]] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
+class _Reader:
+    """Reads the codec values of the rows asked for, each directory once."""
+
+    bundle_dir: Path
+    data_dir: Path
+    # The manifest entries of the codec values, by the directory they are in,
+    # and the values read so far, by the id() of their entry.
+    bodies: dict[str, list[dict[str, Any]]] = dataclasses.field(default_factory=dict)
+    values: dict[int, object] = dataclasses.field(default_factory=dict)
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -79,14 +119,12 @@ def _validate_result_path_segment(
     return value
 
 
+def _wrap(kind: WrapperKind, **body: JsonValue) -> JsonValue:
+    return {WRAPPER_KEY: {KINDMARKER: kind, **body}}
+
+
 def _dump_value(
-    value: object,
-    *,
-    declared_type: object,
-    value_path: ValuePath,
-    bundle_dir: Path,
-    result_codecs: tuple[type[Codec], ...],
-    data_dir: Path,
+    value: object, declared_type: object, value_path: ValuePath, writer: _Writer
 ) -> JsonValue:
     annotated_codec: type[Codec] | None = None
     if get_origin(declared_type) is Annotated:
@@ -102,34 +140,16 @@ def _dump_value(
                     "Conflicting codecs: the Ref carries a codec from furu.ref(...), "
                     "but the field also has a different Annotated codec."
                 )
-            return _dump_artifact(
-                value.load(),
-                codec=value._codec,
-                value_path=value_path,
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-            )
+            return _dump_artifact(value.load(), value._codec, value_path, writer)
         case _ if annotated_codec is not None:
-            return _dump_artifact(
-                value,
-                codec=annotated_codec,
-                value_path=value_path,
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-            )
+            return _dump_artifact(value, annotated_codec, value_path, writer)
 
     match value:
         case None | bool() | int() | float() | str():
             return value
         case datetime():
-            if codec := CodecMeta.find_codec(value, result_codecs):
-                return _dump_artifact(
-                    value,
-                    codec=codec,
-                    value_path=value_path,
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                )
+            if codec := CodecMeta.find_codec(value, writer.result_codecs):
+                return _dump_artifact(value, codec, value_path, writer)
             encoded = value.isoformat()
             loaded = datetime.fromisoformat(encoded)
             if (
@@ -144,43 +164,13 @@ def _dump_value(
                     f"Datetime at {_value_path_display(value_path)} cannot be "
                     "faithfully stored as ISO format; use an explicit custom codec."
                 )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "datetime",
-                    "value": encoded,
-                }
-            }
+            return _wrap("datetime", value=encoded)
         case list():
-            width = len(str(len(value)))
-            return [
-                _dump_value(
-                    item,
-                    declared_type=child_declared_type(declared_type, i),
-                    value_path=(*value_path, f"{i:0{width}d}"),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    data_dir=data_dir,
-                )
-                for i, item in enumerate(value)
-            ]
+            return _dump_items(value, declared_type, value_path, writer)
         case tuple():
-            width = len(str(len(value)))
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "tuple",
-                    "items": [
-                        _dump_value(
-                            item,
-                            declared_type=child_declared_type(declared_type, i),
-                            value_path=(*value_path, f"{i:0{width}d}"),
-                            bundle_dir=bundle_dir,
-                            result_codecs=result_codecs,
-                            data_dir=data_dir,
-                        )
-                        for i, item in enumerate(value)
-                    ],
-                }
-            }
+            return _wrap(
+                "tuple", items=_dump_items(value, declared_type, value_path, writer)
+            )
         case set() | frozenset():
             kind = "frozenset" if isinstance(value, frozenset) else "set"
             for item in value:
@@ -199,23 +189,9 @@ def _dump_value(
                     repr(item),
                 ),
             )
-            width = len(str(len(items)))
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: kind,
-                    "items": [
-                        _dump_value(
-                            item,
-                            declared_type=child_declared_type(declared_type, i),
-                            value_path=(*value_path, f"{i:0{width}d}"),
-                            bundle_dir=bundle_dir,
-                            result_codecs=result_codecs,
-                            data_dir=data_dir,
-                        )
-                        for i, item in enumerate(items)
-                    ],
-                }
-            }
+            return _wrap(
+                kind, items=_dump_items(items, declared_type, value_path, writer)
+            )
         case dict():
             out: dict[str, JsonValue] = {}
             for raw_key, child in value.items():
@@ -225,14 +201,13 @@ def _dump_value(
                 )
                 out[key] = _dump_value(
                     child,
-                    declared_type=child_declared_type(declared_type, raw_key),
-                    value_path=(*value_path, key),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    data_dir=data_dir,
+                    child_declared_type(declared_type, raw_key),
+                    (*value_path, key),
+                    writer,
                 )
             return out
         case Path():
+            data_dir = writer.data_dir
             scratch_dir = scratch_dir_in(data_dir.parent)
             resolved = value.resolve()
             if resolved.is_relative_to(scratch_dir.resolve()):
@@ -243,71 +218,20 @@ def _dump_value(
                 )
             if resolved.is_relative_to(data_dir.resolve()):
                 # The data dir moves when the attempt is published.
-                return {
-                    WRAPPER_KEY: {
-                        KINDMARKER: "data_path",
-                        "value": resolved.relative_to(data_dir.resolve()).as_posix(),
-                    }
-                }
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "path",
-                    "value": str(value),
-                }
-            }
+                return _wrap(
+                    "data_path",
+                    value=resolved.relative_to(data_dir.resolve()).as_posix(),
+                )
+            return _wrap("path", value=str(value))
         case pydantic.BaseModel():
-            fields_out: dict[str, JsonValue] = {}
-            field_types = cached_type_hints(value.__class__)
-            for raw_name in value.__class__.model_fields:
-                name = _validate_result_path_segment(
-                    raw_name, parent_value_path=value_path
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    declared_type=field_types.get(name, Any),
-                    value_path=(*value_path, name),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    data_dir=data_dir,
-                )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "pydantic",
-                    TYPEMARKER: fully_qualified_name(type(value)),
-                    FIELDSMARKER: fields_out,
-                }
-            }
+            names = type(value).model_fields
+            return _dump_fields("pydantic", value, names, value_path, writer)
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
-            fields_out: dict[str, JsonValue] = {}
-            field_types = cached_type_hints(type(value))
-            for field in dataclasses.fields(cast(Any, value)):
-                name = _validate_result_path_segment(
-                    field.name, parent_value_path=value_path
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    declared_type=field_types.get(field.name, Any),
-                    value_path=(*value_path, name),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    data_dir=data_dir,
-                )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "dataclass",
-                    TYPEMARKER: fully_qualified_name(type(value)),
-                    FIELDSMARKER: fields_out,
-                }
-            }
+            names = [field.name for field in dataclasses.fields(value)]
+            return _dump_fields("dataclass", value, names, value_path, writer)
         case _:
-            if codec := CodecMeta.find_codec(value, result_codecs):
-                return _dump_artifact(
-                    value,
-                    codec=codec,
-                    value_path=value_path,
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                )
+            if codec := CodecMeta.find_codec(value, writer.result_codecs):
+                return _dump_artifact(value, codec, value_path, writer)
 
     raise ValueError(
         f"Unsupported result value at {_value_path_display(value_path)}:\n"
@@ -315,36 +239,114 @@ def _dump_value(
     )
 
 
-def _dump_artifact(
+def _dump_fields(
+    kind: WrapperKind,
     value: object,
-    *,
-    codec: type[Codec],
+    names: Iterable[str],
     value_path: ValuePath,
-    bundle_dir: Path,
-    data_dir: Path,
+    writer: _Writer,
 ) -> JsonValue:
-    artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
-    artifact_dir = bundle_dir / artifact_rel
-    artifact_dir.mkdir(parents=True, exist_ok=False)
-
-    codec_metadata = codec.save(value, artifact_dir)
-    if not isinstance(codec_metadata, Mapping):
-        raise TypeError(
-            f"Codec save() at {_value_path_display(value_path)} must return a "
-            f"metadata mapping; got {type(codec_metadata).__name__!r}"
+    field_types = cached_type_hints(type(value))
+    fields: dict[str, JsonValue] = {
+        name: _dump_value(
+            getattr(value, name),
+            field_types.get(name, Any),
+            (*value_path, name),
+            writer,
         )
-    encoded_metadata = _encode_codec_metadata_value(
-        dict(codec_metadata), data_dir=data_dir, value_path=value_path
-    )
-    assert isinstance(encoded_metadata, dict)
-    return {
-        WRAPPER_KEY: {
-            KINDMARKER: "artifact",
-            "codec": codec._codec_id(),
-            "path": artifact_rel.as_posix(),
-            "metadata": encoded_metadata,
-        }
+        for name in names
     }
+    return _wrap(
+        kind, **{TYPEMARKER: fully_qualified_name(type(value)), FIELDSMARKER: fields}
+    )
+
+
+def _dump_items(
+    items: Sequence[object],
+    declared_type: object,
+    value_path: ValuePath,
+    writer: _Writer,
+) -> list[JsonValue]:
+    width = len(str(len(items)))
+    return [
+        _dump_value(
+            item,
+            child_declared_type(declared_type, i),
+            (*value_path, f"{i:0{width}d}"),
+            writer,
+        )
+        for i, item in enumerate(items)
+    ]
+
+
+def _dump_artifact(
+    value: object, codec: type[Codec], value_path: ValuePath, writer: _Writer
+) -> JsonValue:
+    body: dict[str, JsonValue] = {KINDMARKER: "artifact", "codec": codec._codec_id()}
+    writer.columns.setdefault(value_path, []).append(
+        _Cell(writer.row, codec, value, body)
+    )
+    return {WRAPPER_KEY: body}
+
+
+def _save_columns(
+    columns: dict[ValuePath, list[_Cell]],
+    bundle_dir: Path,
+    *,
+    data_dir: Path,
+    label: str,
+) -> None:
+    """Save each position's values and fill in where each one went."""
+    positions = [value_path or (_ROOT_ARTIFACT_NAME,) for value_path in columns]
+    # A value where another row holds a container, or the whole result of one
+    # row where another has a field named "root", would share its directory.
+    uses = Counter(
+        position[:i] for position in positions for i in range(1, len(position) + 1)
+    )
+    clashing = {position for position in positions if uses[position] > 1}
+    row_folders: Counter[str] = Counter()  # by field
+    for (value_path, cells), position in zip(columns.items(), positions):
+        codec = cells[0].codec
+        shared = Path(ARTIFACTS_DIR_NAME, *position)
+        metadatas = None
+        if all(cell.codec is codec for cell in cells) and not any(
+            position[:i] in clashing for i in range(1, len(position) + 1)
+        ):
+            (bundle_dir / shared).mkdir(parents=True)
+            metadatas = codec.save_many(
+                [cell.value for cell in cells], bundle_dir / shared
+            )
+            if metadatas is None:
+                # Up to the first directory that another position uses.
+                with contextlib.suppress(OSError):
+                    for path in (shared, *shared.parents[: len(position)]):
+                        (bundle_dir / path).rmdir()
+        paths = [shared] * len(cells)
+        if metadatas is None:
+            paths = [Path(ROWS_DIR_NAME, str(cell.row), *position) for cell in cells]
+            for path in paths:
+                (bundle_dir / path).mkdir(parents=True)
+            metadatas = [
+                cell.codec.save(cell.value, bundle_dir / path)
+                for cell, path in zip(cells, paths)
+            ]
+            row_folders[_value_path_display(value_path[:1])] += len(cells)
+        for cell, path, metadata in zip(cells, paths, metadatas, strict=True):
+            cell.body["path"] = path.as_posix()
+            cell.body["metadata"] = _encode_codec_metadata_value(
+                metadata, data_dir=data_dir, value_path=value_path
+            )
+    if row_folders.total() >= _LARGE_FALLBACK_FOLDERS:
+        for field, count in row_folders.items():
+            if (label, field) not in _WARNED_FALLBACKS:
+                _WARNED_FALLBACKS.add((label, field))
+                get_logger().warning(
+                    "%s: %d values in %s were not merged into one file and "
+                    "got a directory each",
+                    label,
+                    count,
+                    field,
+                )
 
 
 def _encode_codec_metadata_value(
@@ -364,31 +366,16 @@ def _encode_codec_metadata_value(
                     f"Codec metadata path at {_value_path_display(value_path)} "
                     f"must live inside the data dir {data_dir}: {value}"
                 )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "path",
-                    "value": resolved.relative_to(data_dir_resolved).as_posix(),
-                }
-            }
-        case list():
+            return _wrap(
+                "path", value=resolved.relative_to(data_dir_resolved).as_posix()
+            )
+        case list() | tuple():
             return [
                 _encode_codec_metadata_value(
                     item, data_dir=data_dir, value_path=value_path
                 )
                 for item in value
             ]
-        case tuple():
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "tuple",
-                    "items": [
-                        _encode_codec_metadata_value(
-                            item, data_dir=data_dir, value_path=value_path
-                        )
-                        for item in value
-                    ],
-                }
-            }
         case Mapping():
             out: dict[str, JsonValue] = {}
             for key, child in value.items():
@@ -417,29 +404,7 @@ def _encode_codec_metadata_value(
 def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
     match node:
         case dict() if WRAPPER_KEY in node:
-            body = cast(dict[str, Any], node[WRAPPER_KEY])
-            match body[KINDMARKER]:
-                case "path":
-                    rel_path = Path(body["value"])
-                    if rel_path.is_absolute():
-                        raise ValueError(
-                            f"codec metadata path must be relative: {rel_path}"
-                        )
-                    resolved_path = (data_dir.resolve() / rel_path).resolve()
-                    if not resolved_path.is_relative_to(data_dir.resolve()):
-                        raise ValueError(
-                            f"codec metadata path escapes data dir: {rel_path}"
-                        )
-                    return resolved_path
-                case "tuple":
-                    return tuple(
-                        _decode_codec_metadata_value(child, data_dir=data_dir)
-                        for child in body["items"]
-                    )
-                case _:
-                    raise ValueError(
-                        f"unknown codec metadata wrapper kind: {body[KINDMARKER]!r}"
-                    )
+            return data_dir / cast(dict[str, Any], node[WRAPPER_KEY])["value"]
         case dict():
             return {
                 key: _decode_codec_metadata_value(child, data_dir=data_dir)
@@ -453,275 +418,160 @@ def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
             return node
 
 
-def _load_value(
-    node: JsonValue,
-    *,
-    declared_type: object,
-    bundle_dir: Path,
-    data_dir: Path,
-    value_path: ValuePath,
-) -> object:
+def _load_value(node: JsonValue, declared_type: object, reader: _Reader) -> object:
     match node:
         case None | bool() | int() | float() | str():
             return node
         case list():
-            width = len(str(len(node)))
-            return [
-                _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, i),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, f"{i:0{width}d}"),
-                )
-                for i, child in enumerate(node)
-            ]
+            return _load_items(node, declared_type, reader)
         case dict() if WRAPPER_KEY in node:
             return _load_wrapper(
-                cast(dict[str, Any], node[WRAPPER_KEY]),
-                declared_type=declared_type,
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-                value_path=value_path,
+                cast(dict[str, Any], node[WRAPPER_KEY]), declared_type, reader
             )
         case dict():
             return {
-                key: _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, key),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, key),
-                )
+                key: _load_value(child, child_declared_type(declared_type, key), reader)
                 for key, child in node.items()
             }
         case _:
             assert_never(node)
 
 
-def _load_validated_fields(
-    *,
-    kind: str,
-    cls: type[Any],
-    expected: set[str],
-    raw_fields: dict[str, JsonValue],
-    bundle_dir: Path,
-    data_dir: Path,
-    value_path: ValuePath,
-) -> dict[str, object]:
-    actual = set(raw_fields)
-    missing = expected - actual
-    extra = actual - expected
-    if not missing and not extra:
-        field_types = cached_type_hints(cls)
-        return {
-            name: _load_value(
-                child,
-                declared_type=field_types.get(name, Any),
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-                value_path=(*value_path, name),
-            )
-            for name, child in raw_fields.items()
-        }
+def _load_items(
+    items: list[JsonValue], declared_type: object, reader: _Reader
+) -> list[object]:
+    return [
+        _load_value(child, child_declared_type(declared_type, i), reader)
+        for i, child in enumerate(items)
+    ]
 
-    details: list[str] = []
-    if missing:
-        details.append("missing fields: " + ", ".join(sorted(missing)))
-    if extra:
-        details.append("extra fields: " + ", ".join(sorted(extra)))
 
-    raise ValueError(
-        f"Cannot load {kind} {fully_qualified_name(cls)} at {_value_path_display(value_path)}: "
-        + "; ".join(details)
-    )
+def _load_fields(
+    body: dict[str, Any], reader: _Reader
+) -> tuple[Any, dict[str, object]]:
+    cls = resolve_fully_qualified_name(body[TYPEMARKER])
+    field_types = cached_type_hints(cls)
+    return cls, {
+        name: _load_value(child, field_types.get(name, Any), reader)
+        for name, child in body[FIELDSMARKER].items()
+    }
+
+
+def _read_artifacts(
+    bodies: Sequence[dict[str, Any]], *, bundle_dir: Path, data_dir: Path
+) -> Sequence[object]:
+    """Read codec values stored in one directory, in the order given."""
+    codec: type[Codec] = resolve_fully_qualified_name(bodies[0]["codec"])
+    path = Path(bodies[0]["path"])
+    metadatas = [
+        cast(
+            dict[str, object],
+            _decode_codec_metadata_value(body["metadata"], data_dir=data_dir),
+        )
+        for body in bodies
+    ]
+    if path.parts[0] == ROWS_DIR_NAME:
+        return [codec.load(metadata, bundle_dir / path) for metadata in metadatas]
+    return codec.load_many(metadatas, bundle_dir / path)
 
 
 def _load_wrapper(
-    body: dict[str, Any],
-    *,
-    declared_type: object,
-    bundle_dir: Path,
-    data_dir: Path,
-    value_path: ValuePath,
+    body: dict[str, Any], declared_type: object, reader: _Reader
 ) -> object:
     kind: WrapperKind = body[KINDMARKER]
     match kind:
         case "artifact":
-            artifact_rel = Path(body["path"])
-            if artifact_rel.is_absolute():
-                raise ValueError(
-                    f"artifact wrapper path must be relative: {artifact_rel}"
-                )
-
-            artifact_dir = (bundle_dir / artifact_rel).resolve()
-            artifacts_root = (bundle_dir / ARTIFACTS_DIR_NAME).resolve()
-            if not artifact_dir.is_relative_to(artifacts_root):
-                raise ValueError(
-                    f"artifact wrapper path escapes bundle artifacts dir: {artifact_rel}"
-                )
-
-            if not artifact_dir.exists():
-                raise ValueError(
-                    f"artifact wrapper artifact directory missing: {artifact_dir}"
-                )
-
-            codec_id = body["codec"]
-            codec = resolve_fully_qualified_name(codec_id)
-            if not isinstance(codec, type) or not issubclass(codec, Codec):
-                raise TypeError(f"{codec_id} is not a furu.Codec")
-
-            if not isinstance(
-                metadata := _decode_codec_metadata_value(
-                    body["metadata"], data_dir=data_dir
-                ),
-                dict,
-            ):
-                raise ValueError(  # noqa: TRY004 -- malformed payload, not a bad argument
-                    f"Codec metadata at {_value_path_display(value_path)} must be a mapping"
-                )
-            metadata = cast(dict[str, object], metadata)
+            bundle_dir, data_dir = reader.bundle_dir, reader.data_dir
             if (declared := strip_annotated(declared_type)) is Ref or get_origin(
                 declared
             ) is Ref:
+                # Not the reader: it holds every value this load has read.
                 return Ref._from_stored(
-                    codec=codec,
-                    metadata=metadata,
-                    artifact_directory=artifact_dir,
+                    codec=resolve_fully_qualified_name(body["codec"]),
+                    read=lambda: _read_artifacts(
+                        [body], bundle_dir=bundle_dir, data_dir=data_dir
+                    )[0],
                 )
-            return codec.load(metadata, artifact_dir)
+            if id(body) not in reader.values:
+                bodies = reader.bodies[body["path"]]
+                values = _read_artifacts(
+                    bodies, bundle_dir=bundle_dir, data_dir=data_dir
+                )
+                reader.values.update(zip(map(id, bodies), values, strict=True))
+            return reader.values[id(body)]
         case "dataclass":
-            cls = resolve_fully_qualified_name(body[TYPEMARKER])
-            if not dataclasses.is_dataclass(cls):
-                raise ValueError(
-                    f"Cannot load dataclass at {_value_path_display(value_path)}: "
-                    f"{fully_qualified_name(cls)} is not a dataclass"
-                )
-            dataclass_fields = dataclasses.fields(cls)
-            init_fields = {field.name for field in dataclass_fields if field.init}
-            loaded_fields = _load_validated_fields(
-                kind="dataclass",
-                cls=cls,
-                expected={field.name for field in dataclass_fields},
-                raw_fields=body[FIELDSMARKER],
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-                value_path=value_path,
-            )
-            try:
-                return cls(
-                    **{
-                        name: value
-                        for name, value in loaded_fields.items()
-                        if name in init_fields
-                    }
-                )
-            except Exception as exc:
-                raise ValueError(
-                    f"Cannot load dataclass {fully_qualified_name(cls)} "
-                    f"at {_value_path_display(value_path)}: {exc}"
-                ) from exc
+            cls, fields = _load_fields(body, reader)
+            for field in dataclasses.fields(cls):
+                if not field.init:
+                    fields.pop(field.name, None)
+            return cls(**fields)
         case "datetime":
             return datetime.fromisoformat(body["value"])
         case "path":
             return Path(body["value"])
         case "data_path":
-            return data_dir / body["value"]
-        case "tuple":
-            return tuple(
-                _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, i),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, str(i)),
-                )
-                for i, child in enumerate(body["items"])
-            )
-        case "set":
-            return {
-                _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, i),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, str(i)),
-                )
-                for i, child in enumerate(body["items"])
-            }
-        case "frozenset":
-            return frozenset(
-                _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, i),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, str(i)),
-                )
-                for i, child in enumerate(body["items"])
-            )
+            return reader.data_dir / body["value"]
+        case "tuple" | "set" | "frozenset":
+            items = _load_items(body["items"], declared_type, reader)
+            return {"tuple": tuple, "set": set, "frozenset": frozenset}[kind](items)
         case "pydantic":
-            cls = resolve_fully_qualified_name(body[TYPEMARKER])
-            if not issubclass(cls, pydantic.BaseModel):
-                raise ValueError(  # noqa: TRY004 -- malformed payload, not a bad argument
-                    f"Cannot load pydantic model at {_value_path_display(value_path)}: "
-                    f"{fully_qualified_name(cls)} is not a pydantic model"
-                )
-            loaded_fields = _load_validated_fields(
-                kind="pydantic model",
-                cls=cls,
-                expected=set(cls.model_fields),
-                raw_fields=body[FIELDSMARKER],
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-                value_path=value_path,
-            )
-            try:
-                return cls.model_validate(loaded_fields)
-            except pydantic.ValidationError as exc:
-                raise ValueError(
-                    f"Cannot load pydantic model {fully_qualified_name(cls)} "
-                    f"at {_value_path_display(value_path)}: {exc}"
-                ) from exc
+            cls, fields = _load_fields(body, reader)
+            return cls.model_validate(fields)
         case _:
-            raise ValueError(f"unknown wrapper kind: {kind!r}")
+            assert_never(kind)
+
+
+def _collect_artifacts(
+    node: JsonValue, bodies: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Group the codec values under ``node`` by the directory they are stored in."""
+    if isinstance(node, list):
+        for child in node:
+            _collect_artifacts(child, bodies)
+    elif isinstance(node, dict):
+        body = node.get(WRAPPER_KEY)
+        if isinstance(body, dict) and body.get(KINDMARKER) == "artifact":
+            bodies.setdefault(cast(str, body["path"]), []).append(body)
+        else:
+            for child in node.values():
+                _collect_artifacts(child, bodies)
 
 
 def _save_result_bundle(
-    value: object,
+    values: Sequence[object],
     bundle_dir: Path,
     *,
     declared_type: object,
     result_codecs: tuple[type[Codec], ...],
     data_dir: Path,
+    label: str,
 ) -> None:
+    """Store one result per row. ``label`` names the results in a warning."""
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
-    manifest = _dump_value(
-        value,
-        declared_type=declared_type,
-        value_path=(),
-        bundle_dir=bundle_dir,
-        result_codecs=result_codecs,
-        data_dir=data_dir,
-    )
+    writer = _Writer(result_codecs, data_dir)
+    manifest: list[JsonValue] = []
+    for row, value in enumerate(values):
+        writer.row = row
+        manifest.append(_dump_value(value, declared_type, (), writer))
+    _save_columns(writer.columns, bundle_dir, data_dir=data_dir, label=label)
+    # One row per line, so that a row can be found by hand.
     (bundle_dir / MANIFEST_FILE_NAME).write_text(
-        json.dumps(manifest, indent=2),
+        "[\n" + ",\n".join(map(json.dumps, manifest)) + "\n]\n",
         encoding="utf-8",
     )
 
 
 def load_result_bundle(
     bundle_dir: Path,
+    rows: Sequence[int],
     *,
     data_dir: Path,
     declared_type: object,
-) -> object:
-    manifest_path = bundle_dir / MANIFEST_FILE_NAME
-    return _load_value(
-        json.loads(manifest_path.read_text(encoding="utf-8")),
-        declared_type=declared_type,
-        bundle_dir=bundle_dir,
-        data_dir=data_dir,
-        value_path=(),
-    )
+) -> list[object]:
+    """Load the rows asked for, in the order asked."""
+    manifest = json.loads((bundle_dir / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
+    reader = _Reader(bundle_dir, data_dir)
+    for row in rows:
+        _collect_artifacts(manifest[row], reader.bodies)
+    return [_load_value(manifest[row], declared_type, reader) for row in rows]

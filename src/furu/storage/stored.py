@@ -22,8 +22,9 @@ def stored_version(obj: Spec) -> Path | None:
 
 
 def load_stored_result[T](obj: Spec[T], version: Path) -> T:
-    value = load_result_bundle(
+    (value,) = load_result_bundle(
         result_dir_in(version),
+        [0],
         data_dir=data_dir_in(version),
         declared_type=declared_result_type(type(obj)),
     )

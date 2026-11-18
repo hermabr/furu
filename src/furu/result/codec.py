@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 from abc import ABC, ABCMeta, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import cache
+from itertools import accumulate
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, ClassVar, cast, final
@@ -115,6 +117,25 @@ class Codec[T](ABC, metaclass=CodecMeta):
     def load(cls, metadata: Mapping[str, object], artifact_directory: Path) -> T:
         pass
 
+    @classmethod
+    def save_many(
+        cls, values: Sequence[T], artifact_directory: Path
+    ) -> Sequence[Mapping[str, object]] | None:
+        """Save the values of many results into one directory.
+
+        Returns one metadata per value, in order. Returning None, before
+        writing anything, has each value saved by save() into a directory of
+        its own.
+        """
+        return None
+
+    @classmethod
+    def load_many(
+        cls, metadatas: Sequence[Mapping[str, object]], artifact_directory: Path
+    ) -> Sequence[T]:
+        """Load values that save_many() saved, one per metadata, in order."""
+        return [cls.load(metadata, artifact_directory) for metadata in metadatas]
+
 
 class PolarsParquetCodec(Codec["pl.DataFrame"]):
     auto_register: ClassVar[bool] = False
@@ -143,6 +164,44 @@ class PolarsParquetCodec(Codec["pl.DataFrame"]):
         import polars as pl
 
         return pl.read_parquet(artifact_directory / "data.parquet")
+
+    @classmethod
+    def save_many(
+        cls, values: Sequence[pl.DataFrame], artifact_directory: Path
+    ) -> Sequence[Mapping[str, object]] | None:
+        import polars as pl
+
+        schema = values[0].schema
+        if any(value.schema != schema for value in values):
+            return None
+        # Small row groups let a read of a few tables skip the rest of the file.
+        pl.concat(values).write_parquet(
+            artifact_directory / "data.parquet", row_group_size=16_384
+        )
+        offsets = accumulate((value.height for value in values), initial=0)
+        return [
+            {"offset": offset, "length": value.height}
+            for offset, value in zip(offsets, values)
+        ]
+
+    @classmethod
+    def load_many(
+        cls, metadatas: Sequence[Mapping[str, object]], artifact_directory: Path
+    ) -> Sequence[pl.DataFrame]:
+        import polars as pl
+
+        spans = [
+            (cast(int, metadata["offset"]), cast(int, metadata["length"]))
+            for metadata in metadatas
+        ]
+        start = min(offset for offset, _ in spans)
+        end = max(offset + length for offset, length in spans)
+        table = (
+            pl.scan_parquet(artifact_directory / "data.parquet")
+            .slice(start, end - start)
+            .collect()
+        )
+        return [table.slice(offset - start, length) for offset, length in spans]
 
 
 class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
@@ -174,6 +233,50 @@ class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
         import numpy as np
 
         return np.load(artifact_directory / "data.npy", allow_pickle=False)
+
+    @classmethod
+    def save_many(
+        cls, values: Sequence[np.ndarray[Any, Any]], artifact_directory: Path
+    ) -> Sequence[Mapping[str, object]] | None:
+        import numpy as np
+
+        first = values[0]
+        if first.dtype.hasobject or any(
+            value.shape != first.shape
+            or value.dtype != first.dtype
+            # Its mask would be dropped.
+            or isinstance(value, np.ma.MaskedArray)
+            for value in values
+        ):
+            return None
+        header = np.lib.format.header_data_from_array_1_0(first)
+        header |= {"shape": (len(values), *first.shape), "fortran_order": False}
+        encoded = io.BytesIO()
+        try:
+            np.lib.format.write_array_header_1_0(encoded, header)
+        except ValueError:
+            # A field name outside latin-1, or a header over 64 KiB, needs a
+            # later format version, which only np.save() picks.
+            return None
+        # Written row by row, so the batch is never copied into one array.
+        with open(artifact_directory / "data.npy", "wb") as file:
+            file.write(encoded.getvalue())
+            file.writelines(np.asarray(value).tobytes() for value in values)
+        return [{"row": row} for row in range(len(values))]
+
+    @classmethod
+    def load_many(
+        cls, metadatas: Sequence[Mapping[str, object]], artifact_directory: Path
+    ) -> Sequence[np.ndarray[Any, Any]]:
+        import numpy as np
+
+        stacked = np.load(
+            artifact_directory / "data.npy", mmap_mode="r", allow_pickle=False
+        )
+        # The ellipsis keeps a 0-d row an array, with its dtype.
+        return [
+            np.array(stacked[cast(int, metadata["row"]), ...]) for metadata in metadatas
+        ]
 
 
 def _find_single_codec_match(

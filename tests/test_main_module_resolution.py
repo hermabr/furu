@@ -183,28 +183,32 @@ if __name__ == "__main__":
 
     payload_bundle = Path("payload-bundle")
     _save_result_bundle(
-        Payload(9),
+        [Payload(9)],
         payload_bundle,
         declared_type=Payload,
         result_codecs=(),
         data_dir=data_dir_in(payload_bundle.parent),
+        label="Payload",
     )
-    payload_loaded = load_result_bundle(
+    (payload_loaded,) = load_result_bundle(
         payload_bundle,
+        [0],
         data_dir=data_dir_in(payload_bundle.parent),
         declared_type=Payload,
     )
 
     codec_bundle = Path("codec-bundle")
     _save_result_bundle(
-        b"abc",
+        [b"abc"],
         codec_bundle,
         declared_type=bytes,
         result_codecs=(MainCodec,),
         data_dir=data_dir_in(codec_bundle.parent),
+        label="bytes",
     )
-    codec_loaded = load_result_bundle(
+    (codec_loaded,) = load_result_bundle(
         codec_bundle,
+        [0],
         data_dir=data_dir_in(codec_bundle.parent),
         declared_type=bytes,
     )

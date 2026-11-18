@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -25,17 +26,44 @@ from furu.result.codec import (
     Codec,
     CodecMeta,
     NumpyNpyCodec,
-    PolarsParquetCodec,
 )
 from furu.storage._layout import (
     data_dir_in,
     result_dir_in,
-    result_manifest_path_in,
     version_dir_in,
 )
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")
+
+
+def _save_rows(
+    values: list[Any],
+    bundle_dir: Path,
+    *,
+    declared_type: object = Any,
+    result_codecs: tuple[type[Codec], ...] = (),
+    label: str = "Rows",
+) -> None:
+    _save_result_bundle_impl(
+        values,
+        bundle_dir,
+        declared_type=declared_type,
+        result_codecs=result_codecs,
+        data_dir=data_dir_in(bundle_dir.parent),
+        label=label,
+    )
+
+
+def _load_rows(
+    bundle_dir: Path, rows: list[int], *, declared_type: object = Any
+) -> list[Any]:
+    return load_result_bundle_impl(
+        bundle_dir,
+        rows,
+        data_dir=data_dir_in(bundle_dir.parent),
+        declared_type=declared_type,
+    )
 
 
 def _save_result_bundle(
@@ -45,21 +73,13 @@ def _save_result_bundle(
     declared_type: object = Any,
     result_codecs: tuple[type[Codec], ...],
 ) -> None:
-    _save_result_bundle_impl(
-        value,
-        bundle_dir,
-        declared_type=declared_type,
-        result_codecs=result_codecs,
-        data_dir=data_dir_in(bundle_dir.parent),
+    _save_rows(
+        [value], bundle_dir, declared_type=declared_type, result_codecs=result_codecs
     )
 
 
 def load_result_bundle(bundle_dir: Path, *, declared_type: object = Any) -> object:
-    return load_result_bundle_impl(
-        bundle_dir,
-        data_dir=data_dir_in(bundle_dir.parent),
-        declared_type=declared_type,
-    )
+    return _load_rows(bundle_dir, [0], declared_type=declared_type)[0]
 
 
 _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
@@ -94,75 +114,19 @@ class JsonResult(Spec[dict[str, object]]):
         }
 
 
-def test_json_only_bundle_round_trips() -> None:
+def test_json_only_result_is_one_manifest_and_is_not_recomputed() -> None:
     JsonResult.create_calls.clear()
     obj = JsonResult()
-
-    expected = {
-        "metrics": {"loss": 0.12, "ok": True},
-        "items": [1, 2, None, "x"],
-    }
-
-    result = obj.create()
-    assert result == expected
-
-    assert result_manifest_path_in(version_dir_in(obj._base_dir)).exists()
-    assert not (result_dir_in(version_dir_in(obj._base_dir)) / "artifacts").exists()
-
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert "format" not in manifest
-    assert "root" not in manifest
-    assert manifest == expected
-
-
-def test_json_only_cache_hit_does_not_recompute() -> None:
-    JsonResult.create_calls.clear()
-    obj = JsonResult()
-
-    expected = {
-        "metrics": {"loss": 0.12, "ok": True},
-        "items": [1, 2, None, "x"],
-    }
-
-    assert obj.create() == expected
-    assert obj.create() == expected
-    assert len(JsonResult.create_calls) == 1
-
-
-def test_status_is_completed_after_first_run() -> None:
-    JsonResult.create_calls.clear()
-    obj = JsonResult()
+    expected = {"metrics": {"loss": 0.12, "ok": True}, "items": [1, 2, None, "x"]}
 
     assert obj.status == "missing"
-    obj.create()
+    assert obj.create() == expected
     assert obj.status == "done"
-
-
-def test_load_existing_returns_persisted_result() -> None:
-    JsonResult.create_calls.clear()
-    obj = JsonResult()
-
-    obj.create()
-
-    assert obj.load_existing() == {
-        "metrics": {"loss": 0.12, "ok": True},
-        "items": [1, 2, None, "x"],
-    }
-
-
-class ScalarResult(Spec[int]):
-    def create(self) -> int:
-        return 5
-
-
-def test_scalar_root_manifest_is_just_the_value() -> None:
-    obj = ScalarResult()
-
-    assert obj.create() == 5
-    text = result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    assert json.loads(text) == 5
+    assert obj.create() == expected
+    assert obj.load_existing() == expected
+    assert len(JsonResult.create_calls) == 1
+    result_dir = result_dir_in(version_dir_in(obj._base_dir))
+    assert [path.name for path in result_dir.iterdir()] == ["manifest.json"]
 
 
 class PathResult(Spec[dict[str, Path]]):
@@ -174,31 +138,9 @@ class PathResult(Spec[dict[str, Path]]):
 
 
 def test_path_values_round_trip() -> None:
-    obj = PathResult()
-
-    result = obj.create()
-
-    assert result == {
+    assert PathResult().create() == {
         "relative": Path("outputs/model.bin"),
         "absolute": Path("/tmp/furu/model.bin"),
-    }
-
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest == {
-        "relative": {
-            "$furu": {
-                "|kind": "path",
-                "value": "outputs/model.bin",
-            }
-        },
-        "absolute": {
-            "$furu": {
-                "|kind": "path",
-                "value": "/tmp/furu/model.bin",
-            }
-        },
     }
 
 
@@ -218,18 +160,6 @@ def test_data_dir_path_follows_publish() -> None:
     assert result == data_dir_in(version).resolve() / "model.bin"
     assert result.read_text(encoding="utf-8") == "weights"
     assert obj.load_existing() == result
-    assert json.loads(result_manifest_path_in(version).read_text()) == {
-        "$furu": {"|kind": "data_path", "value": "model.bin"}
-    }
-
-
-def test_path_root_value_round_trips(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    value = Path("outputs/model.bin")
-
-    _save_result_bundle(value, bundle_dir, result_codecs=())
-
-    assert load_result_bundle(bundle_dir) == value
 
 
 def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
@@ -242,23 +172,7 @@ def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
 
     _save_result_bundle(value, bundle_dir, result_codecs=())
 
-    assert load_result_bundle(bundle_dir) == value
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["tuple"] == {
-        "$furu": {
-            "|kind": "tuple",
-            "items": [
-                1,
-                "x",
-                {"$furu": {"|kind": "path", "value": "model.bin"}},
-            ],
-        }
-    }
-    assert manifest["set"]["$furu"] == {"|kind": "set", "items": [1, 2, 3]}
-    assert manifest["frozenset"]["$furu"] == {
-        "|kind": "frozenset",
-        "items": ["a", "b"],
-    }
+    assert _same(load_result_bundle(bundle_dir), value)
 
 
 def test_set_of_values_without_value_based_repr_is_rejected(tmp_path: Path) -> None:
@@ -273,17 +187,6 @@ def test_set_of_values_without_value_based_repr_is_rejected(tmp_path: Path) -> N
         )
 
 
-def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    value = (1, 2, 3)
-
-    _save_result_bundle(value, bundle_dir, result_codecs=())
-
-    assert load_result_bundle(bundle_dir) == value
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest == {"$furu": {"|kind": "tuple", "items": [1, 2, 3]}}
-
-
 class NonFiniteFloatResult(Spec[dict[str, float]]):
     def create(self) -> dict[str, float]:
         return {
@@ -294,18 +197,11 @@ class NonFiniteFloatResult(Spec[dict[str, float]]):
 
 
 def test_non_finite_floats_round_trip() -> None:
-    obj = NonFiniteFloatResult()
-    result = obj.create()
+    result = NonFiniteFloatResult().create()
 
     assert math.isnan(result["nan"])
     assert result["pos_inf"] == float("inf")
     assert result["neg_inf"] == float("-inf")
-
-    text = result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    # Python's standard library writes these as JSON extensions.
-    assert "NaN" in text
-    assert "Infinity" in text
-    assert "-Infinity" in text
 
 
 def test_datetime_values_round_trip(tmp_path: Path) -> None:
@@ -327,16 +223,7 @@ def test_datetime_values_round_trip(tmp_path: Path) -> None:
 
     loaded = cast(dict[str, datetime], load_result_bundle(bundle_dir))
     assert loaded == value
-    assert not (bundle_dir / "artifacts").exists()
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["naive"]["$furu"] == {
-        "|kind": "datetime",
-        "value": "2026-09-01T12:30:45.123456",
-    }
-    assert manifest["aware"]["$furu"] == {
-        "|kind": "datetime",
-        "value": "2026-09-01T12:30:00+00:00",
-    }
+    assert _files(bundle_dir) == {"manifest.json"}
 
 
 class _CustomTimezone(tzinfo):
@@ -411,8 +298,6 @@ def test_explicit_codec_overrides_native_datetime_storage(tmp_path: Path) -> Non
     loaded = load_result_bundle(bundle_dir)
     assert loaded == value
     assert isinstance(cast(datetime, loaded).tzinfo, _CustomTimezone)
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["$furu"]["codec"] == _CustomTimezoneDatetimeCodec._codec_id()
 
 
 class _CustomTensor:
@@ -474,29 +359,6 @@ class _OtherCountingCodec(Codec[_CountingValue]):
     ) -> _CountingValue:
         artifact_directory.joinpath("other.txt").read_text(encoding="utf-8")
         return _CountingValue(0)
-
-
-class _CustomNumpyCodec(Codec[Any]):
-    auto_register: ClassVar[bool] = False
-    file_name: ClassVar[str] = "custom.npy"
-
-    @classmethod
-    def matches(cls, value: object) -> bool:
-        return isinstance(value, np.ndarray)
-
-    @classmethod
-    def save(cls, value: Any, artifact_directory: Path) -> Mapping[str, object]:
-        np.save(artifact_directory / cls.file_name, value, allow_pickle=False)
-        return {}
-
-    @classmethod
-    def load(cls, metadata: Mapping[str, object], artifact_directory: Path) -> Any:
-        return np.load(artifact_directory / cls.file_name, allow_pickle=False)
-
-
-class _RegistryNumpyCodec(_CustomNumpyCodec):
-    auto_register: ClassVar[bool] = False
-    file_name: ClassVar[str] = "registry.npy"
 
 
 class _AutoRegisteredValue:
@@ -626,31 +488,6 @@ class _DataDirPathCodec(Codec[_DataDirPathValue]):
         return _DataDirPathValue(cast(Path, metadata["path"]))
 
 
-class _SequenceMetadataValue:
-    def __init__(self, metadata: Mapping[str, object] | None = None) -> None:
-        self.metadata = metadata or {}
-
-
-class _SequenceMetadataCodec(Codec[_SequenceMetadataValue]):
-    auto_register: ClassVar[bool] = False
-
-    @classmethod
-    def matches(cls, value: object) -> bool:
-        return isinstance(value, _SequenceMetadataValue)
-
-    @classmethod
-    def save(
-        cls, value: _SequenceMetadataValue, artifact_directory: Path
-    ) -> Mapping[str, object]:
-        return {"as_list": [1, 2], "as_tuple": (1, 2)}
-
-    @classmethod
-    def load(
-        cls, metadata: Mapping[str, object], artifact_directory: Path
-    ) -> _SequenceMetadataValue:
-        return _SequenceMetadataValue(metadata)
-
-
 class RegistryAutoRegisteredValueResult(Spec[_AutoRegisteredValue]):
     result_codecs = (_CoreRegistryAutoValueCodec,)
 
@@ -722,12 +559,6 @@ def test_scratch_files_survive_until_codec_save() -> None:
     assert value.source.read_text(encoding="utf-8") == "lazy"
 
 
-def test_codec_id_is_derived_from_class_identity() -> None:
-    assert _CountingCodec._codec_id() == (
-        f"{_CountingCodec.__module__}.{_CountingCodec.__qualname__}"
-    )
-
-
 def test_result_codec_meta_find_codec_uses_result_codecs() -> None:
     first = (_CountingCodec,)
     second = (_CountingCodec, _OtherCountingCodec)
@@ -750,7 +581,7 @@ def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
         result_codecs=(),
     )
 
-    artifact_dir = bundle_dir / "artifacts" / "root"
+    artifact_dir = bundle_dir / "rows" / "0" / "root"
     assert (artifact_dir / "auto.txt").exists()
     assert not (artifact_dir / "registry.txt").exists()
     loaded = load_result_bundle(bundle_dir)
@@ -770,7 +601,7 @@ def test_auto_register_false_opts_out_of_auto_registered_codecs(
         result_codecs=(_OptOutRegisteredValueCodec,),
     )
 
-    assert (bundle_dir / "artifacts" / "root" / "manual.txt").exists()
+    assert (bundle_dir / "rows" / "0" / "root" / "manual.txt").exists()
     loaded = load_result_bundle(bundle_dir)
     assert isinstance(loaded, _OptOutRegisteredValue)
 
@@ -783,11 +614,9 @@ def test_auto_registered_codec_takes_priority_over_builtin_codec(
 
     _save_result_bundle(value, bundle_dir, result_codecs=())
 
-    artifact_dir = bundle_dir / "artifacts" / "root"
+    artifact_dir = bundle_dir / "rows" / "0" / "root"
     assert (artifact_dir / "auto.npy").exists()
     assert not (artifact_dir / "data.npy").exists()
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["$furu"]["codec"] == _AutoRegisteredArrayCodec._codec_id()
 
 
 def test_task_result_codecs_take_priority_over_auto_registered_codec() -> None:
@@ -797,13 +626,9 @@ def test_task_result_codecs_take_priority_over_auto_registered_codec() -> None:
 
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 10
-    artifact_dir = result_dir_in(version_dir_in(obj._base_dir)) / "artifacts" / "root"
+    artifact_dir = result_dir_in(version_dir_in(obj._base_dir)) / "rows" / "0" / "root"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest["$furu"]["codec"] == _CoreRegistryAutoValueCodec._codec_id()
 
 
 def test_annotated_codec_takes_priority_over_auto_registered_codec() -> None:
@@ -813,13 +638,9 @@ def test_annotated_codec_takes_priority_over_auto_registered_codec() -> None:
 
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 11
-    artifact_dir = result_dir_in(version_dir_in(obj._base_dir)) / "artifacts" / "root"
+    artifact_dir = result_dir_in(version_dir_in(obj._base_dir)) / "rows" / "0" / "root"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest["$furu"]["codec"] == _CoreRegistryAutoValueCodec._codec_id()
 
 
 def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> None:
@@ -849,42 +670,6 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
 
     assert (
         CodecMeta.find_codec(LateAutoRegisteredValue(), ()) is LateAutoRegisteredCodec
-    )
-
-
-def test_explicit_registry_sees_later_auto_registered_codec() -> None:
-    class LateExplicitRegistryAutoValue:
-        pass
-
-    result_codecs = (_CountingCodec,)
-
-    assert CodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs) is None
-
-    class LateExplicitRegistryAutoCodec(Codec[LateExplicitRegistryAutoValue]):
-        @classmethod
-        def matches(cls, value: object) -> bool:
-            return isinstance(value, LateExplicitRegistryAutoValue)
-
-        @classmethod
-        def save(
-            cls, value: LateExplicitRegistryAutoValue, artifact_directory: Path
-        ) -> Mapping[str, object]:
-            artifact_directory.joinpath("late-explicit.txt").write_text(
-                "",
-                encoding="utf-8",
-            )
-            return {}
-
-        @classmethod
-        def load(
-            cls, metadata: Mapping[str, object], artifact_directory: Path
-        ) -> LateExplicitRegistryAutoValue:
-            artifact_directory.joinpath("late-explicit.txt").read_text(encoding="utf-8")
-            return LateExplicitRegistryAutoValue()
-
-    assert (
-        CodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs)
-        is LateExplicitRegistryAutoCodec
     )
 
 
@@ -1185,15 +970,10 @@ def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     assert isinstance(loaded["second"], _DataDirPathValue)
     assert loaded["second"].path.resolve() == data_path.resolve()
 
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest["first"]["$furu"]["metadata"] == {
-        "path": {"$furu": {"|kind": "path", "value": "data.zarr"}}
-    }
     assert not (
         result_dir_in(version_dir_in(obj._base_dir))
-        / "artifacts"
+        / "rows"
+        / "0"
         / "first"
         / "data.zarr"
     ).exists()
@@ -1205,26 +985,6 @@ def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     # eagerly on read.
     assert isinstance(loaded_again["second"], _DataDirPathValue)
     assert loaded_again["second"].path == data_path.resolve()
-
-
-def test_codec_metadata_tuple_round_trips_distinct_from_list(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        _SequenceMetadataValue(),
-        bundle_dir,
-        result_codecs=(_SequenceMetadataCodec,),
-    )
-
-    manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["$furu"]["metadata"] == {
-        "as_list": [1, 2],
-        "as_tuple": {"$furu": {"|kind": "tuple", "items": [1, 2]}},
-    }
-
-    loaded = load_result_bundle(bundle_dir)
-
-    assert isinstance(loaded, _SequenceMetadataValue)
-    assert loaded.metadata == {"as_list": [1, 2], "as_tuple": (1, 2)}
 
 
 def test_codec_metadata_path_outside_data_dir_raises_at_save(tmp_path: Path) -> None:
@@ -1239,90 +999,6 @@ def test_codec_metadata_path_outside_data_dir_raises_at_save(tmp_path: Path) -> 
         )
 
 
-def test_codec_metadata_rejects_load_path_outside_data_dir(
-    tmp_path: Path,
-) -> None:
-    result_dir = tmp_path / "object" / "result"
-    artifact_dir = result_dir / "artifacts" / "root"
-    artifact_dir.mkdir(parents=True)
-
-    def write_manifest(path_value: str) -> None:
-        (result_dir / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "$furu": {
-                        "|kind": "artifact",
-                        "codec": _DataDirPathCodec._codec_id(),
-                        "path": "artifacts/root",
-                        "metadata": {
-                            "path": {"$furu": {"|kind": "path", "value": path_value}}
-                        },
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-
-    write_manifest("/tmp/outside")
-    with pytest.raises(ValueError, match="must be relative"):
-        load_result_bundle(result_dir)
-
-    write_manifest("../outside")
-    with pytest.raises(ValueError, match="escapes data dir"):
-        load_result_bundle(result_dir)
-
-
-class RegistryCountingResult(Spec[_CountingValue]):
-    result_codecs = (_CountingCodec,)
-
-    def create(self) -> _CountingValue:
-        return _CountingValue(8)
-
-
-class AmbiguousRegistryCountingResult(Spec[_CountingValue]):
-    result_codecs = (_CountingCodec, _OtherCountingCodec)
-
-    def create(self) -> _CountingValue:
-        return _CountingValue(8)
-
-
-def test_task_result_codecs_are_used_for_save_inference_only() -> None:
-    _CountingCodec.dump_calls = 0
-    _CountingCodec.load_calls = 0
-    obj = RegistryCountingResult()
-
-    loaded = obj.create()
-    assert isinstance(loaded, _CountingValue)
-    assert loaded.value == 8
-    assert _CountingCodec.dump_calls == 1
-    assert _CountingCodec.load_calls == 1  # create() hands back the stored value
-
-    loaded_again = obj.create()
-    assert isinstance(loaded_again, _CountingValue)
-    assert loaded_again.value == 8
-    assert _CountingCodec.dump_calls == 1
-    assert _CountingCodec.load_calls == 2
-
-
-def test_task_result_codecs_must_not_be_ambiguous() -> None:
-    with pytest.raises(TypeError, match="result codecs matched multiple codecs"):
-        AmbiguousRegistryCountingResult().create()
-
-
-class UnsupportedRootResult(Spec[object]):
-    def create(self) -> object:
-        return _CustomTensor()
-
-
-def test_unsupported_custom_object_fails_with_root_path(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle(_CustomTensor(), bundle_dir, result_codecs=())
-    msg = str(exc_info.value)
-    assert "<root>" in msg
-    assert "_CustomTensor" in msg
-
-
 def test_unsupported_nested_path_includes_padded_index(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     layers = [{} for _ in range(10)]
@@ -1333,64 +1009,21 @@ def test_unsupported_nested_path_includes_padded_index(tmp_path) -> None:
     assert "layers/03/weights" in str(exc_info.value)
 
 
-def test_reserved_furu_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError, match="reserved"):
-        _save_result_bundle({"$furu": "user data"}, bundle_dir, result_codecs=())
-
-
-def test_non_string_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError, match="must be strings"):
-        _save_result_bundle({1: "x"}, bundle_dir, result_codecs=())
-
-
-def test_unsafe_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle({"bad/key": "x"}, bundle_dir, result_codecs=())
-    assert "artifact path segment" in str(exc_info.value)
-
-
-def test_empty_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle({"": "x"}, bundle_dir, result_codecs=())
-    assert "artifact path segment" in str(exc_info.value)
-
-
-def test_dotdot_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError, match="artifact path segment"):
-        _save_result_bundle({"..": "x"}, bundle_dir, result_codecs=())
-
-
-@dataclass(frozen=True)
-class TrainOutput:
-    metrics: dict[str, float]
-    values: list[int]
-
-
-class DataclassResult(Spec[TrainOutput]):
-    def create(self) -> TrainOutput:
-        return TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
-
-
-def test_dataclass_round_trip() -> None:
-    obj = DataclassResult()
-    loaded = obj.create()
-    assert isinstance(loaded, TrainOutput)
-    assert loaded == TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
-
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest["$furu"]["|kind"] == "dataclass"
-    assert manifest["$furu"]["|type"] == "test_result.TrainOutput"
-    assert manifest["$furu"]["|fields"] == {
-        "metrics": {"loss": 0.12},
-        "values": [1, 2, 3],
-    }
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        ("$furu", "reserved"),
+        (1, "must be strings"),
+        ("bad/key", "artifact path segment"),
+        ("", "artifact path segment"),
+        ("..", "artifact path segment"),
+    ],
+)
+def test_dict_keys_that_cannot_be_stored_fail(
+    tmp_path: Path, key: object, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _save_result_bundle({key: "x"}, tmp_path / "bundle", result_codecs=())
 
 
 @dataclass(frozen=True)
@@ -1411,51 +1044,6 @@ def test_dataclass_load_uses_constructor(tmp_path: Path) -> None:
     loaded = load_result_bundle(bundle_dir)
 
     assert loaded == DataclassWithPostInit(value=3)
-
-
-def test_dataclass_load_reports_constructor_error_with_path(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        {"result": DataclassWithPostInit(value=3)},
-        bundle_dir,
-        result_codecs=(),
-    )
-    manifest_path = bundle_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    manifest["result"]["$furu"]["|fields"]["value"] = -1
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir)
-
-    message = str(exc_info.value)
-    assert "Cannot load dataclass" in message
-    assert "at result" in message
-    assert "value must be non-negative" in message
-
-
-def test_dataclass_load_reports_missing_and_extra_fields_with_path(
-    tmp_path: Path,
-) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        {"result": TrainOutput(metrics={"loss": 0.12}, values=[1])},
-        bundle_dir,
-        result_codecs=(),
-    )
-    manifest_path = bundle_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    fields = manifest["result"]["$furu"]["|fields"]
-    fields["renamed_values"] = fields.pop("values")
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir)
-
-    message = str(exc_info.value)
-    assert "at result" in message
-    assert "missing fields: values" in message
-    assert "extra fields: renamed_values" in message
 
 
 @dataclass(frozen=True)
@@ -1480,74 +1068,6 @@ def test_nested_dataclass_round_trip() -> None:
     assert isinstance(loaded, NestedOuter)
     assert isinstance(loaded.inner, NestedInner)
     assert loaded == NestedOuter(inner=NestedInner(value=42), label="root")
-
-
-class TrainOutputModel(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    metrics: dict[str, float]
-    values: list[int]
-
-
-class PydanticResult(Spec[TrainOutputModel]):
-    def create(self) -> TrainOutputModel:
-        return TrainOutputModel(metrics={"loss": 0.12}, values=[1, 2, 3])
-
-
-def test_pydantic_round_trip() -> None:
-    obj = PydanticResult()
-    loaded = obj.create()
-    assert isinstance(loaded, TrainOutputModel)
-    assert loaded.metrics == {"loss": 0.12}
-    assert loaded.values == [1, 2, 3]
-
-
-class ValidatedTrainOutputModel(BaseModel):
-    value: int
-
-
-def test_pydantic_load_uses_model_validate(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        ValidatedTrainOutputModel(value=1),
-        bundle_dir,
-        result_codecs=(),
-    )
-    manifest_path = bundle_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    manifest["$furu"]["|fields"]["value"] = "not an int"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir)
-
-    message = str(exc_info.value)
-    assert "Cannot load pydantic model" in message
-    assert "at <root>" in message
-    assert "value" in message
-
-
-def test_pydantic_load_reports_missing_and_extra_fields_with_path(
-    tmp_path: Path,
-) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        {"models": [TrainOutputModel(metrics={}, values=[])]},
-        bundle_dir,
-        result_codecs=(),
-    )
-    manifest_path = bundle_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    fields = manifest["models"][0]["$furu"]["|fields"]
-    fields["renamed_values"] = fields.pop("values")
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir)
-
-    message = str(exc_info.value)
-    assert "at models/0" in message
-    assert "missing fields: values" in message
-    assert "extra fields: renamed_values" in message
 
 
 class NestedPydanticOuter(BaseModel):
@@ -1576,16 +1096,9 @@ class NumpyResult(Spec[dict[str, object]]):
         return {"weights": np.arange(10, dtype=np.float32)}
 
 
-class RegistryNumpyResult(Spec):
-    result_codecs = (_RegistryNumpyCodec,)
-
-    def create(self) -> Any:
-        return np.arange(10, dtype=np.float32)
-
-
-def test_numpy_array_round_trips() -> None:
+def test_numpy_array_round_trips_as_a_plain_array() -> None:
     obj = NumpyResult()
-    loaded = obj.create()
+    created = obj.create()
 
     assert (
         result_dir_in(version_dir_in(obj._base_dir))
@@ -1593,61 +1106,13 @@ def test_numpy_array_round_trips() -> None:
         / "weights"
         / "data.npy"
     ).exists()
-    assert isinstance(loaded, dict)
-    weights = cast(Any, loaded["weights"])
-    assert weights.dtype == np.float32
-    assert np.array_equal(weights, np.arange(10, dtype=np.float32))
-
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest["weights"]["$furu"]["|kind"] == "artifact"
-    assert manifest["weights"]["$furu"]["codec"] == (
-        f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
-    )
-    assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
-    assert manifest["weights"]["$furu"]["metadata"] == {}
-
-
-def test_result_codecs_take_priority_over_builtin_codec() -> None:
-    obj = RegistryNumpyResult()
-
-    loaded = obj.create()
-    loaded_again = obj.create()
-
-    assert np.array_equal(loaded, np.arange(10, dtype=np.float32))
-    assert np.array_equal(loaded_again, np.arange(10, dtype=np.float32))
-    artifact_dir = result_dir_in(version_dir_in(obj._base_dir)) / "artifacts" / "root"
-    assert (artifact_dir / "registry.npy").exists()
-    assert not (artifact_dir / "data.npy").exists()
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest["$furu"]["codec"] == _RegistryNumpyCodec._codec_id()
-
-
-def test_numpy_array_reloads_as_plain_array() -> None:
-    obj = NumpyResult()
-
-    created = obj.create()
-    loaded = obj.load_existing()
-
-    weights = cast(Any, created["weights"])
-    loaded_weights = cast(Any, loaded["weights"])
-    assert isinstance(weights, np.ndarray)
-    assert isinstance(loaded_weights, np.ndarray)
-    assert not isinstance(weights, np.memmap)
-    assert not isinstance(loaded_weights, np.memmap)
+    for loaded in (created, obj.load_existing()):
+        assert _same(loaded, {"weights": np.arange(10, dtype=np.float32)})
 
 
 class PolarsResult(Spec[dict[str, object]]):
     def create(self) -> dict[str, object]:
         return {"frame": pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]})}
-
-
-class PolarsRefResult(Spec[Ref[Any]]):
-    def create(self) -> Ref[Any]:
-        return furu.ref(pl.DataFrame({"x": [1, 2]}))
 
 
 def test_polars_dataframe_round_trips() -> None:
@@ -1664,51 +1129,6 @@ def test_polars_dataframe_round_trips() -> None:
     frame = loaded["frame"]
     assert isinstance(frame, pl.DataFrame)
     assert frame.equals(pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}))
-
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest["frame"]["$furu"]["|kind"] == "artifact"
-    assert manifest["frame"]["$furu"]["codec"] == (
-        f"{PolarsParquetCodec.__module__}.{PolarsParquetCodec.__qualname__}"
-    )
-    assert manifest["frame"]["$furu"]["path"] == "artifacts/frame"
-
-
-def test_polars_whole_value_routes_through_registry_and_loads_eagerly(
-    tmp_path: Path,
-) -> None:
-    bundle_dir = tmp_path / "bundle"
-    frame = pl.DataFrame({"x": [1, 2, 3]})
-
-    _save_result_bundle(frame, bundle_dir, result_codecs=())
-    loaded = load_result_bundle(bundle_dir)
-
-    assert isinstance(loaded, pl.DataFrame)
-    assert loaded.equals(frame)
-
-
-def test_polars_ref_result_round_trips() -> None:
-    obj = PolarsRefResult()
-
-    created = obj.create()
-    loaded = obj.load_existing()
-
-    assert isinstance(created, Ref)
-    assert created.load().equals(pl.DataFrame({"x": [1, 2]}))
-    assert isinstance(loaded, Ref)
-    assert loaded.load().equals(pl.DataFrame({"x": [1, 2]}))
-
-
-def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-
-    with pytest.raises(ValueError, match="allow_pickle=False"):
-        _save_result_bundle(
-            {"weights": np.array([object()], dtype=object)},
-            bundle_dir,
-            result_codecs=(),
-        )
 
 
 class NestedNumpyResult(Spec[dict[str, list[dict[str, object]]]]):
@@ -1735,96 +1155,11 @@ def test_nested_numpy_paths_use_list_length_padded_indexes() -> None:
         assert np.array_equal(layer["weights"], np.arange(i, dtype=np.float32))
 
 
-def test_long_list_uses_three_digit_padding(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    layers = [{"weights": np.arange(0, dtype=np.float32)} for _ in range(100)]
-    layers[3] = {"weights": np.arange(3, dtype=np.float32)}
-
-    _save_result_bundle({"layers": layers}, bundle_dir, result_codecs=())
-
-    expected = bundle_dir / "artifacts" / "layers" / "003" / "weights" / "data.npy"
-    assert expected.exists()
-
-
-def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(np.arange(5, dtype=np.int64), bundle_dir, result_codecs=())
-
-    assert (bundle_dir / "artifacts" / "root" / "data.npy").exists()
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["$furu"]["|kind"] == "artifact"
-    assert manifest["$furu"]["path"] == "artifacts/root"
-
-    loaded = load_result_bundle(bundle_dir)
-    assert np.array_equal(loaded, np.arange(5, dtype=np.int64))
-
-
-@dataclass(frozen=True)
-class MixedOutput:
-    metrics: dict[str, float]
-    values: list[int]
-
-
-class MixedResult(Spec[dict[str, object]]):
-    def create(self) -> dict[str, object]:
-        return {
-            "result": MixedOutput(metrics={"loss": 0.5}, values=[1, 2]),
-            "weights": np.arange(4, dtype=np.float32),
-            "labels": ["cat", "dog"],
-        }
-
-
-def test_mixed_dataclass_artifact_and_json_round_trip() -> None:
-    obj = MixedResult()
-    loaded = obj.create()
-
-    assert isinstance(loaded, dict)
-    inner = loaded["result"]
-    assert isinstance(inner, MixedOutput)
-    assert inner == MixedOutput(metrics={"loss": 0.5}, values=[1, 2])
-    assert np.array_equal(loaded["weights"], np.arange(4, dtype=np.float32))
-    assert loaded["labels"] == ["cat", "dog"]
-
-
 def test_private_save_result_bundle_refuses_existing_directory(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     with pytest.raises(FileExistsError):
         _save_result_bundle({"x": 1}, bundle_dir, result_codecs=())
-
-
-def test_private_save_result_bundle_writes_manifest_last(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        {"weights": np.arange(2, dtype=np.float32)},
-        bundle_dir,
-        result_codecs=(),
-    )
-
-    # All three pieces should now be present.
-    assert (bundle_dir / "manifest.json").exists()
-    assert (bundle_dir / "artifacts" / "weights" / "data.npy").exists()
-
-
-def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    bundle_dir.mkdir()
-    (bundle_dir / "artifacts").mkdir()
-    (bundle_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "$furu": {
-                    "|kind": "artifact",
-                    "codec": f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}",
-                    "path": "../../../etc/passwd",
-                    "metadata": {},
-                }
-            }
-        )
-    )
-
-    with pytest.raises(ValueError, match="escapes"):
-        load_result_bundle(bundle_dir)
 
 
 def test_ref_created_directly_holds_its_value() -> None:
@@ -1850,15 +1185,6 @@ def test_root_ref_defers_cache_read_and_memoizes(
 
     assert _CountingCodec.dump_calls == 1
     assert _CountingCodec.load_calls == 0
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest == {
-        "$furu": {
-            "|kind": "artifact",
-            "codec": _CountingCodec._codec_id(),
-            "path": "artifacts/root",
-            "metadata": {},
-        }
-    }
 
     loaded = load_result_bundle(bundle_dir, declared_type=Ref[_CountingValue])
 
@@ -1962,12 +1288,6 @@ def test_mixed_eager_ref_and_inline_fields_round_trip() -> None:
     assert _CountingCodec.load_calls == 0
     assert loaded.history.load().value == 3
 
-    # The inline field is readable straight from the manifest.
-    manifest = json.loads(
-        result_manifest_path_in(version_dir_in(obj._base_dir)).read_text()
-    )
-    assert manifest["$furu"]["|fields"]["loss"] == 0.25
-
 
 def test_eager_and_ref_spellings_are_byte_identical_on_disk(tmp_path: Path) -> None:
     eager_dir = tmp_path / "eager" / "bundle"
@@ -1998,3 +1318,309 @@ def test_eager_and_ref_spellings_are_byte_identical_on_disk(tmp_path: Path) -> N
     assert isinstance(ref_from_eager_bundle["weights"], Ref)
     assert np.array_equal(eager_from_ref_bundle["weights"], array)
     assert np.array_equal(ref_from_eager_bundle["weights"].load(), array)
+
+
+def _files(bundle_dir: Path) -> set[str]:
+    return {
+        path.relative_to(bundle_dir).as_posix()
+        for path in bundle_dir.rglob("*")
+        if path.is_file()
+    }
+
+
+def _same(a: Any, b: Any) -> bool:
+    if type(a) is not type(b):
+        return False
+    match a:
+        case np.ndarray():
+            return a.dtype == b.dtype and np.array_equal(a, b)
+        case pl.DataFrame():
+            return a.schema == b.schema and a.equals(b)
+        case dict():
+            return a.keys() == b.keys() and all(_same(a[key], b[key]) for key in a)
+        case list() | tuple():
+            return len(a) == len(b) and all(map(_same, a, b))
+        case LooResult():
+            return _same(vars(a), vars(b))
+        case _:
+            return a == b
+
+
+@dataclass(frozen=True)
+class LooResult:
+    accuracy: float
+    preds: np.ndarray
+    mistakes: pl.DataFrame
+    extras: dict[str, tuple[np.ndarray, int]]
+
+
+def _loo(seed: int) -> LooResult:
+    return LooResult(
+        accuracy=seed / 10,
+        preds=np.full(4, seed, dtype=np.float32),
+        # A table per row, of its own length: none for seed 0.
+        mistakes=pl.DataFrame({"example": range(seed)}, schema={"example": pl.Int64}),
+        extras={"hidden": (np.full((2, 2), seed), seed)},
+    )
+
+
+def test_plain_rows_share_one_manifest_and_load_in_the_order_asked(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    values = [
+        {"seed": seed, "loss": seed / 10, "tags": ("a", seed)} for seed in range(5)
+    ]
+
+    _save_rows(values, bundle_dir)
+
+    assert _files(bundle_dir) == {"manifest.json"}
+    assert _load_rows(bundle_dir, [0, 1, 2, 3, 4]) == values
+    assert _load_rows(bundle_dir, [3, 0, 3]) == [values[3], values[0], values[3]]
+    assert _load_rows(bundle_dir, []) == []
+
+
+def test_arrays_and_tables_of_every_row_share_one_file_per_position(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    values = [_loo(seed) for seed in range(6)]
+
+    _save_rows(values, bundle_dir, declared_type=LooResult)
+
+    assert _files(bundle_dir) == {
+        "manifest.json",
+        "artifacts/preds/data.npy",
+        "artifacts/mistakes/data.parquet",
+        "artifacts/extras/hidden/0/data.npy",
+    }
+    assert np.load(bundle_dir / "artifacts/preds/data.npy").shape == (6, 4)
+    assert pl.read_parquet(bundle_dir / "artifacts/mistakes/data.parquet").height == 15
+    assert _same(
+        _load_rows(bundle_dir, list(range(6)), declared_type=LooResult), values
+    )
+    assert _same(
+        _load_rows(bundle_dir, [5, 0, 2], declared_type=LooResult),
+        [values[5], values[0], values[2]],
+    )
+
+
+def test_one_row_bundle_is_the_first_row_of_a_larger_one(tmp_path: Path) -> None:
+    one, two = tmp_path / "one", tmp_path / "two"
+
+    _save_rows([_loo(3)], one)
+    _save_rows([_loo(3), _loo(3)], two)
+
+    assert (
+        json.loads((one / "manifest.json").read_text())
+        == (json.loads((two / "manifest.json").read_text())[:1])
+    )
+    assert _files(one) == _files(two)
+    assert _same(_load_rows(one, [0]), [_loo(3)])
+
+
+def test_rows_without_a_value_are_left_out_of_the_shared_file(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    values = [
+        {"preds": None},
+        {"preds": np.arange(3)},
+        {"preds": None},
+        {"preds": np.arange(3) + 1},
+    ]
+
+    _save_rows(values, bundle_dir)
+
+    assert np.load(bundle_dir / "artifacts/preds/data.npy").shape == (2, 3)
+    assert _same(_load_rows(bundle_dir, [3, 2, 1, 0]), values[::-1])
+
+
+def test_values_that_do_not_merge_get_a_directory_per_row(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    values = [
+        {
+            "ragged": np.zeros(3),
+            "schemas": pl.DataFrame({"x": [1]}),
+            "codecs": np.ones(2),
+            "shapes": np.ones(2),
+            "merged": np.arange(2),
+        },
+        {
+            "ragged": np.zeros(4),
+            "schemas": pl.DataFrame({"x": [None]}),
+            "codecs": pl.DataFrame({"x": [2]}),
+            "shapes": {"inner": np.ones(2)},
+            "merged": np.arange(2),
+        },
+    ]
+
+    _save_rows(values, bundle_dir)
+
+    assert _files(bundle_dir) == {
+        "manifest.json",
+        "artifacts/merged/data.npy",
+        "rows/0/ragged/data.npy",
+        "rows/1/ragged/data.npy",
+        "rows/0/schemas/data.parquet",
+        "rows/1/schemas/data.parquet",
+        "rows/0/codecs/data.npy",
+        "rows/1/codecs/data.parquet",
+        "rows/0/shapes/data.npy",
+        "rows/1/shapes/inner/data.npy",
+    }
+    assert _same(_load_rows(bundle_dir, [1, 0]), values[::-1])
+
+
+def test_whole_result_value_only_clashes_with_a_field_named_root(
+    tmp_path: Path,
+) -> None:
+    apart, clash = tmp_path / "apart", tmp_path / "clash"
+
+    values = [np.zeros(3), {"x": np.zeros(3)}, {"x": np.ones(3)}]
+    _save_rows(values, apart)
+    _save_rows([np.zeros(3), {"root": np.ones(3)}], clash)
+
+    assert _files(apart) == {
+        "manifest.json",
+        "artifacts/root/data.npy",
+        "artifacts/x/data.npy",
+    }
+    assert _files(clash) == {
+        "manifest.json",
+        "rows/0/root/data.npy",
+        "rows/1/root/data.npy",
+    }
+    assert _same(_load_rows(apart, [0, 1, 2]), values)
+    assert _same(_load_rows(clash, [1, 0]), [{"root": np.ones(3)}, np.zeros(3)])
+
+
+def test_zero_dimensional_arrays_keep_their_dtype_when_stacked(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    record = np.dtype([("a", "i4"), ("b", "f8")])
+    values = [
+        {
+            "big_endian": np.array(seed, dtype=">i2"),
+            "text": np.array("ab", dtype="U5"),
+            "record": np.array((seed, 0.5), dtype=record),
+        }
+        for seed in range(2)
+    ]
+
+    _save_rows(values, bundle_dir)
+    loaded = _load_rows(bundle_dir, [0, 1])
+
+    assert _same(loaded, values)
+    assert loaded[0]["record"].flags.writeable
+
+
+@pytest.mark.filterwarnings("ignore:Stored array in format 3.0")
+def test_arrays_that_one_file_cannot_hold_are_left_to_save(tmp_path: Path) -> None:
+    named_dir = tmp_path / "named"
+    named = [np.array([(seed,)], dtype=[("日本", "i4")]) for seed in range(2)]
+
+    _save_rows(named, named_dir)
+
+    assert _files(named_dir) == {
+        "manifest.json",
+        "rows/0/root/data.npy",
+        "rows/1/root/data.npy",
+    }
+    assert _same(_load_rows(named_dir, [0, 1]), named)
+
+    masked = np.ma.masked_array([1.0, 2.0, 3.0], mask=[0, 1, 0])
+    with pytest.raises(NotImplementedError):
+        _save_rows([masked], tmp_path / "masked")
+
+
+def test_codec_with_only_save_and_load_gets_one_call_per_row(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    _CountingCodec.dump_calls = 0
+    _CountingCodec.load_calls = 0
+
+    _save_rows(
+        [_CountingValue(seed) for seed in range(3)],
+        bundle_dir,
+        result_codecs=(_CountingCodec,),
+    )
+    loaded = _load_rows(bundle_dir, [2, 0])
+
+    assert _files(bundle_dir) == {
+        "manifest.json",
+        "rows/0/root/value.txt",
+        "rows/1/root/value.txt",
+        "rows/2/root/value.txt",
+    }
+    assert not (bundle_dir / "artifacts").exists()
+    assert [value.value for value in loaded] == [2, 0]
+    assert (_CountingCodec.dump_calls, _CountingCodec.load_calls) == (3, 2)
+
+
+class _MergingCodec(_CountingCodec):
+    auto_register: ClassVar[bool] = False
+    loaded_lines: ClassVar[list[list[object]]] = []
+
+    @classmethod
+    def save_many(
+        cls, values: Sequence[_CountingValue], artifact_directory: Path
+    ) -> Sequence[Mapping[str, object]] | None:
+        artifact_directory.joinpath("values.txt").write_text(
+            "\n".join(str(value.value) for value in values), encoding="utf-8"
+        )
+        return [{"line": line} for line in range(len(values))]
+
+    @classmethod
+    def load_many(
+        cls, metadatas: Sequence[Mapping[str, object]], artifact_directory: Path
+    ) -> Sequence[_CountingValue]:
+        lines = artifact_directory.joinpath("values.txt").read_text().splitlines()
+        cls.loaded_lines.append([metadata["line"] for metadata in metadatas])
+        return [
+            _CountingValue(int(lines[cast(int, metadata["line"])]))
+            for metadata in metadatas
+        ]
+
+
+def test_codec_with_save_many_and_load_many_gets_one_call_each(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    _MergingCodec.loaded_lines.clear()
+
+    _save_rows(
+        [_CountingValue(seed) for seed in range(4)],
+        bundle_dir,
+        result_codecs=(_MergingCodec,),
+    )
+    loaded = _load_rows(bundle_dir, [3, 1])
+
+    assert _files(bundle_dir) == {"manifest.json", "artifacts/root/values.txt"}
+    assert [value.value for value in loaded] == [3, 1]
+    assert _MergingCodec.loaded_lines == [[3, 1]]
+
+    # A Ref reads its own row, and only when asked.
+    (lazy,) = _load_rows(bundle_dir, [2], declared_type=Ref[_CountingValue])
+    assert _MergingCodec.loaded_lines == [[3, 1]]
+    assert lazy.load().value == 2
+    assert _MergingCodec.loaded_lines == [[3, 1], [2]]
+
+
+def test_large_fallback_warns_once_per_label_and_field(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    def ragged(seed: int) -> Any:
+        return np.zeros(seed % 2)
+
+    # Three per-row folders a row: 99 for 33 rows, 102 for 34.
+    rows = [
+        {"a": ragged(seed), "b": [ragged(seed), ragged(seed)]} for seed in range(34)
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="furu"):
+        _save_rows(rows[:33], tmp_path / "small", label="Ragged")
+        assert caplog.messages == []
+
+        _save_rows(rows, tmp_path / "first", label="Ragged")
+        _save_rows(rows, tmp_path / "second", label="Ragged")
+    assert caplog.messages == [
+        "Ragged: 34 values in a were not merged into one file and got a "
+        + "directory each",
+        "Ragged: 68 values in b were not merged into one file and got a "
+        + "directory each",
+    ]
