@@ -453,7 +453,9 @@ def test_a_declared_serializer_writes_a_plain_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Plain values skip the serializer lookup only while nothing is registered.
+    # The real registry lookup is cached, so it must not run while it is empty.
     monkeypatch.setattr(SerializerMeta, "_auto_registered_serializers", [])
+    monkeypatch.setattr(SerializerMeta, "_default_serializers", lambda: ())
     lowered = _custom_artifact(_LowerSerializer, "a")
 
     assert to_json(("A", 1), tuple[str, int], ()) == {
