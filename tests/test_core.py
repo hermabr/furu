@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import types
-from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import (
     FrozenInstanceError,
@@ -13,7 +12,6 @@ from dataclasses import (
     replace,
 )
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 from unittest.mock import patch
@@ -47,7 +45,6 @@ from furu.storage._layout import (
     trace_path_in,
     version_dir_in,
 )
-from furu.utils import fully_qualified_name
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -213,30 +210,6 @@ class B_priv(B):
         return super().create()
 
 
-class VariadicTuple(Spec[None]):
-    t: tuple[int, ...]
-
-    def create(self):
-        pass
-
-
-class SchemaLeaf(Spec[None]):
-    x: int
-
-
-class SchemaMid(Spec[None]):
-    leaf: SchemaLeaf
-
-
-class SchemaTop(Spec[None]):
-    a_leaf: SchemaLeaf
-    mid: SchemaMid
-
-
-class SchemaCycle(Spec[None]):
-    child: "SchemaCycle | None"
-
-
 class UsesPath(Spec[str]):
     path: Path
 
@@ -264,13 +237,6 @@ class UsesContainers(Spec[None]):
     pair: tuple[Path, int]
     maybe_path: Path | None
     untyped: dict[str, Any]
-
-    def create(self) -> None:
-        return None
-
-
-class UsesFalseLiteral(Spec[None]):
-    tie_word_embeddings: Literal[False]
 
     def create(self) -> None:
         return None
@@ -661,7 +627,6 @@ def test_reserved_field_name_raises_at_class_creation():
         "directory",
         "load_existing",
         "delete",
-        "migrate",
         "migrations",
         "provenance",
         "throttle",
@@ -698,14 +663,14 @@ def test_hashes_and_data_dir():
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         ).object_id
-        == "test_core.NodePair:21733b1febfab88b565c:3d659fdfcbfaa54157ce"
+        == "test_core.NodePair:06b20558c682cb23a593:0213f99a818a40d63cf9"
     )
 
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         )._artifact_hash
-        == "3d659fdfcbfaa54157ce"
+        == "0213f99a818a40d63cf9"
     )
 
     assert (
@@ -720,8 +685,8 @@ def test_hashes_and_data_dir():
     assert (
         NodePair(
             name="y", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        )._artifact_schema_hash
-        == "21733b1febfab88b565c"
+        )._class_part
+        == "06b20558c682cb23a593"
     )
 
     assert NodePair(
@@ -744,13 +709,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-        )._artifact_schema_hash
+        )._class_part
         != B_priv(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, True: 1},
             t=("123", 12),
             _h=1,
-        )._artifact_schema_hash
+        )._class_part
     )
 
     def qualname_alias(cls: type[Spec[object]], *, ret_typ: type) -> type[Spec[object]]:
@@ -764,148 +729,14 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
-        )._artifact_schema_hash
+        )._class_part
         != B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, "ney": 1},
             t=("123", 12),
             _h=1,
-        )._artifact_schema_hash
+        )._class_part
     )
-
-
-def expected_schema_for_B_like(
-    cls_name: str, *, include_private_h: bool = False
-) -> dict:
-    fields: dict[str, Any] = {
-        "a": [
-            "builtins.int",
-            {
-                "|class": "test_core.A",
-                "|fields": {
-                    "some_obj": [
-                        "builtins.int",
-                        {"|origin": "typing.Literal", "|args": ["a", "b"]},
-                    ],
-                    "w": {
-                        "|origin": "builtins.list",
-                        "|args": [["builtins.float", "builtins.int"]],
-                    },
-                    "x": ["builtins.int", "builtins.list", "builtins.str"],
-                    "z": "T",
-                },
-            },
-        ],
-        "maybe_val": ["builtins.NoneType", "builtins.int"],
-        "t": {
-            "|origin": "builtins.tuple",
-            "|args": ["builtins.float", ["builtins.int", "builtins.str"]],
-        },
-        "y": {
-            "|origin": "builtins.dict",
-            "|args": [
-                "builtins.int",
-                [
-                    "builtins.bool",
-                    {"|origin": "typing.Literal", "|args": ["hey", "ney"]},
-                ],
-            ],
-        },
-    }
-    if include_private_h:
-        fields["_h"] = "builtins.int"
-
-    return {
-        "|class": f"test_core.{cls_name}",
-        "|fields": fields,
-    }
-
-
-@pytest.mark.parametrize(
-    "make, expected",
-    [
-        pytest.param(
-            lambda: B(
-                a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-            ),
-            expected_schema_for_B_like("B"),
-            id="B",
-        ),
-        pytest.param(
-            lambda: partial(B_priv, _h=1)(
-                a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-            ),
-            expected_schema_for_B_like("B_priv", include_private_h=True),
-            id="B_priv",
-        ),
-        pytest.param(
-            lambda: NodePair(
-                node1=Node(name="x"),
-                node2=WeightedNode(name="z", weight=2),
-                name="name",
-            ),
-            {
-                "|class": "test_core.NodePair",
-                "|fields": {
-                    "name": ["builtins.int", "builtins.str"],
-                    "node1": {
-                        "|class": "test_core.Node",
-                        "|fields": {"name": "builtins.str"},
-                    },
-                    "node2": {
-                        "|class": "test_core.WeightedNode",
-                        "|fields": {"name": "builtins.str", "weight": "builtins.float"},
-                    },
-                },
-            },
-            id="NodePair",
-        ),
-        pytest.param(
-            lambda: UsesPath(path=Path("/tmp/out")),
-            {
-                "|class": "test_core.UsesPath",
-                "|fields": {"path": fully_qualified_name(Path)},
-            },
-            id="UsesPath",
-        ),
-        pytest.param(
-            lambda: UsesDatetime(dt=datetime(2026, 7, 18, 12, 30)),
-            {
-                "|class": "test_core.UsesDatetime",
-                "|fields": {"dt": fully_qualified_name(datetime)},
-            },
-            id="UsesDatetime",
-        ),
-        pytest.param(
-            lambda: PydanticFields(pydantic_obj=PydanticSubclass(field1=1)),
-            {
-                "|class": "test_core.PydanticFields",
-                "|fields": {
-                    "pydantic_obj": {
-                        "|class": "test_core.PydanticSubclass",
-                        "|fields": {"field1": "builtins.int"},
-                    }
-                },
-            },
-            id="PydanticFields",
-        ),
-        pytest.param(
-            lambda: UsesFalseLiteral(tie_word_embeddings=False),
-            {
-                "|class": "test_core.UsesFalseLiteral",
-                "|fields": {
-                    "tie_word_embeddings": {
-                        "|origin": "typing.Literal",
-                        "|args": [False],
-                    }
-                },
-            },
-            id="UsesFalseLiteral",
-        ),
-    ],
-)
-def test_schema(make: Callable[[], Spec], expected):
-    assert make()._schema_data == expected
 
 
 def test_to_json():
@@ -1086,29 +917,26 @@ def test_furu_from_artifact_returns_furu_object():
     )
     obj.create()
     artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
+        fully_qualified_name=obj._stored_name,
+        stored_name=obj._stored_name,
         artifact_data=obj._artifact_data,
         artifact_hash=obj._artifact_hash,
-        schema_data=obj._schema_data,
-        schema_hash=obj._artifact_schema_hash,
+        class_part=obj._class_part,
     )
 
     loaded = NodePair.from_artifact(artifact)
     raw_spec = json.loads(spec_path_in(obj._base_dir).read_text())
 
     assert artifact.object_id == obj.object_id
-    assert artifact.schema_data == obj._schema_data
-    assert "schema_data" in type(artifact).model_fields
     assert loaded == obj
     assert isinstance(loaded, NodePair)
     assert loaded._base_dir == obj._base_dir
-    assert NodePair.from_artifact(obj._base_dir) == obj
     assert raw_spec == {
-        "fully_qualified_name": obj._fully_qualified_name,
+        "fully_qualified_name": obj._stored_name,
+        "stored_name": obj._stored_name,
         "artifact_data": obj._artifact_data,
         "artifact_hash": obj._artifact_hash,
-        "schema_data": obj._schema_data,
-        "schema_hash": obj._artifact_schema_hash,
+        "class_part": obj._class_part,
     }
 
 
@@ -1176,8 +1004,6 @@ def test_a_dependency_is_stored_and_hashed_as_a_field() -> None:
         "name": "x",
         "child": Node(name="x")._artifact_data,
     }
-    schema = cast(Any, parent._schema_data)
-    assert schema["|fields"]["child"] == Node(name="x")._schema_data
     with pytest.raises(TypeError, match="unexpected keyword argument 'child'"):
         ComputedDependencyParent(name="x", child=Node(name="y"))  # ty: ignore[unknown-argument]
 
@@ -1390,11 +1216,11 @@ def test_furu_from_artifact_infers_furu_object_type():
     )
     obj.create()
     artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
+        fully_qualified_name=obj._stored_name,
+        stored_name=obj._stored_name,
         artifact_data=obj._artifact_data,
         artifact_hash=obj._artifact_hash,
-        schema_data=obj._schema_data,
-        schema_hash=obj._artifact_schema_hash,
+        class_part=obj._class_part,
     )
 
     loaded = Spec.from_artifact(artifact)
@@ -1419,11 +1245,11 @@ def test_furu_from_artifact_accepts_the_stored_spec_json():
 def test_furu_from_artifact_accepts_artifact_spec():
     obj = Node(name="x")
     artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
+        fully_qualified_name=obj._stored_name,
+        stored_name=obj._stored_name,
         artifact_data=obj._artifact_data,
         artifact_hash=obj._artifact_hash,
-        schema_data=obj._schema_data,
-        schema_hash=obj._artifact_schema_hash,
+        class_part=obj._class_part,
     )
 
     loaded = Node.from_artifact(artifact)
@@ -1436,11 +1262,11 @@ def test_furu_from_artifact_accepts_artifact_spec():
 def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
     obj = WeightedNode(name="x", weight=1)
     artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
+        fully_qualified_name=obj._stored_name,
+        stored_name=obj._stored_name,
         artifact_data=obj._artifact_data,
         artifact_hash=obj._artifact_hash,
-        schema_data=obj._schema_data,
-        schema_hash=obj._artifact_schema_hash,
+        class_part=obj._class_part,
     )
 
     with pytest.raises(
@@ -1457,11 +1283,11 @@ def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
     obj = Node(name="x")
     bad_hash = "wrong-artifact-hash"
     artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
+        fully_qualified_name=obj._stored_name,
+        stored_name=obj._stored_name,
         artifact_data=obj._artifact_data,
         artifact_hash=bad_hash,
-        schema_data=obj._schema_data,
-        schema_hash=obj._artifact_schema_hash,
+        class_part=obj._class_part,
     )
 
     with pytest.raises(
@@ -1474,57 +1300,26 @@ def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
         Node.from_artifact(artifact)
 
 
-def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
+def test_furu_from_artifact_rejects_artifact_spec_class_part_mismatch():
     obj = Node(name="x")
-    bad_schema_hash = "wrong-schema-hash"
+    bad_class_part = "wrong-class-part"
     artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
+        fully_qualified_name=obj._stored_name,
+        stored_name=obj._stored_name,
         artifact_data=obj._artifact_data,
         artifact_hash=obj._artifact_hash,
-        schema_data=obj._schema_data,
-        schema_hash=bad_schema_hash,
+        class_part=bad_class_part,
     )
 
     with pytest.raises(
         ValueError,
         match=(
-            "Artifact schema hash did not match loaded object: "
-            + f"artifact={bad_schema_hash[:5]}, "
-            + f"loaded={obj._artifact_schema_hash[:5]}"
+            "Artifact class part did not match loaded object: "
+            + f"artifact={bad_class_part[:5]}, "
+            + f"loaded={obj._class_part[:5]}"
         ),
     ):
         Node.from_artifact(artifact)
-
-
-def test_schema_with_ellipsis_type_arg():
-    assert VariadicTuple(t=(1, 2, 3))._schema_data == {
-        "|class": "test_core.VariadicTuple",
-        "|fields": {
-            "t": {
-                "|origin": "builtins.tuple",
-                "|args": ["builtins.ellipsis", "builtins.int"],
-            }
-        },
-    }
-
-
-def test_schema_expands_repeated_types_and_collapses_only_cycles():
-    leaf = {"|class": "test_core.SchemaLeaf", "|fields": {"x": "builtins.int"}}
-    top = SchemaTop(a_leaf=SchemaLeaf(x=1), mid=SchemaMid(leaf=SchemaLeaf(x=2)))
-
-    assert top._schema_data == {
-        "|class": "test_core.SchemaTop",
-        "|fields": {
-            "a_leaf": leaf,
-            "mid": {"|class": "test_core.SchemaMid", "|fields": {"leaf": leaf}},
-        },
-    }
-    assert SchemaCycle(child=None)._schema_data == {
-        "|class": "test_core.SchemaCycle",
-        "|fields": {
-            "child": ["builtins.NoneType", {"|class": "test_core.SchemaCycle"}]
-        },
-    }
 
 
 def test_data_dir():
@@ -1533,17 +1328,15 @@ def test_data_dir():
     )
     assert node_pair._base_dir == (
         get_config().directories.anchored().objects
-        / "test_core"
-        / "NodePair"
-        / "21733b1febfab88b565c"
-        / "3d659fdfcbfaa54157ce"
+        / "test_core.NodePair"
+        / "06b20558c682cb23a593"
+        / "0213f99a818a40d63cf9"
     )
     assert data_dir_in(node_pair._base_dir) == node_pair._base_dir / "data"
     assert data_dir_in(node_pair._base_dir) == Path(
         get_config().directories.anchored().objects
-        / "test_core"
-        / "NodePair"
-        / node_pair._artifact_schema_hash
+        / "test_core.NodePair"
+        / node_pair._class_part
         / node_pair._artifact_hash
         / "data"
     )
@@ -1583,10 +1376,10 @@ def test_throttle_can_be_overridden_as_class_attribute():
     assert "throttle" not in {field.name for field in fields(LimitedNode)}
 
 
-def test_throttle_does_not_affect_schema_or_object_identity():
+def test_throttle_does_not_affect_object_identity():
     original_throttle = ThrottleIdentityNode.throttle
     before = ThrottleIdentityNode(name="x")
-    before_schema_hash = before._artifact_schema_hash
+    before_class_part = before._class_part
     before_artifact_hash = before._artifact_hash
     before_object_id = before.object_id
 
@@ -1596,7 +1389,7 @@ def test_throttle_does_not_affect_schema_or_object_identity():
     finally:
         ThrottleIdentityNode.throttle = original_throttle
 
-    assert after._artifact_schema_hash == before_schema_hash
+    assert after._class_part == before_class_part
     assert after._artifact_hash == before_artifact_hash
     assert after.object_id == before_object_id
 
@@ -1625,9 +1418,8 @@ def test_metadata_storage_overrides_base_dir(
 
     assert node._base_dir == (
         Path("custom/data/location")
-        / "test_core"
-        / "CustomStorageNode"
-        / node._artifact_schema_hash
+        / "test_core.CustomStorageNode"
+        / node._class_part
         / node._artifact_hash
     )
     assert data_dir_in(node._base_dir) == node._base_dir / "data"

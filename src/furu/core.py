@@ -4,8 +4,8 @@ import logging
 import shutil
 from abc import ABC
 from collections.abc import Callable
-from dataclasses import dataclass, fields
-from functools import cache, cached_property
+from dataclasses import dataclass
+from functools import cached_property
 from inspect import get_annotations
 from pathlib import Path
 from typing import (
@@ -18,7 +18,6 @@ from typing import (
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched
-from furu._declared_types import cached_type_hints
 from furu.dependencies import (
     _Dependency,
     dependency_field,
@@ -28,34 +27,25 @@ from furu.dependencies import (
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration.links import (
-    _read_link,
-    load_stored_result,
-    own_version,
-    version_for_loading,
-)
-from furu.migration.resolution import validate_embedded_migration_declarations
-from furu.migration.stale import raise_if_stale, sideways_status
-from furu.migration.steps import MigrationStep, validate_migration_declaration
+from furu.migration.schema import held
+from furu.migration.steps import MigrationStep, naming, stored_name
 from furu.provenance import Provenance
 from furu.resources import Worker
 from furu.result.codec import Codec
-from furu.serializer.artifact import fingerprint
+from furu.serializer.artifact import hashed_fields
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
-from furu.serializer.schema import schema_type as _schema_type
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
     attempt_dir_in,
     compute_lock_path_in,
     provenance_path_in,
-    spec_path_in,
 )
 from furu.storage.directory import SpecDirectory
+from furu.storage.stored import load_stored_result, stored_version
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
-    fully_qualified_name,
     nfs_safe_unique_name,
     object_id_from_parts,
     spec_label,
@@ -77,13 +67,6 @@ class Missing(Exception):
     pass
 
 
-@cache
-def _class_identity(cls: type[Spec]) -> tuple[str, JsonValue, str]:
-    """A spec class's name, schema and schema hash: the same for every instance."""
-    schema = _schema_type(cls, {}, artifact_serializers=cls.artifact_serializers)
-    return fully_qualified_name(cls), schema, _hash_dict_deterministically(schema)
-
-
 _SPEC_CLASS_ATTRIBUTES = frozenset(
     {"migrations", "throttle", "result_codecs", "artifact_serializers"}
 )
@@ -95,7 +78,6 @@ _RESERVED_FIELD_NAMES = frozenset(
         "directory",
         "load_existing",
         "delete",
-        "migrate",
         "migrations",
         "provenance",
         "throttle",
@@ -107,6 +89,16 @@ _RESERVED_FIELD_NAMES = frozenset(
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
+    """One result, described by its fields; ``create()`` computes it once.
+
+    A spec's id is its class, the names of the class's fields and
+    ``@furu.dependency`` methods, and a fingerprint of its field values.
+    Changing a field therefore gives every spec of the class a new id, and
+    leaves the stored results behind. A step in ``migrations`` (``Added``,
+    ``Renamed``, ``MovedFrom``) keeps them: the spec is named the way it was
+    before the change.
+    """
+
     _furu_create_hook: ClassVar[Callable[..., Any] | _BatchedHook]
     throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
@@ -156,9 +148,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
             lazy = cached_property(value.func)
             lazy.__set_name__(cls, name)
             setattr(cls, name, lazy)
-        if cls.migrations:
-            validate_migration_declaration(cls)
-        validate_embedded_migration_declarations(cls)
+        naming(cls)  # refuses steps that do not fit the fields
         match cls.__dict__.get("create"):
             case None:
                 pass
@@ -220,17 +210,16 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @cached_property
     def object_id(self) -> str:
         return object_id_from_parts(
-            fully_qualified_name=self._fully_qualified_name,
-            schema_hash=self._artifact_schema_hash,
+            fully_qualified_name=self._stored_name,
+            class_part=self._class_part,
             artifact_hash=self._artifact_hash,
         )
 
     @final
     def load_existing(self) -> T:
-        if (version := version_for_loading(self)) is not None:
+        if (version := stored_version(self)) is not None:
             record_dependency(self, version)
             return load_stored_result(self, version)
-        raise_if_stale(self)
         raise Missing(
             f"{self._log_label}.load_existing() could not find a result. "
             "load_existing() only loads existing results; use create() to compute "
@@ -239,8 +228,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def provenance(self) -> Provenance:
-        if (version := version_for_loading(self)) is None:
-            raise_if_stale(self)
+        if (version := stored_version(self)) is None:
             raise Missing(
                 f"{self._log_label}.provenance() could not find a result. "
                 "Provenance is recorded when a result is computed; use create() "
@@ -259,8 +247,8 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @property
-    def status(self) -> Literal["missing", "running", "incomplete", "done", "stale"]:
-        if own_version(self) is not None or _read_link(self) is not None:
+    def status(self) -> Literal["missing", "running", "incomplete", "done"]:
+        if stored_version(self) is not None:
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
@@ -268,7 +256,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
             # An attempt started and did not finish (crashed, failed, or
             # blocked on a dependency).
             return "incomplete"
-        return sideways_status(self)
+        return "missing"
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
@@ -302,13 +290,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @classmethod
-    def from_artifact(cls, artifact: ArtifactSpec | Path) -> Self:
+    def from_artifact(cls, artifact: ArtifactSpec) -> Self:
         from furu.serializer.artifact import _from_artifact
 
-        if not isinstance(artifact, ArtifactSpec):
-            artifact = ArtifactSpec.model_validate_json(
-                spec_path_in(artifact).read_text(encoding="utf-8")
-            )
         return _from_artifact(artifact, cls)
 
     @final
@@ -329,46 +313,36 @@ class Spec[T](_FuruDataclassTransform, ABC):
     ) -> str:
         # One fingerprint per field, so writing a large value apart from the
         # spec that holds it never changes the id.
-        hints = cached_type_hints(type(self))
         return _hash_dict_deterministically(
             {
-                f.name: fingerprint(
-                    getattr(self, f.name),
-                    hints.get(f.name, Any),
-                    self.artifact_serializers,
-                )
-                for f in fields(self)
+                name: _hash_dict_deterministically(value)
+                for name, value in hashed_fields(
+                    self, self.artifact_serializers, held[type(self)]
+                ).items()
             }
         )
 
     @final
     @property
-    def _schema_data(self) -> JsonValue:
-        return _class_identity(type(self))[1]
+    def _class_part(self) -> str:
+        return naming(type(self)).class_part
 
     @final
     @property
-    def _artifact_schema_hash(self) -> str:
-        return _class_identity(type(self))[2]
-
-    @final
-    @property
-    def _fully_qualified_name(self) -> str:
-        return _class_identity(type(self))[0]
+    def _stored_name(self) -> str:
+        return stored_name(type(self))
 
     @final
     @cached_property
     def _base_dir(self) -> Path:
         return (
             self._metadata.storage
-            / Path(*self._fully_qualified_name.split("."))
-            / self._artifact_schema_hash
+            / self._stored_name
+            / self._class_part
             / self._artifact_hash
         )
 
     @final
     @cached_property
     def _log_label(self) -> str:
-        return spec_label(
-            self._fully_qualified_name, self._artifact_schema_hash, self._artifact_hash
-        )
+        return spec_label(self._stored_name, self._class_part, self._artifact_hash)

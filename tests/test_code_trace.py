@@ -17,7 +17,6 @@ import furu
 from furu import code_trace
 from furu.code_trace import StaleCodeError
 from furu.config import _Config, get_config
-from furu.migration.links import own_version
 from furu.spec_metadata import Metadata
 from furu.storage._layout import (
     attempt_dir_in,
@@ -25,6 +24,7 @@ from furu.storage._layout import (
     scratch_dir_in,
     trace_path_in,
 )
+from furu.storage.stored import stored_version
 from furu.testing import override_config
 from furu.worker.execute import ChildSlot
 from furu.worker.messages import JobCompletedResult, JobFailedResult
@@ -146,13 +146,13 @@ def plots(repo: Repo) -> ModuleType:
 
 
 def _version(spec: furu.Spec) -> str:
-    version = own_version(spec)
+    version = stored_version(spec)
     assert version is not None, f"{spec._log_label} has no valid version"
     return version.name
 
 
 def _trace(spec: furu.Spec) -> dict[str, Any]:
-    version = own_version(spec)
+    version = stored_version(spec)
     assert version is not None
     return json.loads(trace_path_in(version).read_text())
 
@@ -439,8 +439,8 @@ def test_a_restarted_parent_records_the_child_as_a_dependency_version(
     child = dependencies.Child(n=1)
     trace = _trace(parent)
     assert trace["dependencies"] == {
-        child.object_id: str(Path(*child._fully_qualified_name.split(".")))
-        + f"/{child._artifact_schema_hash}/{child._artifact_hash}/{_version(child)}"
+        child.object_id: f"{child._stored_name}/{child._class_part}"
+        f"/{child._artifact_hash}/{_version(child)}"
     }
     # The child's create ran under its own trace; the parent only looked up
     # where the child is stored.
@@ -1031,7 +1031,7 @@ def test_code_edited_after_import_is_not_published(
         plot.create()
 
     assert plot.status == "incomplete"
-    assert own_version(plot) is None
+    assert stored_version(plot) is None
     # A fresh process imports the edited file and starts over, since the code
     # the failed attempt ran is not what is on disk.
     repo.edit("common.py", "CONST = 4", "CONST = 4")

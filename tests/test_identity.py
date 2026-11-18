@@ -1,4 +1,3 @@
-import json
 from typing import ClassVar
 
 import pytest
@@ -6,7 +5,6 @@ import pytest
 import furu
 from furu import Spec
 from furu.resources import Worker
-from furu.storage._layout import schema_snapshot_path_in
 from furu.utils import _hash_dict_deterministically
 
 
@@ -15,13 +13,6 @@ class SnapshotValue(Spec[str]):
 
     def create(self) -> str:
         return self.name
-
-
-class FailingValue(Spec[str]):
-    name: str
-
-    def create(self) -> str:
-        raise RuntimeError("boom")
 
 
 class Pair(Spec[str]):
@@ -103,29 +94,3 @@ def test_what_a_dependency_returns_is_part_of_the_id_in_order(
 
 def test_batching_a_class_keeps_its_ids() -> None:
     assert _train_id() == _batched_train_id()
-
-
-def test_schema_snapshot_written_on_first_store_and_never_rewritten() -> None:
-    first = SnapshotValue(name="first")
-    schema_path = schema_snapshot_path_in(first._base_dir.parent)
-    assert not schema_path.exists()
-
-    first.create()
-    assert json.loads(schema_path.read_text()) == first._schema_data
-
-    stat_before = schema_path.stat()
-    second = SnapshotValue(name="second")
-    assert schema_snapshot_path_in(second._base_dir.parent) == schema_path
-    second.create()
-    stat_after = schema_path.stat()
-    assert (stat_after.st_ino, stat_after.st_mtime_ns) == (
-        stat_before.st_ino,
-        stat_before.st_mtime_ns,
-    )
-
-
-def test_schema_snapshot_not_written_when_create_fails() -> None:
-    failing = FailingValue(name="x")
-    with pytest.raises(RuntimeError, match="boom"):
-        failing.create()
-    assert not schema_snapshot_path_in(failing._base_dir.parent).exists()

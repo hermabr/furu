@@ -1,288 +1,164 @@
+"""The steps a class declares in ``migrations``, and how they name its values.
+
+Changing a class's fields gives every spec of the class a new id. A step says
+that a change keeps the stored results: when a spec is named, the steps are
+undone, newest first, so the spec has the id it had before the change. Nothing
+stored is read, rewritten or moved.
+
+A step with ``breaking=True`` is a fresh start instead: it and every step
+listed before it are ignored, so the ids are new.
+"""
+
 from __future__ import annotations
 
 import dataclasses
-import types
-import typing
-from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias, assert_never
+from functools import cache
 
-from furu.utils import JsonValue, fully_qualified_name
-
-if TYPE_CHECKING:
-    from furu.core import Spec
-
+from furu.utils import _hash_dict_deterministically, fully_qualified_name
 
 _NO_DEFAULT = object()
-
-ResultRewrite: TypeAlias = Callable[[JsonValue], JsonValue]  # noqa: UP040
-
-
-@dataclass(frozen=True, slots=True)
-class Renamed:
-    field: str
-    _: dataclasses.KW_ONLY
-    to: str
-    breaking: bool = False
-    result_rewrite: ResultRewrite | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Added:
-    """Backfill ``field`` on old results.
+    """A field, or ``@furu.dependency`` method, added to a class that has results.
 
-    ``default`` is the one value every old run behaved as. ``default_factory``
-    computes it per run from that run's stored fields (as ``Rewrite`` sees
-    them): ``Added("model", default_factory=lambda f: ModelConfig(width=f["width"]))``.
-
-    Removing a field together with its ``Added`` makes the results stored with
-    that field recompute quietly instead of going stale: to furu they look like
-    a sibling branch's that added the field. Keep the step, or delete those
-    results, if you meant something else.
+    ``default`` is the value those results behave as: the name is left out of
+    the id while it has that value, so they are still found. Any other value
+    is new work. Without one the step has to be ``breaking``.
     """
 
-    field: str
+    name: str
     _: dataclasses.KW_ONLY
     default: object = _NO_DEFAULT
-    default_factory: Callable[[Mapping[str, JsonValue]], object] | None = None
     breaking: bool = False
-    result_rewrite: ResultRewrite | None = None
+
+    def __post_init__(self) -> None:
+        if self.breaking == (self.default is not _NO_DEFAULT):
+            raise TypeError(
+                f"Added({self.name!r}) needs exactly one of default= (the value "
+                "the stored results behave as) or breaking=True (a fresh start)"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class Renamed:
+    """A renamed field or ``@furu.dependency`` method: the id keeps the old name."""
+
+    old: str
+    _: dataclasses.KW_ONLY
+    to: str
+    breaking: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class MovedFrom:
+    """A renamed or moved class: ids and folders keep the old name, for new results too."""
+
     fully_qualified_name: str
     _: dataclasses.KW_ONLY
     breaking: bool = False
-    result_rewrite: ResultRewrite | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class Retyped:
-    field: str
-    _: dataclasses.KW_ONLY
-    was: Any
-    breaking: bool = False
-    result_rewrite: ResultRewrite | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Rewrite:
-    """Reshape old results' stored fields with ``transform``.
-
-    Furu recognises a Rewrite by the step just before it, not by its function,
-    so a lambda is fine and renaming the function changes nothing. Moving it
-    after another step recomputes the results that took it. Once results depend
-    on it, keep what it does: an edited ``transform`` goes unnoticed. And keep
-    the steps before it: dropping an earlier Rewrite can give this one the dropped
-    one's identity, so results that took only that one would skip this one.
-    """
-
-    transform: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
-    _: dataclasses.KW_ONLY
-    result_rewrite: ResultRewrite | None = None
-
-
-MigrationStep: TypeAlias = Renamed | Added | MovedFrom | Retyped | Rewrite  # noqa: UP040
-
-
-def _is_breaking(step: MigrationStep) -> bool:
-    return not isinstance(step, Rewrite) and step.breaking
-
-
-class Stale(RuntimeError):
-    pass
+type MigrationStep = Added | Renamed | MovedFrom
 
 
 class MigrationError(RuntimeError):
     pass
 
 
-def _type_label(tp: object) -> str:
-    if typing.get_origin(tp) in (typing.Union, types.UnionType):
-        return " | ".join(_type_label(arg) for arg in typing.get_args(tp))
-    if isinstance(tp, type):
-        return fully_qualified_name(tp)
-    return repr(tp)
-
-
-def _callable_label(fn: Callable[..., object]) -> str:
-    return getattr(fn, "__qualname__", repr(fn))
-
-
-def _describe_step(step: MigrationStep) -> str:
+def describe(step: MigrationStep) -> str:
     match step:
-        case Renamed(field=field, to=to):
-            body = f"{field!r}, to={to!r}"
-        case Added(field=field, default=default, default_factory=factory):
-            body = f"{field!r}"
+        case Added(name=name, default=default):
+            body = repr(name)
             if default is not _NO_DEFAULT:
                 body += f", default={default!r}"
-            if factory is not None:
-                body += f", default_factory={_callable_label(factory)}"
+        case Renamed(old=old, to=to):
+            body = f"{old!r}, to={to!r}"
         case MovedFrom(fully_qualified_name=name):
-            body = f"{name!r}"
-        case Retyped(field=field, was=was):
-            body = f"{field!r}, was={_type_label(was)}"
-        case Rewrite(transform=transform):
-            body = _callable_label(transform)
-    suffix = ", breaking=True" if _is_breaking(step) else ""
-    if step.result_rewrite is not None:
-        suffix += f", result_rewrite={_callable_label(step.result_rewrite)}"
-    return f"{type(step).__name__}({body}{suffix})"
+            body = repr(name)
+    return f"{type(step).__name__}({body}{', breaking=True' if step.breaking else ''})"
 
 
-def _chain_identities(steps: tuple[MigrationStep, ...]) -> tuple[tuple[str, ...], ...]:
-    """What each step does to a stored schema, so the same step declared on two
-    branches is recognised as one.
+@dataclass(frozen=True, slots=True)
+class Naming:
+    """How a class's values are named: as the class was before any declared change."""
 
-    Defaults, ``breaking``, ``was=`` types and functions are left out, so
-    editing or renaming them keeps a step's identity. A Retyped is told apart
-    from earlier retypes of its field by count: the retype shows in the stored
-    schema, so a mix-up is caught there. A Rewrite shows in no schema, so it is
-    identified by the step before it, which two branches rarely share. A
-    recorded identity that matches no declared step makes its schema recompute.
+    # The names of the fields the class first had, which the class part is a
+    # hash of. Whether each is a field or a @furu.dependency method is not part
+    # of it.
+    first_names: tuple[str, ...]
+    class_part: str
+    # Per field: its attribute, the name it is hashed under, and the step that
+    # added it, if one did.
+    fields: tuple[tuple[str, str, Added | None], ...]
+    moved_from: str | None
+
+
+@cache
+def naming(cls: type) -> Naming:
+    """Undo the steps in ``cls.migrations``, newest first.
+
+    A breaking step is a fresh start: it and every step listed before it are
+    ignored, so they can be deleted once their results are.
     """
-    identities: list[tuple[str, ...]] = []
-    retypes: dict[str, int] = {}
-    for step in steps:
+    assert dataclasses.is_dataclass(cls)
+    steps = getattr(cls, "migrations", ())
+
+    # A field's name at this point of the undoing -> its attribute today.
+    first = {field.name: field.name for field in dataclasses.fields(cls)}
+    added: dict[str, tuple[str, Added]] = {}
+    moved_from = None
+    for index, step in reversed(tuple(enumerate(steps))):
+        if step.breaking:
+            break
+        problem = None
         match step:
-            case Renamed(field=field, to=to):
-                identity: tuple[str, ...] = ("Renamed", field, to)
-            case Added(field=field):
-                identity = ("Added", field)
-            case Retyped(field=field):
-                retypes[field] = retypes.get(field, 0) + 1
-                identity = ("Retyped", field, str(retypes[field]))
+            case Added(name=name):
+                if name not in first:
+                    problem = f"{name!r} is not a field; fields: {sorted(first)}"
+                else:
+                    added[name] = (first.pop(name), step)
+            case Renamed(old=old, to=to):
+                if to not in first:
+                    problem = f"{to!r} is not a field; fields: {sorted(first)}"
+                elif old in first or old in added:
+                    # Two fields hashed under one name would share ids.
+                    problem = f"{old!r} already names a field"
+                else:
+                    first[old] = first.pop(to)
             case MovedFrom(fully_qualified_name=name):
-                identity = ("MovedFrom", name)
-            case Rewrite():
-                identity = ("Rewrite", *(identities[-1] if identities else ()))
-        identities.append(identity)
-    return tuple(identities)
-
-
-def _touched_fields(step: MigrationStep) -> frozenset[str] | None:
-    """The fields a step reads or writes; None when it sees the whole record."""
-    match step:
-        case Renamed(field=field, to=to):
-            return frozenset((field, to))
-        case Added(field=field, default_factory=factory):
-            return None if factory is not None else frozenset((field,))
-        case Retyped(field=field):
-            return frozenset((field,))
-        case MovedFrom():
-            return frozenset()
-        case Rewrite():
-            return None
-
-
-def _commutes(earlier: MigrationStep, later: MigrationStep) -> bool:
-    """Whether ``earlier`` may run after ``later`` without changing the result,
-    as when two branches made them in parallel."""
-    if earlier.result_rewrite is not None and later.result_rewrite is not None:
-        return False
-    if isinstance(earlier, MovedFrom) or isinstance(later, MovedFrom):
-        # A move only changes where old schemas live, not their fields.
-        return not (isinstance(earlier, MovedFrom) and isinstance(later, MovedFrom))
-    earlier_fields, later_fields = _touched_fields(earlier), _touched_fields(later)
-    if earlier_fields is None or later_fields is None:
-        return False
-    return not earlier_fields & later_fields
-
-
-def validate_migration_declaration(cls: type[Spec]) -> None:
-    steps = cls.migrations
-    if not isinstance(steps, tuple) or not all(
-        isinstance(step, MigrationStep) for step in steps
-    ):
-        raise TypeError(
-            f"{cls.__name__}.migrations must be a tuple of "
-            "Renamed/Added/MovedFrom/Retyped/Rewrite steps"
-        )
-
-    seen: dict[tuple[str, ...], int] = {}
-    for index, identity in enumerate(_chain_identities(steps)):
-        if (first := seen.setdefault(identity, index)) != index:
+                if steps is not vars(cls).get("migrations"):
+                    # Two classes stored under one name would share ids.
+                    problem = (
+                        f"{cls.__name__} inherits this step and would be stored "
+                        f"under the same name as the class that declares it; "
+                        f"give {cls.__name__} its own migrations"
+                    )
+                else:
+                    moved_from = name
+        if problem:
             raise TypeError(
-                f"{cls.__name__}.migrations[{index}] "
-                f"({_describe_step(steps[index])}) repeats migrations[{first}]; "
-                "furu tells which steps a stored schema already has by what they "
-                "do, so each step must differ"
+                f"{cls.__name__}.migrations[{index}] ({describe(step)}): {problem}"
             )
 
-    names = {field.name for field in dataclasses.fields(cls)}
+    first_names = tuple(sorted(first))
+    return Naming(
+        first_names=first_names,
+        class_part=_hash_dict_deterministically(first_names),
+        fields=(
+            *((attribute, name, None) for name, attribute in first.items()),
+            *(
+                (attribute, name, step)
+                for name, (attribute, step) in reversed(added.items())
+            ),
+        ),
+        moved_from=moved_from,
+    )
 
-    from furu.core import Spec
 
-    def invalid(index: int, problem: str) -> TypeError:
-        return TypeError(
-            f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-            f"{problem}"
-        )
-
-    def not_a_field(index: int, field: str) -> TypeError:
-        return invalid(
-            index,
-            f"{field!r} is not a field; fields at that point in the chain: "
-            f"{sorted(names)}",
-        )
-
-    for index, step in enumerate(steps):
-        if step.result_rewrite is None:
-            continue
-        if _is_breaking(step):
-            raise invalid(
-                index,
-                "a breaking step discards old results, so result_rewrite can "
-                "never run; drop one of the two",
-            )
-        if not issubclass(cls, Spec):
-            raise invalid(
-                index,
-                f"{cls.__name__} has no results to rewrite; result_rewrite "
-                "belongs on a Spec",
-            )
-
-    for index in reversed(range(len(steps))):
-        match steps[index]:
-            case Renamed(field=field, to=to):
-                if to not in names:
-                    raise not_a_field(index, to)
-                if field in names:
-                    raise invalid(
-                        index,
-                        f"{field!r} already exists; fields at that point in the "
-                        f"chain: {sorted(names)}",
-                    )
-                names.remove(to)
-                names.add(field)
-            case Added(field=field) as step:
-                if field not in names:
-                    raise not_a_field(index, field)
-                names.remove(field)
-                backfills = (step.default is not _NO_DEFAULT) + (
-                    step.default_factory is not None
-                )
-                if step.breaking and backfills:
-                    raise invalid(
-                        index,
-                        "a breaking Added discards old results, so a default can "
-                        "never backfill anything; drop one of the two",
-                    )
-                if not step.breaking and backfills != 1:
-                    raise invalid(
-                        index,
-                        "Added needs exactly one of default= (the value old runs "
-                        "behaved as, pinned independently of the field's own "
-                        "default) or default_factory= (computing it from the old "
-                        "run's stored fields), or breaking=True to discard the "
-                        "old results",
-                    )
-            case Retyped(field=field):
-                if field not in names:
-                    raise not_a_field(index, field)
-            case MovedFrom() | Rewrite():
-                pass
-            case unreachable:
-                assert_never(unreachable)
+@cache
+def stored_name(cls: type) -> str:
+    """The class name an id and a folder use: the first one, when the class has moved."""
+    return naming(cls).moved_from or fully_qualified_name(cls)

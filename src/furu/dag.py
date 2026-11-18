@@ -3,12 +3,11 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar, assert_never
+from typing import ClassVar
 
 from furu._batched import _BatchedHook
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
-from furu.migration.stale import raise_if_stale
 from furu.resources import Worker
 from furu.utils import format_duration
 
@@ -79,15 +78,8 @@ class Dag:
             if obj.object_id in seen_object_ids:
                 continue
             seen_object_ids.add(obj.object_id)
-            match obj.status:
-                case "done":
-                    continue
-                case "running" | "missing" | "incomplete":
-                    pass
-                case "stale":
-                    raise_if_stale(obj)
-                case x:
-                    assert_never(x)
+            if obj.status == "done":
+                continue
             new.append(DagNode(obj=obj))
             refs = collect_declared_refs(obj)
             refs_by_id[obj.object_id] = refs

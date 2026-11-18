@@ -10,9 +10,6 @@ from furu.migration.steps import (
     MigrationStep,
     MovedFrom,
     Renamed,
-    Retyped,
-    Rewrite,
-    Stale,
 )
 from furu.provenance import Provenance, submitting_repo_root
 from furu.resources import Worker
@@ -36,11 +33,8 @@ __all__ = [
     "Provenance",
     "Ref",
     "Renamed",
-    "Retyped",
-    "Rewrite",
     "Serializer",
     "Spec",
-    "Stale",
     "Throttle",
     "Worker",
     "__version__",
