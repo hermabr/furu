@@ -23,6 +23,7 @@ from furu.dependencies import record_loaded
 from furu.migration.schema import check_defaults
 from furu.result.bundle import load_result_bundle
 from furu.storage._layout import (
+    BATCH,
     FIXED,
     data_dir_in,
     events_path_in,
@@ -84,8 +85,11 @@ def _run_names(runs: Path) -> list[str]:
             return []
 
 
-def _listed(version: Path) -> dict[str, _First]:
-    """The first row of each spec in a code version's runs, as a listing shows now."""
+def _listed(version: Path, batches: bool) -> dict[str, _First]:
+    """The first row of each spec in a code version's runs, as a listing shows now.
+
+    With ``batches``, only the batch runs are read.
+    """
     runs = runs_dir_in(version)
     # A dotted name is a run that is being deleted.
     names = {name for name in _run_names(runs) if "." not in name}
@@ -94,7 +98,8 @@ def _listed(version: Path) -> dict[str, _First]:
         # A run was deleted, and a spec it held may be in another one.
         read.clear()
         first.clear()
-    if new := [runs / name for name in sorted(names - read)]:
+    todo = {name for name in names - read if not batches or name.startswith(BATCH)}
+    if new := [runs / name for name in sorted(todo)]:
         # The threads only wait for the files: each takes its share of them,
         # and the lines are parsed once all are in, since threads that parse
         # hold each other up.
@@ -125,7 +130,7 @@ class Stored:
 
     def __init__(self) -> None:
         self._live: dict[tuple[Path, str], list[Path]] = {}
-        self._listed: dict[Path, dict[str, _First]] = {}
+        self._listed: dict[tuple[Path, bool], dict[str, _First]] = {}
 
     def _versions(self, obj: Spec) -> list[Path]:
         """The code versions whose runs count for obj: the live ones."""
@@ -155,13 +160,19 @@ class Stored:
             return self.listed(obj)
         return Row(held[0], 0) if held else None
 
-    def listed(self, obj: Spec) -> Row | None:
-        """obj's row in the run published first, among every run of its class."""
+    def listed(self, obj: Spec, *, batches: bool = False) -> Row | None:
+        """obj's row in the run published first, among every run of its class.
+
+        With ``batches``, among the batch runs only: one listing, and a read of
+        each batch run this process has not read yet.
+        """
         held = []
         for version in self._versions(obj):
-            if version not in self._listed:
-                self._listed[version] = _listed(version)
-            if (first := self._listed[version].get(obj._artifact_hash)) is not None:
+            if (version, batches) not in self._listed:
+                self._listed[version, batches] = _listed(version, batches)
+            if (
+                first := self._listed[version, batches].get(obj._artifact_hash)
+            ) is not None:
                 held.append(first)
         if not held:
             return None

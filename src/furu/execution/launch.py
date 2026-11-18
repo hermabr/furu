@@ -130,7 +130,7 @@ def _check_batch_folders(missing: Sequence[Spec]) -> None:
     look = Stored()
     held: defaultdict[type, dict[Path, None]] = defaultdict(dict)
     for obj in missing:
-        if not is_batched(type(obj)) and (row := look.listed(obj)) is not None:
+        if not is_batched(type(obj)) and (row := look.listed(obj, batches=True)):
             held[type(obj)][row.run] = None
     if held:
         lines = [
