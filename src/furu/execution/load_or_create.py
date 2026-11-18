@@ -102,7 +102,7 @@ def _recording(
     """Note the specs whose results one create() call loads, and trace the call.
 
     Only a class that traces its code is traced, with the code versions of
-    what it loads.
+    what it loads. A class that does not may not load a class that does.
     """
     metadata = group[0]._metadata  # a batch has one Metadata
     loaded: list[Spec] = []
@@ -115,6 +115,17 @@ def _recording(
     ) as run:
 
         def on_load(folder: Path, specs: Iterable[Spec]) -> None:
+            specs = list(specs)
+            traced = [obj for obj in specs if obj._metadata.code_version != "fixed"]
+            if traced and metadata.code_version == "fixed":
+                # Its result would be kept after the traced one is replaced.
+                cls = type(group[0]).__qualname__
+                raise RuntimeError(
+                    f"{group[0]._log_label} loaded {traced[0]._log_label}, whose "
+                    f"class traces its code. {cls} does not, so its result would "
+                    f"not follow that code. Trace {cls} too: def metadata(self): "
+                    'return furu.Metadata(code_version="traced")'
+                )
             loaded.extend(specs)
             if run is not None:
                 run.loaded(folder)
