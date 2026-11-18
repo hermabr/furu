@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, assert_never
+from typing import TYPE_CHECKING, Literal
 
+from furu.backends.slurm.resources import SlurmResources
+from furu.protocol.messages import SlurmPool
 from furu.resources import Worker
 from furu.utils import _hash_dict_deterministically
-from furu.worker.backends.slurm.resources import SlurmResources
-from furu.worker.messages import SlurmPool
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -48,15 +48,10 @@ class SlurmWorkerBackend:
         )
 
     def pool(self) -> SlurmPool:
-        match self.export:
-            case None | ():
-                export_args = []
-            case "NIL" | "ALL":
-                export_args = [f"--export={self.export}"]
-            case (*names,):
-                export_args = [f"--export={','.join(names)}"]
-            case _:
-                assert_never(self.export)
+        export = (
+            self.export if isinstance(self.export, str) else ",".join(self.export or ())
+        )
+        export_args = [f"--export={export}"] if export else []
         return SlurmPool(
             max_workers=self.max_workers,
             sbatch_args=[*self.resources.to_sbatch_args(), *export_args],

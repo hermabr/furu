@@ -5,6 +5,9 @@ import os
 import socket
 import sys
 import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
 from types import ModuleType
@@ -14,15 +17,9 @@ from pydantic import JsonValue  # noqa: F401  (furu's JSON type, imported from h
 
 
 def _running_main_module_name() -> str | None:
-    main = sys.modules.get("__main__")
-    if main is None:
-        return None
-
-    spec = getattr(main, "__spec__", None)
-    spec_name = getattr(spec, "name", None)
-    if isinstance(spec_name, str) and spec_name and spec_name != "__main__":
-        return spec_name
-    return None
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    name = getattr(spec, "name", None)
+    return name if isinstance(name, str) and name and name != "__main__" else None
 
 
 def _install_main_module_alias() -> None:
@@ -100,11 +97,10 @@ def _hash_dict_deterministically(obj: object) -> str:
     return _fingerprint(_stable_json_dump(obj))
 
 
-def nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
-    stem = f"{path.name}.{socket.gethostname()}.{os.getpid()}.{uuid.uuid4().hex}"
-    if name is not None:
-        stem = f"{stem}.{name}"
-    return path.with_name(stem)
+def nfs_safe_unique_name(path: Path, *, name: str) -> Path:
+    return path.with_name(
+        f"{path.name}.{socket.gethostname()}.{os.getpid()}.{uuid.uuid4().hex}.{name}"
+    )
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -133,3 +129,13 @@ def error_summary(error: str) -> str:
     return next(
         (line.strip() for line in reversed(error.splitlines()) if line.strip()), ""
     )
+
+
+@contextmanager
+def setting[T](var: ContextVar[T], value: T) -> Generator[None]:
+    """``var`` is ``value`` for the block."""
+    token = var.set(value)
+    try:
+        yield
+    finally:
+        var.reset(token)

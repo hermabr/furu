@@ -14,10 +14,11 @@ from runs import run_of
 from tracedrepo import Repo, fresh_process
 
 import furu
-from furu import Spec, plan
+from furu import Spec
+from furu.backends.local import LocalThreadWorkerBackend
 from furu.config import get_config
-from furu.storage._layout import remembered_dir_in
-from furu.worker.backends.local import LocalThreadWorkerBackend
+from furu.protocol import plan_text
+from furu.protocol.layout import remembered_dir_in
 
 # The seeds of each call of LooTable.runs in this process.
 _calls: list[int] = []
@@ -175,7 +176,7 @@ def test_a_launch_names_a_finished_spec_without_calling_its_method() -> None:
     report = InfluenceReport(table=LooTable(data=data, seeds=3), top_k=20)
     assert furu.create(report) == 23
     assert _calls == [3]
-    assert plan.read(_plans()[-1])[2]["fields"]["runs"] == {
+    assert plan_text.read(_plans()[-1])[2]["fields"]["runs"] == {
         "|kind": "returned",
         "|value": table._returned["runs"],
     }

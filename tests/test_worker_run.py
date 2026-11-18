@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -18,33 +19,26 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.dag as dag_module
-import furu.execution.manager as manager_module
-import furu.worker.loop as worker_loop_module
+import furu.manager.local_pool as local_pool_module
 from furu import Spec, Throttle, Worker, plan
+from furu.backends.local import LocalThreadWorkerBackend
+from furu.backends.slurm.backend import SlurmWorkerBackend
+from furu.backends.slurm.resources import SlurmResources
 from furu.config import get_config
 from furu.core import working_folder
 from furu.dag import Dag
 from furu.execution.launch import missing
-from furu.execution.manager import Manager, _Lease, _Script
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
-from furu.locking import lock
 from furu.logging import _display_path
-from furu.snapshot import CodeLocation
-from furu.storage import events
-from furu.storage._layout import (
-    attempt_dir_in,
+from furu.manager.manager import Manager, _Script
+from furu.manager.queue import Queue
+from furu.protocol import plan_text
+from furu.protocol.layout import (
     execution_log_path_in,
-    lock_path_in,
     log_path_in,
-    run_name,
 )
-from furu.worker.backends.local import LocalThreadWorkerBackend
-from furu.worker.backends.slurm.backend import SlurmWorkerBackend
-from furu.worker.backends.slurm.resources import SlurmResources
-from furu.worker.execute import ChildSlot
-from furu.worker.loop import worker_loop
-from furu.worker.messages import (
+from furu.protocol.messages import (
     Batch,
     CancelMessage,
     ErrorMessage,
@@ -62,11 +56,13 @@ from furu.worker.messages import (
     RerunMessage,
     ResultMessage,
     SubmitMessage,
-    WarningMessage,
     job_result_adapter,
     manager_message_adapter,
     server_message_adapter,
 )
+from furu.snapshot import code_here
+from furu.worker.execute import ChildSlot
+from furu.worker.loop import worker_loop
 
 CPU_POOL = LocalThreadWorkerBackend(worker=Worker())
 GPU_POOL = LocalThreadWorkerBackend(worker=Worker(gpus=1, memory_gib=16))
@@ -87,14 +83,14 @@ def _launch() -> Launch:
         / "e1"
         / "execution.log",
         config=get_config().anchored(),
-        code=CodeLocation.here(),
+        code=code_here(),
     )
 
 
 def _job(*objs: Spec) -> Job:
     return Job(
         specs=[obj.object_id for obj in objs],
-        lines=list(map(plan.dump, plan.lines(objs))),
+        lines=list(map(plan_text.dump, plan.lines(objs))),
         class_dir=objs[0]._class_dir,
         process=ProcessSettings.from_metadata(objs[0]._metadata),
         **dict(_launch()),
@@ -106,7 +102,7 @@ def _ids(objs: Sequence[Spec]) -> list[str]:
 
 
 def _lines(objs: Sequence[Spec], runs: Sequence[Spec]) -> list[str]:
-    return list(map(plan.dump, plan.lines(objs, set(_ids(runs)))))
+    return list(map(plan_text.dump, plan.lines(objs, set(_ids(runs)))))
 
 
 @contextmanager
@@ -164,60 +160,58 @@ def _blocked(*dependencies: Spec) -> JobBlockedResult:
     )
 
 
-# --- the manager, without sockets ----------------------------------------------
+# --- the manager's queue, fed by scripts' runs -----------------------------------
 
 
 def _submit(
-    manager: Manager,
+    queue: Queue[str, str],
     objs: Sequence[Spec],
     *,
     backends: Sequence[LocalThreadWorkerBackend] = (CPU_POOL, GPU_POOL),
-    max_workers: int = 10,
     plan_path: Path | None = None,
-) -> tuple[_Script, Run]:
+) -> tuple[str, Run]:
     """Send ``objs`` as one more script would, placed by its own Run."""
     run, message = _new_run(objs, backends=backends, plan_path=plan_path)
-    script = _Script(
-        connection=cast(ServerConnection, None),
-        pools={key: LocalPool(max_workers=max_workers) for key in run.backends},
-    )
-    manager.scripts.append(script)
-    manager._add(script, message)
+    script = f"script{len(queue.plans)}"
+    queue.submit(script, message)
     return script, run
 
 
-def _manager(
+def _queue(
     objs: Sequence[Spec],
     *,
     backends: Sequence[LocalThreadWorkerBackend] = (CPU_POOL, GPU_POOL),
-    max_workers: int = 10,
-) -> Manager:
-    manager = Manager(url="ws://unused", manager_dir=None)
-    _submit(manager, objs, backends=backends, max_workers=max_workers)
-    return manager
+) -> Queue[str, str]:
+    queue: Queue[str, str] = Queue()
+    _submit(queue, objs, backends=backends)
+    return queue
+
+
+_workers = count()
 
 
 def _lease(
-    manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL
-) -> _Lease | None:
-    return manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
+    queue: Queue[str, str], backend: LocalThreadWorkerBackend = CPU_POOL
+) -> Job | None:
+    return queue.hand_out(f"w{next(_workers)}", backend.pool_key)
 
 
-def _leased(manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL) -> _Lease:
-    lease = _lease(manager, backend)
-    assert lease is not None
-    return lease
+def _leased(
+    queue: Queue[str, str], backend: LocalThreadWorkerBackend = CPU_POOL
+) -> Job:
+    job = _lease(queue, backend)
+    assert job is not None
+    return job
 
 
-def _end(manager: Manager, lease: _Lease, result: JobResult | None = None) -> None:
-    (worker,) = [w for w, held in manager.leases.items() if held is lease]
-    del manager.leases[worker]
-    manager._finish(lease, result or JobCompletedResult())
+def _end(queue: Queue[str, str], job: Job, result: JobResult | None = None) -> None:
+    (worker,) = [w for w, lease in queue.leases.items() if lease.job is job]
+    queue.finish(worker, result or JobCompletedResult())
 
 
-def _sent(manager: Manager) -> list[object]:
-    """What the manager has to send, with every job taking no time."""
-    outbox, manager.outbox = manager.outbox, []
+def _sent(queue: Queue[str, str]) -> list[object]:
+    """What the queue has to tell scripts, with every job taking no time."""
+    outbox, queue.outbox = queue.outbox, []
     return [
         message.model_copy(update={"seconds": 0.0})
         if isinstance(message, ResultMessage)
@@ -226,9 +220,9 @@ def _sent(manager: Manager) -> list[object]:
     ]
 
 
-def _answer(manager: Manager, script: _Script, run: Run) -> None:
-    """Pass what the manager sent on to the script's run, and its replies back."""
-    outbox, manager.outbox = manager.outbox, []
+def _answer(queue: Queue[str, str], script: str, run: Run) -> None:
+    """Pass what the queue has to tell the script on to its run, and its replies back."""
+    outbox, queue.outbox = queue.outbox, []
     for _, message in outbox:
         match message:
             case ResultMessage():
@@ -241,11 +235,11 @@ def _answer(manager: Manager, script: _Script, run: Run) -> None:
         for reply in replies:
             match reply:
                 case SubmitMessage():
-                    manager._add(script, reply)
+                    queue.submit(script, reply)
                 case RerunMessage():
-                    manager._rerun(script, reply)
+                    queue.rerun(script, reply)
                 case GaveUpMessage():
-                    manager._gave_up(script, reply)
+                    queue.gave_up(script, reply)
 
 
 @dataclass(slots=True)
@@ -415,20 +409,6 @@ class PerGpuBatchedLeaf(furu.Spec):
         return [obj.value for obj in objs]
 
 
-class ThrottledBatchedRunLeaf(furu.Spec):
-    value: int
-    throttle = Throttle(max_running=2)
-
-    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
-        return (None, 3)
-
-    @furu.batched(batch_key)
-    def create(
-        objs: list["ThrottledBatchedRunLeaf"], directory: furu.SpecDirectory
-    ) -> list[int]:
-        return [obj.value for obj in objs]
-
-
 class RunParent(Spec):
     child: RunLeaf
 
@@ -524,19 +504,6 @@ class ReturnsLeaves(Spec):
 
     def create(self) -> int:
         return len(self.leaves)
-
-
-class SweepLeaf(furu.Spec):
-    """A batch of these is as large as its worker has CPUs."""
-
-    value: int
-
-    @furu.batched(lambda _, worker: ("sweep", worker.cpus))
-    def create(objs: list["SweepLeaf"], directory: furu.SpecDirectory) -> list[int]:
-        return [obj.value for obj in objs]
-
-
-TINY, SMALL, LARGE = (_pool(Worker(cpus=cpus)) for cpus in (2, 5, 20))
 
 
 # --- the script's run ----------------------------------------------------------
@@ -860,109 +827,31 @@ def test_found_specs_that_cannot_be_placed_fail_the_run(
         run.result(_result([lazy], _blocked(*found())))
 
 
-# --- the manager's queue -------------------------------------------------------
+# --- placing specs and queueing them -------------------------------------------
 
 
 def test_demand_caps_at_max_workers_and_filters_by_requirements() -> None:
     objs = [RunLeaf(value=1), RunLeaf(value=2), GpuLeaf(value=3)]
 
+    queue = _queue(objs)
     for max_workers, cpu_demand in ((10, 2), (1, 1), (0, 0)):
-        manager = _manager(objs, max_workers=max_workers)
-        assert manager.demand(CPU_POOL.pool_key) == cpu_demand
-    assert _manager(objs).demand(GPU_POOL.pool_key) == 3
-
-
-def test_demand_counts_busy_workers_and_drops_to_zero_without_scripts() -> None:
-    manager = _manager([RunLeaf(value=1), RunLeaf(value=2)])
-    assert _lease(manager) is not None
-
-    assert manager.demand(CPU_POOL.pool_key) == 2
-
-    manager.scripts.clear()
-    assert manager.demand(CPU_POOL.pool_key) == 0
-
-
-def test_throttle_limits_leases_and_demand() -> None:
-    limited = [LimitedRunLeaf(value=value) for value in range(3)]
-    uncapped = RunLeaf(value=10)
-    manager = _manager([*limited, uncapped])
-
-    assert manager.demand(CPU_POOL.pool_key) == 3
-
-    first, second, third = (_leased(manager) for _ in range(3))
-    assert first.specs + second.specs == _ids(limited[:2])
-    assert third.specs == [uncapped.object_id]
-    # Busy workers still count; none more can start.
-    assert manager.demand(CPU_POOL.pool_key) == 3
-    assert _lease(manager) is None
-
-    _end(manager, first)
-    assert _leased(manager).specs == [limited[2].object_id]
-
-
-def test_specs_with_one_batch_key_are_one_job_up_to_the_cap() -> None:
-    first_x = BatchedRunLeaf(value=1, group="x", cap=2)
-    only_y = BatchedRunLeaf(value=2, group="y", cap=2)
-    more_x = [BatchedRunLeaf(value=value, group="x", cap=2) for value in (3, 4)]
-    manager = _manager([first_x, only_y, *more_x])
-
-    assert manager.demand(CPU_POOL.pool_key) == 3
-    lease = _leased(manager)
-    assert lease.specs == _ids([first_x, more_x[0]])
-    assert lease.job.log == log_path_in(working_folder([first_x, more_x[0]]))
-    assert _leased(manager).specs == [more_x[1].object_id]
-    assert _leased(manager).specs == [only_y.object_id]
-    assert _lease(manager) is None
+        assert queue.demand(CPU_POOL.pool_key, max_workers) == cpu_demand
+    assert queue.demand(GPU_POOL.pool_key, 10) == 3
 
 
 def test_batch_cap_follows_the_leasing_worker() -> None:
     one_gpu, four_gpus, eight_gpus = (_pool(Worker(gpus=gpus)) for gpus in (1, 4, 8))
-    manager = _manager(
+    queue = _queue(
         [GpuBatchedLeaf(value=value) for value in range(10)],
         backends=(one_gpu, four_gpus, eight_gpus),
-        max_workers=20,
     )
 
-    assert manager.demand(one_gpu.pool_key) == 10
-    assert manager.demand(eight_gpus.pool_key) == 2
-    assert manager.demand(four_gpus.pool_key) == 0
+    assert queue.demand(one_gpu.pool_key, 20) == 10
+    assert queue.demand(eight_gpus.pool_key, 20) == 2
+    assert queue.demand(four_gpus.pool_key, 20) == 0
 
-    assert len(_leased(manager, eight_gpus).specs) == 8
-    assert len(_leased(manager, one_gpu).specs) == 1
-
-
-def test_a_batch_holds_specs_from_one_plan_and_a_throttle_counts_batches(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    manager = Manager(url="ws://unused", manager_dir=None)
-    scripts = [
-        _submit(
-            manager,
-            [ThrottledBatchedRunLeaf(value=value) for value in values],
-            plan_path=_plan(f"e{index}"),
-        )[0]
-        for index, values in enumerate(((0, 1), (2, 3), (4,)))
-    ]
-
-    with _captured_furu_logs(caplog):
-        first, second = _leased(manager), _leased(manager)
-
-    assert len(first.specs) == len(second.specs) == 2
-    assert [first.job.plan, second.job.plan] == [_plan("e0"), _plan("e1")]
-    # A worker could take three. It is said once for each pair of plans, to
-    # the script and in the manager's own log.
-    warned = manager.outbox
-    assert [script for script, _ in warned] == [scripts[0], scripts[0], scripts[1]]
-    reasons = [
-        message.reason for _, message in warned if isinstance(message, WarningMessage)
-    ]
-    assert len(reasons) == 3 and all("smaller batch" in reason for reason in reasons)
-    assert caplog.messages == reasons
-    # The throttle counts the two running batches across all scripts.
-    assert manager.demand(CPU_POOL.pool_key) == 2
-    assert _lease(manager) is None
-    _end(manager, first)
-    assert len(_leased(manager).specs) == 1
+    assert len(_leased(queue, eight_gpus).specs) == 8
+    assert len(_leased(queue, one_gpu).specs) == 1
 
 
 def test_a_spec_goes_to_the_pools_that_can_run_it() -> None:
@@ -976,15 +865,15 @@ def test_a_spec_goes_to_the_pools_that_can_run_it() -> None:
         worker=Worker(memory_gib=16),
         accepts=lambda spec: isinstance(spec, MemoryLeaf),
     )
-    manager = _manager(
+    queue = _queue(
         [cpu_leaf, gpu_leaf, memory_leaf], backends=(CPU_POOL, gpu_pool, reserved)
     )
 
-    assert _leased(manager, reserved).specs == [memory_leaf.object_id]
-    assert _lease(manager, reserved) is None
-    assert _leased(manager, gpu_pool).specs == [cpu_leaf.object_id]
-    assert _leased(manager, gpu_pool).specs == [gpu_leaf.object_id]
-    assert _lease(manager, CPU_POOL) is None
+    assert _leased(queue, reserved).specs == [memory_leaf.object_id]
+    assert _lease(queue, reserved) is None
+    assert _leased(queue, gpu_pool).specs == [cpu_leaf.object_id]
+    assert _leased(queue, gpu_pool).specs == [gpu_leaf.object_id]
+    assert _lease(queue, CPU_POOL) is None
 
 
 def test_a_spec_waits_for_what_its_line_points_to_and_its_job_holds_what_its_fields_reach() -> (
@@ -993,17 +882,17 @@ def test_a_spec_waits_for_what_its_line_points_to_and_its_job_holds_what_its_fie
     leaves = tuple(RunLeaf(value=value) for value in range(30))
     sharing = [SharesLeaves(name=name, leaves=leaves) for name in "ab"]
     returning = ReturnsLeaves(count=2)
-    manager = _manager([*sharing, returning])
+    queue = _queue([*sharing, returning])
 
     jobs = {}
-    while (lease := _lease(manager)) is not None:
+    while (lease := _lease(queue)) is not None:
         (spec,) = lease.specs
         # Everything it waits for is finished by now.
         assert all(
-            key not in manager.dag.nodes for key in plan.holds(lease.job.lines[0])
+            key not in queue.dag.nodes for key in plan_text.holds(lease.lines[0])
         )
-        jobs[spec] = {plan.key(json.loads(line)) for line in lease.job.lines}
-        _end(manager, lease)
+        jobs[spec] = {plan_text.key(json.loads(line)) for line in lease.lines}
+        _end(queue, lease)
 
     assert list(jobs)[32:] == _ids([*sharing, returning])
     # The shared tuple's line and the lines of the specs in it.
@@ -1013,194 +902,35 @@ def test_a_spec_waits_for_what_its_line_points_to_and_its_job_holds_what_its_fie
     assert jobs[returning.object_id] == {returning.object_id}
 
 
-def test_a_spec_that_two_launches_ask_for_is_queued_once_under_the_first() -> None:
-    leaf, other = RunLeaf(value=1), RunLeaf(value=2)
-    manager = Manager(url="ws://unused", manager_dir=None)
-    first, _ = _submit(manager, [leaf, other])
-    second, _ = _submit(manager, [RunParent(child=leaf), other], plan_path=_plan("e2"))
-
-    lease = _leased(manager)
-    assert lease.specs == [leaf.object_id] and lease.job.plan == _plan()
-    _end(manager, lease)
-    assert [script for script, _ in manager.outbox] == [first, second]
-    assert _sent(manager) == 2 * [
-        _result([leaf], JobCompletedResult()).model_copy(update={"seconds": 0.0})
-    ]
-
-    # The first launch leaves: what only it asked for goes with it.
-    manager._drop(first)
-    running = [_leased(manager), _leased(manager)]
-    assert sorted(lease.specs for lease in running) == sorted(
-        [[other.object_id], [RunParent(child=leaf).object_id]]
-    )
-    # Nobody asks for the two that run any more. They finish all the same.
-    manager._drop(second)
-    assert not manager.placed
-    for lease in running:
-        _end(manager, lease)
-    assert not manager.dag.nodes and _sent(manager) == []
-
-
-def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happens() -> (
-    None
-):
-    leaf = RunLeaf(value=1)
-    parent = RunParent(child=leaf)
-    failed = JobFailedResult(error="boom")
-    manager = Manager(url="ws://unused", manager_dir=None)
-    script, _ = _submit(manager, [parent])
-
-    _end(manager, _leased(manager), failed)
-    assert _sent(manager) == [
-        _result([leaf], failed).model_copy(update={"seconds": 0.0})
-    ]
-    assert _lease(manager) is None
-    manager._rerun(script, RerunMessage(specs=[leaf.object_id]))
-    _end(manager, _leased(manager), failed)
-    gave_up = _gave_up([leaf], "boom")
-    manager._gave_up(script, gave_up)
-    assert _sent(manager)[1:] == [
-        gave_up.model_copy(update={"blocked": [parent.object_id]})
-    ]
-    assert _lease(manager) is None and manager.demand(CPU_POOL.pool_key) == 0
-
-    # Another launch that asks for the spec gives it a fresh go. What waited
-    # for it does not run for the script that was told it would not.
-    _submit(manager, [leaf], plan_path=_plan("e2"))
-    _end(manager, _leased(manager))
-    assert _lease(manager) is None and not manager.placed
-
-
-def test_each_script_answers_for_its_own_specs_of_a_batch_that_did_not_complete() -> (
-    None
-):
-    objs = [BatchedRunLeaf(value=value) for value in range(2)]
-    manager = Manager(url="ws://unused", manager_dir=None)
-    first, _ = _submit(manager, objs)
-    others = [
-        _submit(manager, [obj], plan_path=_plan(f"e{index}"))[0]
-        for index, obj in enumerate(objs, start=2)
-    ]
-    manager._drop(first)
-
-    _end(manager, _leased(manager), JobFailedResult(error="boom"))
-    assert [script for script, _ in manager.outbox] == others
-    manager._rerun(others[0], RerunMessage(specs=_ids(objs[:1])))
-    assert _leased(manager).specs == _ids(objs[:1])
-    # The other spec waits for the script that answers for it.
-    assert _lease(manager) is None
-    manager.outbox.clear()
-    gave_up = _gave_up(objs[1:], "boom")
-    manager._gave_up(others[1], gave_up)
-    assert manager.outbox == [(others[1], gave_up)]
-
-
 def test_a_blocked_attempt_reruns_once_what_it_found_is_built() -> None:
     lazy, found = RunLazyParent(value=2), RunLeaf(value=2)
-    manager = Manager(url="ws://unused", manager_dir=None)
-    script, run = _submit(manager, [lazy])
+    queue: Queue[str, str] = Queue()
+    script, run = _submit(queue, [lazy])
     blocked = _blocked(found)
 
-    _end(manager, _leased(manager), blocked)
-    _answer(manager, script, run)
-    lease = _leased(manager)
-    assert lease.specs == [found.object_id] and lease.job.plan == blocked.plan
-    assert _lease(manager) is None
-    _end(manager, lease)
-    _answer(manager, script, run)
-    again = _leased(manager)
-    assert again.specs == [lazy.object_id] and again.job.plan == _plan()
+    _end(queue, _leased(queue), blocked)
+    _answer(queue, script, run)
+    lease = _leased(queue)
+    assert lease.specs == [found.object_id] and lease.plan == blocked.plan
+    assert _lease(queue) is None
+    _end(queue, lease)
+    _answer(queue, script, run)
+    again = _leased(queue)
+    assert again.specs == [lazy.object_id] and again.plan == _plan()
 
     # It now finds a spec missing whose create() asks for it in turn.
     cycle = RunLazyParent(value=3)
-    _end(manager, again, _blocked(cycle))
-    _answer(manager, script, run)
-    _end(manager, _leased(manager), _blocked(lazy))
-    run.result(cast(ResultMessage, manager.outbox.pop()[1]))
-    manager._rerun(script, RerunMessage(specs=_ids([cycle]), after=_ids([lazy])))
-    assert _sent(manager) == [
+    _end(queue, again, _blocked(cycle))
+    _answer(queue, script, run)
+    _end(queue, _leased(queue), _blocked(lazy))
+    run.result(cast(ResultMessage, queue.outbox.pop()[1]))
+    queue.rerun(script, RerunMessage(specs=_ids([cycle]), after=_ids([lazy])))
+    assert _sent(queue) == [
         ErrorMessage(
             reason=f"dependency cycle: {cycle.object_id} asks for "
             f"{lazy.object_id}, which already waits for it"
         )
     ]
-
-
-def _stopped_sweep(count: int) -> tuple[Manager, list[str]]:
-    """A launch of ``count`` specs whose first 5 were a batch that stopped."""
-    specs = [SweepLeaf(value=value) for value in range(1, count + 1)]
-    manager = Manager(url="ws://unused", manager_dir=None)
-    script, _ = _submit(manager, specs, backends=(TINY, SMALL, LARGE))
-    lease = _leased(manager, SMALL)
-    _end(manager, lease, JobFailedResult(error="worker w0 disconnected"))
-    manager._rerun(script, RerunMessage(specs=lease.specs))
-    manager.outbox.clear()
-    return manager, _ids(specs)
-
-
-def _old_folder(ids: Sequence[str]) -> str:
-    """The working folder of the batch that stopped: specs 1 to 5."""
-    name = run_name([spec.rpartition(":")[2] for spec in ids[:5]])
-    return str(attempt_dir_in(SweepLeaf(value=1)._class_dir, name))
-
-
-@pytest.mark.parametrize(
-    ("count", "pool", "handed", "warns", "then"),
-    [
-        # 25 are unstarted: a worker of 20 gets 6 to 25, and the stopped batch
-        # stays whole.
-        (30, LARGE, range(6, 26), False, range(26, 31)),
-        # Only 3 are: it gets those and the stopped 5 as one batch of 8.
-        (8, LARGE, [6, 7, 8, 1, 2, 3, 4, 5], True, []),
-        # 18 are: it gets those and specs 1 and 2, and 3 to 5 are unstarted.
-        (23, LARGE, [*range(6, 24), 1, 2], True, [3, 4, 5]),
-        # Alone it goes out as it was, and continues in its folder.
-        (5, LARGE, range(1, 6), False, []),
-        # Too large for the worker that asks, it is cut.
-        (5, TINY, [1, 2], True, [3, 4, 5]),
-    ],
-)
-def test_a_worker_is_filled_with_unstarted_specs_then_stopped_batches(
-    count: int,
-    pool: LocalThreadWorkerBackend,
-    handed: Sequence[int],
-    warns: bool,
-    then: Sequence[int],
-) -> None:
-    manager, ids = _stopped_sweep(count)
-
-    lease = _leased(manager, pool)
-
-    assert lease.specs == [ids[number - 1] for number in handed]
-    warnings = _sent(manager)
-    assert len(warnings) == warns
-    for warning in warnings:
-        assert isinstance(warning, WarningMessage)
-        assert warning.reason.endswith(f"stays in attempts/: {_old_folder(ids)}")
-    # What a worker of 5 gets next: unstarted specs.
-    after = _lease(manager, SMALL)
-    assert (after.specs if after else []) == [ids[number - 1] for number in then]
-    assert _sent(manager) == []
-
-
-def test_a_new_manager_takes_up_the_working_folders_on_disk_once_their_lock_is_free(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(manager_module, "_IDLE_CHECK_INTERVAL_S", 0.0)
-    specs = [SweepLeaf(value=value) for value in range(4)]
-    # A batch that a worker of another manager opened, in its order.
-    started = [specs[2], specs[0]]
-    folder = working_folder(started)
-    folder.mkdir(parents=True)
-    events.start(folder, [spec._artifact_hash for spec in started], _plan(), _plan())
-
-    with lock(lock_path_in(folder.parent.parent, folder.name)):
-        manager = _manager(specs, backends=[SMALL])
-        assert _leased(manager, SMALL).specs == _ids([specs[1], specs[3]])
-        # Its worker is alive: nothing to hand out.
-        assert _lease(manager, SMALL) is None
-    assert _leased(manager, SMALL).specs == _ids(started)
-    assert _sent(manager) == []
 
 
 # --- the manager's server ------------------------------------------------------
@@ -1232,7 +962,7 @@ def _submit_over(manager: Manager, *objs: Spec) -> ClientConnection:
     connection.send(submit.model_dump_json())
     # Workers of a pool the manager has not started yet are turned away.
     deadline = time.monotonic() + 5
-    while len(manager.placed) < len(objs) and time.monotonic() < deadline:
+    while len(manager.queue.placed) < len(objs) and time.monotonic() < deadline:
         time.sleep(0.01)
     return connection
 
@@ -1273,7 +1003,9 @@ def test_job_round_trip_from_script_through_manager_to_worker() -> None:
         job = Job.model_validate_json(worker.recv(timeout=5))
         assert job.specs == [leaf.object_id]
         assert job.lines == [
-            plan.dump({"fields": {"value": 1}, "runs": True, "spec": leaf.object_id})
+            plan_text.dump(
+                {"fields": {"value": 1}, "runs": True, "spec": leaf.object_id}
+            )
         ]
         assert job.plan == _plan()
 
@@ -1469,7 +1201,7 @@ def test_run_fails_when_local_worker_crashes(
     def crashing_worker_loop(**_: object) -> None:
         raise RuntimeError("worker boom")
 
-    monkeypatch.setattr(worker_loop_module, "worker_loop", crashing_worker_loop)
+    monkeypatch.setattr(local_pool_module, "worker_loop", crashing_worker_loop)
 
     with pytest.raises(
         RuntimeError, match="local worker thread crashed: RuntimeError: worker boom"

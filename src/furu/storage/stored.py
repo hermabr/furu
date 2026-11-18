@@ -20,8 +20,8 @@ from furu._batched import is_batched
 from furu.code_trace import versions
 from furu.dependencies import record_loaded
 from furu.migration.schema import check_defaults
-from furu.result.bundle import load_result_bundle
-from furu.storage._layout import (
+from furu.protocol.events import parse_events
+from furu.protocol.layout import (
     BATCH,
     FIXED,
     data_dir_in,
@@ -30,7 +30,7 @@ from furu.storage._layout import (
     run_dir_in,
     runs_dir_in,
 )
-from furu.storage.events import parse_events
+from furu.result.bundle import load_result_bundle
 
 if TYPE_CHECKING:
     from furu.core import Spec

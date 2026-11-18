@@ -15,12 +15,12 @@ from runs import run_of
 
 import furu
 from furu import Added, MovedFrom, Renamed, Spec, plan
+from furu.backends.local import LocalThreadWorkerBackend
 from furu.config import get_config
 from furu.execution.launch import stage_table
 from furu.migration import schema
 from furu.migration.steps import MigrationError, naming
-from furu.storage._layout import schema_path_in
-from furu.worker.backends.local import LocalThreadWorkerBackend
+from furu.protocol.layout import schema_path_in
 
 _runs = itertools.count()
 

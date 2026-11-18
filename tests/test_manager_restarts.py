@@ -19,13 +19,13 @@ import pytest
 from runs import events_of
 
 import furu
-import furu.execution.manager as manager_module
 import furu.execution.run_on_workers as run_on_workers_module
+import furu.manager.manager as manager_module
 from furu import Spec
+from furu.backends.local import LocalThreadWorkerBackend
 from furu.config import get_config
-from furu.execution.manager import Manager
+from furu.manager.manager import Manager
 from furu.testing import override_config
-from furu.worker.backends.local import LocalThreadWorkerBackend
 
 _serve = Manager.serve
 
@@ -141,8 +141,8 @@ from contextlib import nullcontext
 
 import furu
 import furu.provenance
-from furu.execution.manager import Manager
-from furu.worker.backends.local import LocalThreadWorkerBackend
+from furu.manager.manager import Manager
+from furu.backends.local import LocalThreadWorkerBackend
 from test_manager_restarts import GatedLeaf
 
 furu.provenance._require_pushed_code = False
@@ -176,7 +176,7 @@ def test_ctrl_c_cancels_running_jobs_and_sigterm_leaves_them(
             _wait_until(lambda: not manager.scripts)
             if finishes:
                 (tmp_path / "open").touch()
-            _wait_until(lambda: not manager.leases)
+            _wait_until(lambda: not manager.queue.leases)
         finally:
             script.kill()
     if finishes:

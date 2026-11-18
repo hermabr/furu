@@ -41,10 +41,11 @@ from furu.core import Spec
 from furu.dependencies import returned_attributes
 from furu.execution.launch import IGNORE_STORED
 from furu.plan import Line
+from furu.protocol import plan_text
+from furu.protocol.messages import ProcessSettings
 from furu.provenance import SubmitProvenance, worker
 from furu.spec_metadata import Metadata
 from furu.utils import _hash_dict_deterministically
-from furu.worker.messages import ProcessSettings
 
 
 def _process(metadata: Metadata) -> Line:
@@ -80,7 +81,7 @@ def _described(running: Sequence[Spec], shared: list[Line]) -> Iterator[Line]:
         if "value" in line:
             values[line["value"]] = line
         elif line.get("runs"):
-            for fingerprint in map(plan.pointer, line["fields"].values()):
+            for fingerprint in map(plan_text.pointer, line["fields"].values()):
                 if fingerprint in values:
                     shared.append(values.pop(fingerprint))
         yield line
@@ -103,18 +104,18 @@ def launch(
         header["ignore_stored"] = ignore
     folder = get_config().directories.anchored().provenance
     folder.mkdir(parents=True, exist_ok=True)
-    file = plan.File(folder / f"launch-{plan_path.stem}")
+    file = plan_text.File(folder / f"launch-{plan_path.stem}")
     file.add([header, *shared])
     file.close()
     return lines
 
 
 # The file this process created in each provenance folder.
-_own: dict[Path, plan.File] = {}
+_own: dict[Path, plan_text.File] = {}
 os.register_at_fork(after_in_child=_own.clear)
 
 
-def own() -> plan.File:
+def own() -> plan_text.File:
     """This process's file in provenance/, which begins with a line about the process.
 
     It is created the first time the process starts an attempt, so a process
@@ -122,7 +123,7 @@ def own() -> plan.File:
     """
     folder = get_config().directories.anchored().provenance
     if (file := _own.get(folder)) is None:
-        file = _own[folder] = plan.File.new(folder)
+        file = _own[folder] = plan_text.File.new(folder)
         file.add([{"worker": worker()}])
     return file
 

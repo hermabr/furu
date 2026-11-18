@@ -15,14 +15,14 @@ import pytest
 from runs import ends_of, events_of, fixed_run, run_of
 
 import furu
-from furu import Spec, plan
+from furu import Spec
 from furu.config import get_config
 from furu.core import working_folder
 from furu.dependencies import creating
 from furu.execution import load_or_create
 from furu.locking import is_active_lock
-from furu.storage import stored
-from furu.storage._layout import (
+from furu.protocol import plan_text
+from furu.protocol.layout import (
     FIXED,
     attempts_dir_in,
     events_path_in,
@@ -31,6 +31,7 @@ from furu.storage._layout import (
     run_name,
     runs_dir_in,
 )
+from furu.storage import stored
 
 
 class Leaf(Spec):
@@ -378,7 +379,7 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
     assert Path(record).parent == get_config().directories.anchored().provenance
     assert plans[0] == plans[1] != plans[2]
     listed = {"fields": {}, "runs": True, "spec": spec.object_id}
-    assert plan.read(plans[0])[1:] == plan.read(plans[2])[1:] == [listed]
+    assert plan_text.read(plans[0])[1:] == plan_text.read(plans[2])[1:] == [listed]
     # The leaf its create() asked for is listed in a file of the process that
     # ran the create(), in the folder of the launch.
     leaf = Leaf(n=7)

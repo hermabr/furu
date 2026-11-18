@@ -29,8 +29,8 @@ from typing import TYPE_CHECKING, Any
 from furu._declared_types import cached_type_hints
 from furu.locking import lock, read_text_or_none
 from furu.migration.steps import MigrationError, describe, naming, stored_name
+from furu.protocol.layout import schema_lock_path_in, schema_path_in
 from furu.serializer.artifact import to_json
-from furu.storage._layout import schema_lock_path_in, schema_path_in
 from furu.utils import JsonValue, _stable_json_dump
 
 if TYPE_CHECKING:

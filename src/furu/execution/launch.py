@@ -41,8 +41,8 @@ from furu.migration.steps import (
     naming,
     stored_name,
 )
+from furu.protocol.layout import REMEMBERED
 from furu.serializer.artifact import remembered
-from furu.storage._layout import REMEMBERED
 from furu.storage.stored import Stored
 
 logger = get_logger("run")

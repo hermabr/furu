@@ -6,6 +6,7 @@ a worker sends ``hello``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -13,9 +14,22 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from furu.config import _Config
 from furu.logging import _group_label
-from furu.snapshot import CodeLocation
+from furu.protocol.layout import attempt_dir_in, log_path_in, run_name
 from furu.spec_metadata import Metadata, Reuse
-from furu.storage._layout import attempt_dir_in, log_path_in, run_name
+
+# Where a worker tells its child the tree that traced code paths are relative to.
+REPO_ROOT_ENV_VAR = "_FURU_REPO_ROOT"
+
+
+@dataclass(frozen=True, slots=True)
+class CodeLocation:
+    """The code a job runs, and the Python that runs it."""
+
+    python: Path
+    project_root: Path
+    cwd: Path
+    repo_root: Path  # traced code paths are relative to it
+    checkout: Path  # where the launch was started: furu.submitting_repo_root()
 
 
 class _Message(BaseModel):

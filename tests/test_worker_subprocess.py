@@ -28,18 +28,11 @@ from subprocess_objects import (
 
 import furu
 from furu import Metadata, Spec, plan
+from furu.backends.local import LocalThreadWorkerBackend
 from furu.config import _project_anchor, get_config
-from furu.provenance import (
-    EnvironmentIdentity,
-    GitIdentity,
-    SubmitContext,
-    SubmitProvenance,
-)
-from furu.snapshot import CodeLocation
-from furu.testing import override_config
-from furu.worker.backends.local import LocalThreadWorkerBackend
-from furu.worker.execute import ChildSlot
-from furu.worker.messages import (
+from furu.protocol import plan_text
+from furu.protocol.messages import (
+    CodeLocation,
     Job,
     JobBlockedResult,
     JobCompletedResult,
@@ -47,6 +40,15 @@ from furu.worker.messages import (
     JobResult,
     ProcessSettings,
 )
+from furu.provenance import (
+    EnvironmentIdentity,
+    GitIdentity,
+    SubmitContext,
+    SubmitProvenance,
+)
+from furu.snapshot import code_from_snapshot, code_here
+from furu.testing import override_config
+from furu.worker.execute import ChildSlot
 
 
 @pytest.fixture
@@ -61,7 +63,7 @@ def child_slot() -> Iterator[ChildSlot]:
 def _job(objs: list[Spec], *, code: CodeLocation | None = None) -> Job:
     return Job(
         specs=[obj.object_id for obj in objs],
-        lines=list(map(plan.dump, plan.lines(objs))),
+        lines=list(map(plan_text.dump, plan.lines(objs))),
         plan=get_config().directories.anchored().plans / "e1.plan",
         class_dir=objs[0]._class_dir,
         execution_log=get_config().directories.anchored().executions
@@ -69,7 +71,7 @@ def _job(objs: list[Spec], *, code: CodeLocation | None = None) -> Job:
         / "execution.log",
         process=ProcessSettings.from_metadata(objs[0]._metadata),
         config=get_config().anchored(),
-        code=code or CodeLocation.here(),
+        code=code or code_here(),
     )
 
 
@@ -107,7 +109,7 @@ def test_subprocess_environment_override_is_visible_in_child(
 
     # The child's own record begins with a line about it, and the run's start
     # event names the file.
-    record, finished = plan.read(Path(events_of(leaf)[1]["provenance"]))
+    record, finished = plan_text.read(Path(events_of(leaf)[1]["provenance"]))
     assert record["worker"].items() >= {"backend": "test", "pid": pid}.items()
     assert finished["run"] == leaf._artifact_hash
 
@@ -330,7 +332,7 @@ def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None
     # The worker saved the line of the spec it found in a plan file of its
     # own, in the launch's folder.
     found = {"fields": {"marker": 0}, "runs": True, "spec": dependency.object_id}
-    assert result.lines == [plan.dump(found)]
+    assert result.lines == [plan_text.dump(found)]
     assert result.plan.parent == get_config().directories.anchored().plans / "e1"
     assert ends_of(parent) == [
         {"outcome": "blocked", "waiting_on": [dependency.object_id]}
@@ -411,7 +413,7 @@ def test_one_worker_runs_jobs_from_two_repos_into_each_repo(tmp_path: Path) -> N
                     ),
                 )
                 result = slot.run(
-                    _job([leaf], code=CodeLocation.from_snapshot(provenance)),
+                    _job([leaf], code=code_from_snapshot(provenance)),
                     cancelled=threading.Event(),
                 )
                 assert isinstance(result, JobCompletedResult)

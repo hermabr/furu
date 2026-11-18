@@ -34,11 +34,7 @@ from furu.locking import lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
-from furu.resources import Worker
-from furu.serializer.artifact import field_fingerprints, is_default
-from furu.serializer.registry import Serializer
-from furu.spec_metadata import Metadata, Throttle
-from furu.storage._layout import (
+from furu.protocol.layout import (
     attempt_dir_in,
     attempts_dir_in,
     lock_path_in,
@@ -46,6 +42,10 @@ from furu.storage._layout import (
     run_name,
     version_dirs_in,
 )
+from furu.resources import Worker
+from furu.serializer.artifact import field_fingerprints, is_default
+from furu.serializer.registry import Serializer
+from furu.spec_metadata import Metadata, Throttle
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Stored, load_rows, stored_row
 from furu.utils import (
@@ -70,20 +70,15 @@ class Missing(Exception):
 
 
 _SPEC_CLASS_ATTRIBUTES = frozenset({"migrations", "throttle", "artifact_serializers"})
-_RESERVED_FIELD_NAMES = frozenset(
-    {
-        "create",
-        "metadata",
-        "done",
-        "directory",
-        "load_existing",
-        "delete",
-        "migrations",
-        "throttle",
-        "artifact_serializers",
-        "runs_on",
-    }
-)
+_RESERVED_FIELD_NAMES = _SPEC_CLASS_ATTRIBUTES | {
+    "create",
+    "metadata",
+    "done",
+    "directory",
+    "load_existing",
+    "delete",
+    "runs_on",
+}
 
 
 class Creates[T](Protocol):

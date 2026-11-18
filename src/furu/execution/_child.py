@@ -10,7 +10,8 @@ from furu.config import _Config, _set_config
 from furu.dependencies import _DependencyNotReady, creating
 from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import _configure_child_logging
-from furu.worker.messages import (
+from furu.protocol import plan_text
+from furu.protocol.messages import (
     Job,
     JobBlockedResult,
     JobCompletedResult,
@@ -29,7 +30,7 @@ def _execute(job: Job) -> JobResult:
     except _DependencyNotReady as exc:
         return JobBlockedResult(
             dependencies=[dep.object_id for dep in exc.dependencies],
-            lines=list(map(plan.dump, exc.lines)),
+            lines=list(map(plan_text.dump, exc.lines)),
             plan=exc.plan,
         )
     except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job

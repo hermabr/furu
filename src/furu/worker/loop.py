@@ -10,8 +10,8 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
 from furu.logging import get_logger
+from furu.protocol import messages
 from furu.utils import format_duration
-from furu.worker import messages
 from furu.worker.execute import ChildSlot
 
 type _Event = messages.ServerMessage | messages.JobResult | BaseException | None

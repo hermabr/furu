@@ -15,16 +15,16 @@ import furu
 from furu import code_trace
 from furu.code_trace import StaleCodeError, why_outdated
 from furu.config import _Config, get_config
-from furu.spec_metadata import Metadata
-from furu.storage._layout import (
+from furu.protocol.layout import (
     events_path_in,
     run_dir_in,
     scratch_dir_in,
     trace_path_in,
 )
+from furu.protocol.messages import JobCompletedResult, JobFailedResult
+from furu.spec_metadata import Metadata
 from furu.testing import override_config
 from furu.worker.execute import ChildSlot
-from furu.worker.messages import JobCompletedResult, JobFailedResult
 
 PLOTS = """\
 from typing import ClassVar
@@ -778,7 +778,7 @@ def test_a_dependency_refactor_returning_the_same_spec_keeps_the_result(
 def test_a_worker_calls_a_dependency_method_with_tracing_paused(
     repo: Repo, declared: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from furu.worker.backends.local import LocalThreadWorkerBackend
+    from furu.backends.local import LocalThreadWorkerBackend
 
     monkeypatch.setenv(
         "PYTHONPATH", f"{repo.root}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"
@@ -1427,7 +1427,7 @@ def test_child_slot_retries_stale_code_in_a_fresh_child(
 def test_worker_child_publishes_the_version_the_submitter_checks(
     repo: Repo, plots: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from furu.worker.backends.local import LocalThreadWorkerBackend
+    from furu.backends.local import LocalThreadWorkerBackend
 
     monkeypatch.setenv(
         "PYTHONPATH", f"{repo.root}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"

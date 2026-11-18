@@ -13,16 +13,17 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import ClientConnection, connect
 
 from furu import plan, record, remember
+from furu.backends.protocol import WorkerBackend
 from furu.config import get_config
 from furu.core import Spec
 from furu.execution.launch import ask, missing, stage_table
 from furu.execution.run import Run
 from furu.logging import _execution_log, get_logger
+from furu.protocol import plan_text
+from furu.protocol.layout import execution_log_path_in
+from furu.protocol.messages import CancelMessage, CodeLocation, Launch, LocalPool
 from furu.provenance import SubmitProvenance, capture_submit_provenance
-from furu.snapshot import CodeLocation
-from furu.storage._layout import execution_log_path_in
-from furu.worker.backends.protocol import WorkerBackend
-from furu.worker.messages import CancelMessage, Launch, LocalPool
+from furu.snapshot import code_from_snapshot, code_here
 
 logger = get_logger("run")
 
@@ -57,11 +58,11 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
         return
 
     provenance = capture_submit_provenance()
-    code = CodeLocation.here() if local == {True} else _prepare_snapshot(provenance)
+    code = code_here() if local == {True} else _prepare_snapshot(provenance)
     directories = get_config().directories.anchored()
     execution_log = execution_log_path_in(directories.executions / launch)
     launch_plan = directories.plans / f"{launch}.plan"
-    from furu.execution.manager import Manager
+    from furu.manager.manager import Manager
 
     in_process = (
         Manager.serve(
@@ -102,7 +103,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
                 lines = record.launch(launch_plan, objs, running, provenance)
             else:
                 ids = {obj.object_id for obj in running}
-                lines = list(map(plan.dump, plan.lines(running, ids)))
+                lines = list(map(plan_text.dump, plan.lines(running, ids)))
             first = False
             submit = run.submit(groups, lines, launch_plan)
             with (
@@ -125,7 +126,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
 
 def _prepare_snapshot(provenance: SubmitProvenance) -> CodeLocation:
     """Extract the pushed commit and build its venv once, before workers race."""
-    code = CodeLocation.from_snapshot(provenance)
+    code = code_from_snapshot(provenance)
     subprocess.run(
         ["uv", "sync", "--frozen", "--project", str(code.project_root)],
         env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},

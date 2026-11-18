@@ -1,7 +1,7 @@
 import enum
 import numbers
-from collections.abc import Callable, Collection, Generator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Collection, Mapping
+from contextlib import AbstractContextManager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from datetime import datetime
@@ -36,6 +36,7 @@ from furu.utils import (
     _stable_json_dump,
     fully_qualified_name,
     resolve_fully_qualified_name,
+    setting,
 )
 
 _RESERVED_DICT_KEYS = frozenset(
@@ -57,14 +58,9 @@ _remembered: ContextVar[dict[tuple[int, type, str], tuple[object, str]] | None] 
 _REMEMBERED = frozenset({list, tuple, dict, set, frozenset})
 
 
-@contextmanager
-def remembering() -> Generator[None]:
+def remembering() -> AbstractContextManager[None]:
     """Remember the fingerprints of large values for one launch."""
-    token = _remembered.set({})
-    try:
-        yield
-    finally:
-        _remembered.reset(token)
+    return setting(_remembered, {})
 
 
 def remembered(value: object, cls: type, attribute: str) -> str | None:
@@ -278,12 +274,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             return {KINDMARKER: "datetime", VALUEMARKER: obj.isoformat()}
         case list() | tuple():
             items: JsonValue = [
-                to_json(
-                    x,
-                    declared_type=item_type,
-                    artifact_serializers=artifact_serializers,
-                    nested=nested,
-                )
+                to_json(x, item_type, artifact_serializers, nested)
                 for x, item_type in zip(obj, item_declared_types(declared_type))
             ]
             if isinstance(obj, list):
@@ -295,12 +286,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 KINDMARKER: "set" if isinstance(obj, set) else "frozenset",
                 VALUEMARKER: sorted(
                     (
-                        to_json(
-                            x,
-                            declared_type=element_type,
-                            artifact_serializers=artifact_serializers,
-                            nested=nested,
-                        )
+                        to_json(x, element_type, artifact_serializers, nested)
                         for x in obj
                     ),
                     key=_stable_json_dump,
@@ -310,10 +296,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             value_type = child_declared_type(declared_type, None)
             return {
                 assert_correct_dict_key(k): to_json(
-                    v,
-                    declared_type=value_type,
-                    artifact_serializers=artifact_serializers,
-                    nested=nested,
+                    v, value_type, artifact_serializers, nested
                 )
                 for k, v in obj.items()
             }
@@ -335,10 +318,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 CLASSMARKER: fully_qualified_name(model_cls),
                 FIELDSMARKER: {
                     k: to_json(
-                        getattr(obj, k),
-                        declared_type=hints.get(k, Any),
-                        artifact_serializers=artifact_serializers,
-                        nested=nested,
+                        getattr(obj, k), hints.get(k, Any), artifact_serializers, nested
                     )
                     for k in model_fields
                 },

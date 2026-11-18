@@ -37,12 +37,8 @@ from furu.execution.launch import missing as missing_under
 from furu.locking import lock
 from furu.logging import _group_label, _log_scope, get_logger
 from furu.migration.schema import check_defaults, record_nested_names
-from furu.provenance import _require_uv, capture_submit_provenance
-from furu.resources import Worker
-from furu.result.bundle import _save_result_bundle
-from furu.serializer.artifact import remembering
-from furu.storage import events
-from furu.storage._layout import (
+from furu.protocol import events
+from furu.protocol.layout import (
     FIXED,
     attempts_dir_in,
     data_dir_in,
@@ -55,6 +51,10 @@ from furu.storage._layout import (
     trace_log_path_in,
     trace_path_in,
 )
+from furu.provenance import _require_uv, capture_submit_provenance
+from furu.resources import Worker
+from furu.result.bundle import _save_result_bundle
+from furu.serializer.artifact import remembering
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Row, Stored, load_rows, stored_row, why_rerun
 from furu.utils import atomic_write_text, format_duration
@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from _typeshed import DataclassInstance
     from pydantic import BaseModel
 
-    from furu.worker.backends.protocol import WorkerBackend
+    from furu.backends.protocol import WorkerBackend
 
 type HasLock = Callable[[], bool]
 
@@ -109,35 +109,22 @@ def _recording(
             yield run, loaded
 
 
-@overload
-def _load_or_create[T](
-    tree: Creates[T], *, on: Sequence[WorkerBackend] | None = None, load: bool = True
-) -> T: ...
-@overload
-def _load_or_create(
-    tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
-) -> Any: ...
 def _load_or_create(
     tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
 ) -> Any:
     # One launch: a large value that many of its specs hold is named once.
     with remembering():
+        objs = specs_in(tree)
         if on is not None:
             from furu.execution.run_on_workers import run_on_workers
 
-            run_on_workers(specs_in(tree), on)
+            run_on_workers(objs, on)
         _require_uv()
         if isinstance(tree, Spec):
             tree.logger.debug(".create called for %s", tree)
-        objs = specs_in(tree)
-        if any_under_creation():
-            outputs = _load_or_block(objs, load=load)
-        else:
-            outputs = _load_or_create_local(objs, load=load)
-    if not load:
-        return None
-    results = {obj.object_id: output for obj, output in zip(objs, outputs)}
-    return map_specs(lambda obj: results[obj.object_id], tree)
+        here = _load_or_block if any_under_creation() else _load_or_create_local
+        results = here(objs, load=load)
+    return map_specs(lambda obj: results[obj.object_id], tree) if load else None
 
 
 def _ensure_group_result(objs: Sequence[Spec]) -> None:
@@ -283,7 +270,7 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_block(objs: list[Spec], *, load: bool) -> list[object]:
+def _load_or_block(objs: list[Spec], *, load: bool) -> dict[str, object]:
     """Load ``objs`` inside a create hook, or block that create if any are missing.
 
     Blocking aborts the hook; the caller builds the missing specs and reruns it
@@ -308,13 +295,13 @@ def _load_or_block(objs: list[Spec], *, load: bool) -> list[object]:
 
     found = cast(list[Row], rows)
     if load:
-        return load_rows(objs, found)
+        return dict(zip((obj.object_id for obj in objs), load_rows(objs, found)))
     for obj, row in zip(objs, found):
         record_loaded(row.run, [obj])
-    return []
+    return {}
 
 
-def _load_or_create_local(objs: list[Spec], *, load: bool) -> list[object]:
+def _load_or_create_local(objs: list[Spec], *, load: bool) -> dict[str, Any]:
     """Build what ``objs`` need in this process, then return their results.
 
     Runs the same graph as a worker run: a create that blocks on missing specs
@@ -337,12 +324,9 @@ def _load_or_create_local(objs: list[Spec], *, load: bool) -> list[object]:
         record.launch(launch_plan, objs, running, capture_submit_provenance())
         with creating(asked=stages):
             _run_in_process(dag, running, launch_plan)
-    if not load:
-        return []
     # Load the way a cache hit does, so the first run returns what every later
     # load will.
-    loaded = _load(objs)
-    return [loaded[obj.object_id] for obj in objs]
+    return _load(objs) if load else {}
 
 
 def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> None:

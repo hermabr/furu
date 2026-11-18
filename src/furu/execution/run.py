@@ -20,17 +20,15 @@ from websockets.sync.client import ClientConnection
 
 from furu import plan
 from furu._batched import batch_of
+from furu.backends.protocol import WorkerBackend, can_run
 from furu.config import get_config
 from furu.core import Spec, working_folder
 from furu.dag import why_stuck
 from furu.dependencies import missing_dependencies
 from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
-from furu.resources import Worker
-from furu.storage._layout import log_path_in
-from furu.utils import error_summary, format_duration
-from furu.worker.backends.protocol import WorkerBackend, can_run
-from furu.worker.messages import (
+from furu.protocol.layout import log_path_in
+from furu.protocol.messages import (
     Batch,
     ErrorMessage,
     GaveUpMessage,
@@ -47,6 +45,8 @@ from furu.worker.messages import (
     WarningMessage,
     manager_message_adapter,
 )
+from furu.resources import Worker
+from furu.utils import error_summary, format_duration
 
 logger = get_logger("run")
 

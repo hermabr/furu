@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furu.logging import get_logger
+from furu.protocol.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
-from furu.worker.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
-    from furu.execution.manager import Manager
+    from furu.manager.manager import Manager
 
 logger = get_logger("slurm")
 
@@ -45,14 +45,36 @@ _FINISHED_STATES = frozenset(
 )
 
 
-def _slurm(*argv: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        argv,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=_SLURM_COMMAND_TIMEOUT_S,
-    )
+def _slurm(*argv: str) -> str | None:
+    """Run a Slurm command; its output, or None once a warning says why there is none.
+
+    Whatever failed is tried again on the pool's next tick.
+    """
+    try:
+        result = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_SLURM_COMMAND_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("%s timed out", argv[0])
+        return None
+    if result.returncode != 0:
+        logger.warning("%s failed: %s", argv[0], result.stderr.strip())
+        return None
+    return result.stdout
+
+
+def _states(output: str, separator: str) -> dict[str, str]:
+    """Each job id on a line of Slurm's output, and the state in the field after it."""
+    states = {}
+    for line in output.splitlines():
+        job_id, _, rest = line.strip().partition(separator)
+        if job_id:
+            states[job_id] = rest.partition(separator)[0]
+    return states
 
 
 class SlurmWorkerPool:
@@ -190,26 +212,18 @@ class SlurmWorkerPool:
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
                 return
-            try:
-                result = _slurm(
-                    "sbatch",
-                    "--parsable",
-                    *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
-                    *self._sbatch_args,
-                    str(self._script_path),
-                )
-            except subprocess.TimeoutExpired:
-                # Slurm may have queued it anyway; such a worker still serves
-                # this pool, but goes uncounted until its idle timeout.
-                logger.warning("sbatch timed out; retrying on the next scale tick")
+            # One that timed out may be queued anyway; such a worker still
+            # serves this pool, but goes uncounted until its idle timeout.
+            submitted = _slurm(
+                "sbatch",
+                "--parsable",
+                *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
+                *self._sbatch_args,
+                str(self._script_path),
+            )
+            if submitted is None:
                 return
-            if result.returncode != 0:
-                logger.warning(
-                    "sbatch failed; retrying on the next scale tick: %s",
-                    result.stderr.strip(),
-                )
-                return
-            job_id = result.stdout.strip().split(";", maxsplit=1)[0]
+            job_id = submitted.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:
                 self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(to_spawn))
             else:
@@ -223,105 +237,55 @@ class SlurmWorkerPool:
             for job_id in reversed(self._job_ids)
             if active_job_states.get(job_id) == "PENDING"
         ][:excess]
-        if not to_cancel:
-            return
-        try:
-            result = _slurm("scancel", *to_cancel)
-        except subprocess.TimeoutExpired:
-            logger.warning("scancel timed out; retrying on the next scale tick")
-            return
-        if result.returncode != 0:
-            logger.warning(
-                "scancel failed; retrying on the next scale tick: %s",
-                result.stderr.strip(),
-            )
+        if not to_cancel or _slurm("scancel", *to_cancel) is None:
             return
         self._job_ids[:] = [
             job_id for job_id in self._job_ids if job_id not in set(to_cancel)
         ]
 
+    def _allocations(self) -> str:
+        return ",".join(sorted({job_id.partition("_")[0] for job_id in self._job_ids}))
+
     def _active_job_states(self) -> dict[str, str] | None:
+        """What squeue says of each worker; None when it cannot say."""
         if not self._job_ids:
             return {}
-
-        try:
-            result = _slurm(
-                "squeue",
-                "--noheader",
-                "--jobs",
-                ",".join(
-                    sorted({job_id.partition("_")[0] for job_id in self._job_ids})
-                ),
-                *(
-                    ("--array", "--format=%i %T")
-                    if self._use_job_arrays
-                    else ("--format=%A %T",)
-                ),
-            )
-        except subprocess.TimeoutExpired:
-            logger.warning("squeue timed out while checking slurm jobs")
-            return None
-        if result.returncode != 0:
-            logger.debug("squeue failed while checking slurm jobs: %s", result.stderr)
-            return None
-        states: dict[str, str] = {}
-        for line in result.stdout.splitlines():
-            job_id, _, state = line.strip().partition(" ")
-            if job_id:
-                states[job_id] = state
-        return states
+        output = _slurm(
+            "squeue",
+            "--noheader",
+            "--jobs",
+            self._allocations(),
+            *(
+                ("--array", "--format=%i %T")
+                if self._use_job_arrays
+                else ("--format=%A %T",)
+            ),
+        )
+        return None if output is None else _states(output, " ")
 
     def _task_states(self) -> dict[str, str]:
+        """What accounting says of each worker.
+
+        Its other lines, such as job steps and array tasks this pool did not
+        submit, are skipped.
+        """
         if not self._job_ids:
             return {}
-
-        known_job_ids = set(self._job_ids)
-        known_allocation_job_ids = {
-            job_id.partition("_")[0] for job_id in known_job_ids
+        output = _slurm(
+            "sacct",
+            "-X",
+            "--noheader",
+            "-o",
+            "JobID,State",
+            "--parsable2",
+            "-j",
+            self._allocations(),
+        )
+        return {
+            job_id: state.upper().split(maxsplit=1)[0].removesuffix("+")
+            for job_id, state in _states(output or "", "|").items()
+            if job_id in self._job_ids and state
         }
-        try:
-            result = _slurm(
-                "sacct",
-                "-X",
-                "--noheader",
-                "-o",
-                "JobID,State",
-                "--parsable2",
-                "-j",
-                ",".join(sorted(known_allocation_job_ids)),
-            )
-        except subprocess.TimeoutExpired:
-            logger.warning("sacct timed out while checking slurm jobs")
-            return {}
-        if result.returncode != 0:
-            logger.warning("sacct failed while checking slurm jobs: %s", result.stderr)
-            return {}
-
-        states: dict[str, str] = {}
-        for line in result.stdout.splitlines():
-            parts = line.split("|")
-            if len(parts) < 2:
-                logger.warning("ignoring malformed sacct line: %r", line)
-                continue
-            job_id, state = parts[0], parts[1]
-            allocation_job_id, separator, _step_id = job_id.partition(".")
-            if separator and allocation_job_id in known_job_ids:
-                continue
-            if job_id not in known_job_ids:
-                if self._use_job_arrays:
-                    array_allocation_job_id = allocation_job_id.partition("_")[0]
-                    if (
-                        "[" in job_id
-                        or job_id in known_allocation_job_ids
-                        or array_allocation_job_id in known_allocation_job_ids
-                    ):
-                        continue
-                logger.warning(
-                    "ignoring unexpected slurm job id from sacct: %r", job_id
-                )
-                continue
-            states[job_id] = state.upper().split(maxsplit=1)[0].removesuffix("+")
-        return states
 
     def _scale_loop(self) -> None:
         # A failed tick fails the scripts using the pool now, but the pool keeps

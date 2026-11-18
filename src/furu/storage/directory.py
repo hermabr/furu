@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-from furu.storage._layout import data_dir_in, scratch_dir_in
+from furu.protocol.layout import data_dir_in, scratch_dir_in
 
 
 @dataclass(frozen=True)
