@@ -5,7 +5,7 @@ import logging
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import make_dataclass
+from dataclasses import dataclass, make_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -331,6 +331,21 @@ def test_a_class_folder_is_recorded_before_its_first_create_runs() -> None:
     assert _schema_lines(spec) == [{"names": ["lemma"]}]
     # The launch stores nothing for a class none of whose specs it starts.
     assert not after._class_dir.exists()
+
+
+class _Sources:
+    @dataclass(frozen=True)
+    class Vimeo:  # inside another class: refused
+        clip: str
+
+
+def test_a_refused_dataclass_does_not_break_its_holder_for_the_process() -> None:
+    clip = _spec("Clip", source=Any)
+    youtube = _nested("Youtube", clip=str)
+
+    with pytest.raises(ValueError, match="nested classes"):
+        clip(source=_Sources.Vimeo(clip="b")).create()
+    clip(source=youtube(clip="a")).create()
 
 
 def test_a_nested_default_is_recorded_for_one_class_part_of_the_nested_class() -> None:
