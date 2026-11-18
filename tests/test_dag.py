@@ -113,7 +113,7 @@ def test_a_blocked_spec_waits_for_what_it_found_missing() -> None:
         dag.block(found, [parent])
     assert (
         str(cycle.value)
-        == "dependency cycle: Found:c:2 and Parent:c:1 wait for each other"
+        == "dependency cycle: Found:c:2 asks for Parent:c:1, which already waits for it"
     )
     dag.complete(found)
     assert list(dag.ready) == [parent]
