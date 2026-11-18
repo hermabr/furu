@@ -43,6 +43,7 @@ from furu.migration.steps import (
     stored_name,
 )
 from furu.serializer.artifact import remembered
+from furu.storage._layout import REMEMBERED
 from furu.storage.stored import Stored
 
 logger = get_logger("run")
@@ -233,6 +234,8 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
             folders = set()
         for folder in folders - explained:
             path = class_dir.parent / folder
+            if os.listdir(path) == [REMEMBERED]:
+                continue  # what dependency methods returned, and no result
             unexplained[f"{stored_name(cls)}:{folder}"].append(
                 f"{_stage(cls)}: {path} was {_stored(cls, schema.stored_names(path))}"
                 f", and this launch stores in {class_dir}"

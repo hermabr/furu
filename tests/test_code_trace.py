@@ -1,20 +1,15 @@
-import importlib
-import itertools
 import json
 import os
 import re
 import shutil
-import sys
 import threading
-import uuid
-from collections.abc import Generator
-from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
 from runs import ends_of, run_of
+from tracedrepo import Repo, fresh_process
 
 import furu
 from furu import code_trace
@@ -30,60 +25,6 @@ from furu.storage._layout import (
 from furu.testing import override_config
 from furu.worker.execute import ChildSlot
 from furu.worker.messages import JobCompletedResult, JobFailedResult
-
-# Source files get distinct mtimes in the past, so furu trusts that a module
-# imported before tracing started matches the file on disk, and every rewrite
-# invalidates bytecode and parse caches.
-_MTIMES = itertools.count(1_000_000_000)
-
-
-def _fresh_process() -> None:
-    """Forget which code versions this process found live: it decides once."""
-    code_trace._CHECKED.clear()
-
-
-@dataclass
-class Repo:
-    root: Path
-    package: str
-
-    def write(self, name: str, text: str) -> None:
-        path = self.root / self.package / name
-        path.write_text(text.replace("PKG", self.package), encoding="utf-8")
-        mtime = next(_MTIMES) * 1_000_000_000
-        os.utime(path, ns=(mtime, mtime))
-        _fresh_process()
-
-    def read(self, name: str) -> str:
-        text = (self.root / self.package / name).read_text(encoding="utf-8")
-        return text.replace(self.package, "PKG")
-
-    def edit(self, name: str, old: str, new: str) -> None:
-        text = self.read(name)
-        assert old in text, old
-        self.write(name, text.replace(old, new))
-
-    def load(self, name: str) -> ModuleType:
-        """Import the package's current code, as a fresh process would."""
-        for module in [m for m in sys.modules if m.split(".")[0] == self.package]:
-            del sys.modules[module]
-        code_trace._IMPORTED.clear()
-        importlib.invalidate_caches()
-        return importlib.import_module(f"{self.package}.{name.removesuffix('.py')}")
-
-
-@pytest.fixture
-def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Repo]:
-    root = tmp_path / "repo"
-    repo = Repo(root=root, package=f"traced_{uuid.uuid4().hex[:12]}")
-    (root / repo.package).mkdir(parents=True)
-    repo.write("__init__.py", "")
-    monkeypatch.setenv("_FURU_REPO_ROOT", str(root))
-    monkeypatch.syspath_prepend(str(root))
-    yield repo
-    for module in [m for m in sys.modules if m.split(".")[0] == repo.package]:
-        del sys.modules[module]
-
 
 PLOTS = """\
 from typing import ClassVar
@@ -407,7 +348,7 @@ def test_a_trace_that_cannot_be_read_is_written_again_by_the_next_publish(
     first = plots.LossPlot(name="a")
     first.create()
     trace_path_in(_version_dir(first)).write_text("")
-    _fresh_process()
+    fresh_process()
     assert not first.done
 
     plots.LossPlot(name="b").create()
@@ -443,7 +384,7 @@ def test_a_spec_under_two_live_versions_is_read_from_the_run_published_first(
     shutil.copytree(first, second)
     events = events_path_in(run_dir_in(second, plot._artifact_hash))
     events.write_text(re.sub(r"\d{4}-", "2999-", events.read_text()))
-    _fresh_process()
+    fresh_process()
 
     assert _version_dir(plot) == first
 
@@ -634,7 +575,7 @@ def test_delete_removes_runs_under_every_version_and_keeps_what_was_built_on_the
     assert other != built_on
 
     assert child.delete(mode="force")
-    _fresh_process()
+    fresh_process()
 
     for version in (built_on, other):
         assert sorted(path.name for path in version.iterdir()) == [
@@ -647,7 +588,7 @@ def test_delete_removes_runs_under_every_version_and_keeps_what_was_built_on_the
 
     # Without its trace.json the version cannot be checked.
     shutil.rmtree(built_on)
-    _fresh_process()
+    fresh_process()
 
     assert not parent.done
 
@@ -998,7 +939,7 @@ def test_reading_a_repo_file_warns_and_keeps_the_result(
 
     package = repo.package
     warning = (
-        f"create() read {package}/a.csv, {package}/b.csv, {package}/c.csv "
+        f"read {package}/a.csv, {package}/b.csv, {package}/c.csv "
         "and 3 more, which furu does not trace"
     )
     assert warning in caplog.text
@@ -1333,7 +1274,7 @@ def test_a_python_upgrade_reruns_and_says_so(
     assert _trace(plot)["python"] == code_trace._PYTHON
 
     monkeypatch.setattr(code_trace, "_PYTHON", "3.99")
-    _fresh_process()
+    fresh_process()
     assert not plot.done
     plot.create()
 
@@ -1375,6 +1316,84 @@ def test_code_run_by_a_thread_inside_create_is_traced(repo: Repo) -> None:
     repo.edit("threaded.py", "out.append(1)", "out.append(2)")
     assert not spec.done
     assert repo.load("threaded").Threaded().create() == 2
+
+
+TWO_THREADS = """\
+import threading
+
+import furu
+
+A_IN, B_IN, A_OUT = threading.Event(), threading.Event(), threading.Event()
+
+
+def helper():
+    return 2
+
+
+class A(furu.Spec[int]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        A_IN.set()
+        B_IN.wait(0.3)
+        return helper()
+
+
+class B(A):
+    def create(self) -> int:
+        B_IN.set()
+        A_OUT.wait(5)
+        return 7
+
+
+class Fixed(B):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="fixed")
+"""
+
+
+def test_a_traced_create_waits_for_the_one_another_thread_runs(repo: Repo) -> None:
+    repo.write("two.py", TWO_THREADS)
+    two = repo.load("two")
+    a, b = two.A(), two.B()
+
+    def second() -> None:
+        two.A_IN.wait(5)
+        b.create()
+
+    thread = threading.Thread(target=second)
+    thread.start()
+    assert a.create() == 2
+    two.A_OUT.set()
+    thread.join()
+
+    # B's create() started only when A's had returned, so each ran its own code.
+    file = f"{repo.package}/two.py"
+    assert "helper" in _trace(a)["code"][file]["ran"]
+    assert "helper" not in _trace(b)["code"][file]["ran"]
+    assert not code_trace.tracing()
+
+
+def test_a_fixed_create_on_another_thread_leaves_a_traced_one_recording(
+    repo: Repo,
+) -> None:
+    repo.write("two.py", TWO_THREADS)
+    two = repo.load("two")
+    a, fixed = two.A(), two.Fixed()
+
+    def second() -> None:
+        two.A_IN.wait(5)
+        fixed.create()
+
+    thread = threading.Thread(target=second)
+    thread.start()
+    assert a.create() == 2  # helper() runs while Fixed.create() does
+    two.A_OUT.set()
+    thread.join()
+
+    assert "helper" in _trace(a)["code"][f"{repo.package}/two.py"]["ran"]
+    assert not code_trace.tracing()
 
 
 def test_code_version_default_comes_from_config(

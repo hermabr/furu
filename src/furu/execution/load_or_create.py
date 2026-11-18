@@ -4,12 +4,12 @@ import secrets
 import shutil
 import time
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
-from furu import plan, record
+from furu import plan, record, remember
 from furu._batched import _BatchedHook, batch_of
 from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
@@ -18,6 +18,7 @@ from furu.code_trace import (
     Recording,
     Trace,
     build_trace,
+    paused,
     recording,
     why_not_resumable,
 )
@@ -27,6 +28,7 @@ from furu.dag import Dag, why_stuck
 from furu.dependencies import (
     _DependencyNotReady,
     any_under_creation,
+    checked,
     missing_dependencies,
     record_loaded,
     recording_loads,
@@ -56,7 +58,7 @@ from furu.storage._layout import (
     trace_path_in,
 )
 from furu.storage.directory import SpecDirectory
-from furu.storage.stored import Row, Stored, load_rows, why_rerun
+from furu.storage.stored import Row, Stored, load_rows, stored_row, why_rerun
 from furu.utils import atomic_write_text, format_duration
 
 if TYPE_CHECKING:
@@ -102,12 +104,14 @@ def _recording(
     """Note the specs whose results one create() call loads, and trace the call.
 
     Only a class that traces its code is traced, with the code versions of
-    what it loads. A class that does not may not load a class that does.
+    what it loads. A class that does not may not load a class that does. A
+    create() that a remembered dependency method runs is no part of the
+    method's trace either way: the method loads its result.
     """
     metadata = group[0]._metadata  # a batch has one Metadata
     loaded: list[Spec] = []
     with (
-        nullcontext()
+        paused()
         if metadata.code_version == "fixed"
         else recording(
             trace_log_path_in(attempt), storage_root=metadata.storage, resumed=resumed
@@ -376,6 +380,7 @@ def _load(objs: Sequence[Spec]) -> dict[str, Any]:
     rows = []
     for obj in first.values():
         if (row := look.row(obj)) is None:
+            checked("caught furu.Missing")
             raise Missing(
                 f"{obj._log_label}.load_existing() could not find a result. "
                 "load_existing() only loads existing results; use create() to "
@@ -432,17 +437,19 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     Runs the same graph as a worker run: a create that blocks on missing specs
     is aborted with its locks released, they are built, and it reruns.
     """
+    launch = secrets.token_hex(16)
     dag = Dag()
     running = missing_under(objs, dag)
+    # Naming the specs called each remembered dependency method that had to
+    # be called. Saved before anything runs, and when nothing does.
+    remember.save(launch)
     cached = [obj for obj in objs if obj.object_id not in dag.nodes]
     if cached:
         to_build = [obj for obj in objs if obj.object_id in dag.nodes]
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
     if running:
-        launch_plan = (
-            get_config().directories.anchored().plans / f"{secrets.token_hex(16)}.plan"
-        )
+        launch_plan = get_config().directories.anchored().plans / f"{launch}.plan"
         stages = ask(running)
         record.launch(launch_plan, objs, running, capture_submit_provenance())
         with asked(stages):
@@ -501,7 +508,7 @@ def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> Non
             unbuilt = [
                 dep
                 for dep in exc.dependencies
-                if dep.object_id not in completed and not dep.done
+                if dep.object_id not in completed and stored_row(dep) is None
             ]
             if unbuilt:
                 add(missing_under(unbuilt, dag), exc.plan)
