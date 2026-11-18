@@ -1,15 +1,17 @@
 import enum
+import numbers
 from dataclasses import fields, is_dataclass
 from datetime import datetime
+from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 from pydantic import BaseModel as PydanticBaseModel
 
 from furu._declared_types import (
     cached_type_hints,
     child_declared_type,
-    has_skip_hash,
+    item_declared_types,
     strip_annotated,
 )
 from furu.constants import (
@@ -23,9 +25,11 @@ from furu.metadata import ArtifactSpec
 from furu.serializer.registry import (
     Serializer,
     SerializerMeta,
+    _annotated_serializer,
 )
 from furu.utils import (
     JsonValue,
+    _hash_dict_deterministically,
     _stable_json_dump,
     fully_qualified_name,
     resolve_fully_qualified_name,
@@ -37,15 +41,65 @@ if TYPE_CHECKING:
 _RESERVED_DICT_KEYS = frozenset(
     {CLASSMARKER, FIELDSMARKER, KINDMARKER, SERIALIZERMARKER, VALUEMARKER}
 )
+_PLAIN = frozenset({str, int, float, bool, type(None)})
+
+
+@cache
+def _declares_serializer(declared_type: object) -> bool:
+    """Whether the type, or a type inside it, names a serializer for its values."""
+    if _annotated_serializer(declared_type):
+        return True
+    declared_type = strip_annotated(declared_type)
+    return hasattr(declared_type, "__furu_serializer__") or any(
+        map(_declares_serializer, get_args(declared_type))
+    )
+
+
+def _serializer_may_apply(
+    declared_type: object, artifact_serializers: tuple[type[Serializer], ...]
+) -> bool:
+    """Whether a serializer could take a plain value of this type, or one inside it."""
+    if artifact_serializers or SerializerMeta._auto_registered_serializers:
+        return True
+    try:
+        return _declares_serializer(declared_type)
+    except TypeError:  # the type cannot be a cache key: the full lookup decides
+        return True
+
+
+def fingerprint(
+    value: Any,
+    declared_type: object,
+    artifact_serializers: tuple[type[Serializer], ...],
+) -> str:
+    """What a field value contributes to its spec's id."""
+    return _hash_dict_deterministically(
+        to_json(value, declared_type, artifact_serializers, by_reference=True)
+    )
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
     declared_type: object,
     artifact_serializers: tuple[type[Serializer], ...],
-    for_hash: bool = False,
+    by_reference: bool = False,
 ) -> JsonValue:
+    """`obj` as JSON; with `by_reference`, a spec inside it is written as its id."""
     # TODO: when writing this to metadata, make sure to escape strings etc
+
+    # Most of what a spec holds is plain values and flat lists of them. JSON
+    # already holds those, so they skip the lookup when no serializer could apply.
+    tp = type(obj)
+    if (tp in _PLAIN or tp is list or tp is tuple) and not _serializer_may_apply(
+        declared_type, artifact_serializers
+    ):
+        if tp in _PLAIN:
+            return obj
+        if _PLAIN.issuperset(map(type, obj)):
+            items = list(obj)
+            return items if tp is list else {KINDMARKER: "tuple", VALUEMARKER: items}
+    if by_reference and _is_spec(obj):
+        return {KINDMARKER: "spec", VALUEMARKER: obj.object_id}
 
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
@@ -83,35 +137,35 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     match obj:
         case None:
             return None
-        case int() | str() | float() | bool():
+        case enum.Enum():
+            raise TypeError(
+                f"Cannot serialize enum value {obj!r}: use a Literal field instead, "
+                'such as mode: Literal["fast", "slow"]'
+            )
+        case int() | str() | float() | bool() if tp in _PLAIN:
             return obj
+        case numbers.Number() | str():
+            raise TypeError(
+                f"Cannot serialize {obj!r} of type {tp.__name__!r}: "
+                "convert it with int(), float() or str() first"
+            )
         case Path():
             return {KINDMARKER: "path", VALUEMARKER: str(obj)}
         case datetime():
             return {KINDMARKER: "datetime", VALUEMARKER: obj.isoformat()}
-        case list():
-            return [
+        case list() | tuple():
+            items: JsonValue = [
                 to_json(
                     x,
-                    declared_type=child_declared_type(declared_type, i),
+                    declared_type=item_type,
                     artifact_serializers=artifact_serializers,
-                    for_hash=for_hash,
+                    by_reference=by_reference,
                 )
-                for i, x in enumerate(obj)
+                for x, item_type in zip(obj, item_declared_types(declared_type))
             ]
-        case tuple():
-            return {
-                KINDMARKER: "tuple",
-                VALUEMARKER: [
-                    to_json(
-                        x,
-                        declared_type=child_declared_type(declared_type, i),
-                        artifact_serializers=artifact_serializers,
-                        for_hash=for_hash,
-                    )
-                    for i, x in enumerate(obj)
-                ],
-            }
+            if isinstance(obj, list):
+                return items
+            return {KINDMARKER: "tuple", VALUEMARKER: items}
         case set() | frozenset():
             element_type = child_declared_type(declared_type, 0)
             return {
@@ -122,7 +176,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                             x,
                             declared_type=element_type,
                             artifact_serializers=artifact_serializers,
-                            for_hash=for_hash,
+                            by_reference=by_reference,
                         )
                         for x in obj
                     ),
@@ -130,12 +184,13 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 ),
             }
         case dict():
+            value_type = child_declared_type(declared_type, None)
             return {
                 assert_correct_dict_key(k): to_json(
                     v,
-                    declared_type=child_declared_type(declared_type, k),
+                    declared_type=value_type,
                     artifact_serializers=artifact_serializers,
-                    for_hash=for_hash,
+                    by_reference=by_reference,
                 )
                 for k, v in obj.items()
             }
@@ -149,10 +204,9 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         getattr(x, f.name),
                         declared_type=hints.get(f.name, Any),
                         artifact_serializers=artifact_serializers,
-                        for_hash=for_hash,
+                        by_reference=by_reference,
                     )
                     for f in fields(x)
-                    if not (for_hash and has_skip_hash(hints.get(f.name, Any)))
                 },
             }
         case PydanticBaseModel():
@@ -167,22 +221,22 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         getattr(obj, k),
                         declared_type=hints.get(k, Any),
                         artifact_serializers=artifact_serializers,
-                        for_hash=for_hash,
+                        by_reference=by_reference,
                     )
                     for k in model_fields
-                    if not (for_hash and has_skip_hash(hints.get(k, Any)))
                 },
             }
-        case enum.Enum():
-            raise TypeError(
-                f"Cannot serialize enum value {obj!r}: enums are not supported "
-                "in furu artifacts yet"
-            )
         case _:
             raise TypeError(
                 f"Cannot serialize value {obj!r} of type {type(obj).__name__!r} "
                 "into a furu artifact; register a Serializer for this type"
             )
+
+
+def _is_spec(obj: object) -> bool:
+    from furu.core import Spec
+
+    return isinstance(obj, Spec)
 
 
 def _from_json_field(value: JsonValue, expected_type: Any) -> Any:

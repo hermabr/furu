@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, ClassVar
+from enum import Enum, IntEnum, StrEnum
+from typing import Annotated, Any, ClassVar, Literal
 
+import numpy as np
 import pytest
 
 from furu import Serializer, Spec
@@ -13,7 +15,7 @@ from furu.constants import (
     VALUEMARKER,
 )
 from furu.metadata import ArtifactSpec
-from furu.serializer.artifact import _from_json
+from furu.serializer.artifact import _from_json, to_json
 from furu.serializer.registry import SerializerMeta
 from furu.utils import JsonValue
 
@@ -309,6 +311,34 @@ class _OptOutRegisteredValueSerializer(Serializer[_OptOutRegisteredValue]):
         return _OptOutRegisteredValue()
 
 
+class _LowerSerializer(Serializer[object]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, str)
+
+    @classmethod
+    def matches_type(cls, declared_type: object) -> bool:
+        return declared_type is str
+
+    @classmethod
+    def schema(cls, declared_type: object) -> JsonValue:
+        return {"type": "lower"}
+
+    @classmethod
+    def dump(cls, value: object, *, declared_type: object) -> JsonValue:
+        return str(value).lower()
+
+    @classmethod
+    def load(cls, value: JsonValue, *, declared_type: object) -> object:
+        return value
+
+
+class _Lowered:
+    __furu_serializer__ = _LowerSerializer
+
+
 class _AutoRegisteredValueRun(Spec[int]):
     value: _AutoRegisteredValue
 
@@ -361,6 +391,92 @@ def _field(node: JsonValue, name: str) -> Any:
     fields = node[FIELDSMARKER]
     assert isinstance(fields, dict)
     return fields[name]
+
+
+def test_a_dict_key_must_be_a_string_that_furu_does_not_reserve() -> None:
+    with pytest.raises(ValueError, match="reserved"):
+        to_json({KINDMARKER: 1}, Any, ())
+    with pytest.raises(TypeError, match="must be strings"):
+        to_json({1: 1}, Any, ())
+
+
+class _Mode(Enum):
+    FAST = "fast"
+
+
+class _Level(IntEnum):
+    LOW = 1
+
+
+class _Name(StrEnum):
+    FAST = "fast"
+
+
+class _HoldsValue(Spec[None]):
+    value: object
+
+    def create(self) -> None:
+        return None
+
+
+class _HoldsMode(Spec[str]):
+    mode: Literal["fast", "slow"]
+
+    def create(self) -> str:
+        return self.mode
+
+
+@pytest.mark.parametrize(
+    ("value", "advice"),
+    [
+        (_Mode.FAST, "Literal"),
+        (_Level.LOW, "Literal"),
+        (_Name.FAST, "Literal"),
+        (np.float64(0.5), r"float\(\)"),
+    ],
+)
+def test_an_enum_or_numpy_scalar_field_is_refused_with_advice(
+    value: object, advice: str
+) -> None:
+    # A worker would build these as plain numbers and strings.
+    with pytest.raises(TypeError, match=advice):
+        _ = _HoldsValue(value=value).object_id
+
+
+def test_a_literal_field_is_the_same_value_when_built_from_its_artifact() -> None:
+    spec = _HoldsMode(mode="fast")
+
+    assert Spec.from_artifact(ArtifactSpec.from_furu(spec)) == spec
+
+
+def test_a_declared_serializer_writes_a_plain_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Plain values skip the serializer lookup only while nothing is registered.
+    # The real registry lookup is cached, so it must not run while it is empty.
+    monkeypatch.setattr(SerializerMeta, "_auto_registered_serializers", [])
+    monkeypatch.setattr(SerializerMeta, "_default_serializers", lambda: ())
+    lowered = _custom_artifact(_LowerSerializer, "a")
+
+    assert to_json(("A", 1), tuple[str, int], ()) == {
+        KINDMARKER: "tuple",
+        VALUEMARKER: ["A", 1],
+    }
+    assert to_json("A", Annotated[str, _LowerSerializer], ()) == lowered
+    assert to_json(["A"], list[Annotated[str, _LowerSerializer]], ()) == [lowered]
+    assert to_json(
+        ["A"], Annotated[list[str], _LowerSerializer], ()
+    ) == _custom_artifact(_LowerSerializer, "['a']")
+    assert to_json("A", _Lowered, ()) == lowered
+    assert to_json(["A", 1], Any, (_LowerSerializer,)) == [lowered, 1]
+
+    monkeypatch.setattr(
+        SerializerMeta, "_auto_registered_serializers", [_LowerSerializer]
+    )
+    monkeypatch.setattr(
+        SerializerMeta, "_default_serializers", lambda: (_LowerSerializer,)
+    )
+    assert to_json(["A", 1], Any, ()) == [lowered, 1]
 
 
 def test_annotated_serializer_defines_schema_and_artifact() -> None:

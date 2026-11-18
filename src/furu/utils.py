@@ -90,8 +90,8 @@ def spec_label(fully_qualified_name: str, schema_hash: str, artifact_hash: str) 
     return f"{class_name}:{schema_hash[:5]}:{artifact_hash[:5]}"
 
 
-def _stable_json_dump(x: object) -> str:
-    return json.dumps(x, sort_keys=True, separators=(",", ":"))
+# Built once: json.dumps makes a new encoder on every call.
+_stable_json_dump = json.JSONEncoder(sort_keys=True, separators=(",", ":")).encode
 
 
 def _hash_dict_deterministically(obj: object) -> str:

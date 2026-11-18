@@ -4,8 +4,8 @@ import logging
 import shutil
 from abc import ABC
 from collections.abc import Callable
-from dataclasses import dataclass
-from functools import cached_property
+from dataclasses import dataclass, fields
+from functools import cache, cached_property
 from inspect import get_annotations
 from pathlib import Path
 from typing import (
@@ -18,10 +18,10 @@ from typing import (
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched
+from furu._declared_types import cached_type_hints
 from furu.dependencies import (
     _Dependency,
     dependency_field,
-    fill_dependencies,
     is_under_creation,
     record_dependency,
 )
@@ -40,6 +40,7 @@ from furu.migration.steps import MigrationStep, validate_migration_declaration
 from furu.provenance import Provenance
 from furu.resources import Worker
 from furu.result.codec import Codec
+from furu.serializer.artifact import fingerprint
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type as _schema_type
@@ -74,6 +75,13 @@ else:
 
 class Missing(Exception):
     pass
+
+
+@cache
+def _class_identity(cls: type[Spec]) -> tuple[str, JsonValue, str]:
+    """A spec class's name, schema and schema hash: the same for every instance."""
+    schema = _schema_type(cls, {}, artifact_serializers=cls.artifact_serializers)
+    return fully_qualified_name(cls), schema, _hash_dict_deterministically(schema)
 
 
 _SPEC_CLASS_ATTRIBUTES = frozenset(
@@ -111,10 +119,14 @@ class Spec[T](_FuruDataclassTransform, ABC):
             return
 
         annotations = get_annotations(cls, eval_str=False)
-        for name, value in list(cls.__dict__.items()):
-            if isinstance(value, _Dependency):
-                setattr(cls, name, dependency_field(cls, name, value))
-                annotations[name] = value.func.__annotations__["return"]
+        dependencies = {
+            name: value
+            for name, value in cls.__dict__.items()
+            if isinstance(value, _Dependency)
+        }
+        for name, value in dependencies.items():
+            setattr(cls, name, dependency_field(cls, name, value))
+            annotations[name] = value.func.__annotations__["return"]
         # Assigned, not edited in place: reading cls.__annotations__ on a class
         # without its own can return a dict shared with other classes.
         cls.__annotations__ = annotations
@@ -138,6 +150,12 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
+        for name, value in dependencies.items():
+            # Set after the dataclass has taken the field: the first read
+            # calls the method and keeps what it returned.
+            lazy = cached_property(value.func)
+            lazy.__set_name__(cls, name)
+            setattr(cls, name, lazy)
         if cls.migrations:
             validate_migration_declaration(cls)
         validate_embedded_migration_declarations(cls)
@@ -155,10 +173,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
             case hook:
                 cls._furu_create_hook = hook
                 del cls.create  # unshadow the inherited create verb
-
-    def __post_init__(self) -> None:
-        """Fill in the ``@furu.dependency`` fields; an override must call this."""
-        fill_dependencies(self)
 
     def create(self) -> T:
         """Return this spec's result, building it first if it's missing.
@@ -313,42 +327,34 @@ class Spec[T](_FuruDataclassTransform, ABC):
     def _artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
+        # One fingerprint per field, so writing a large value apart from the
+        # spec that holds it never changes the id.
+        hints = cached_type_hints(type(self))
         return _hash_dict_deterministically(
-            _to_json(
-                self,
-                declared_type=type(self),
-                artifact_serializers=self.artifact_serializers,
-                for_hash=True,
-            )
+            {
+                f.name: fingerprint(
+                    getattr(self, f.name),
+                    hints.get(f.name, Any),
+                    self.artifact_serializers,
+                )
+                for f in fields(self)
+            }
         )
 
     @final
-    @cached_property
-    def _schema_data(
-        self,
-    ) -> JsonValue:
-        return _schema_type(
-            type(self),
-            {},
-            artifact_serializers=self.artifact_serializers,
-        )
+    @property
+    def _schema_data(self) -> JsonValue:
+        return _class_identity(type(self))[1]
 
     @final
-    @cached_property
+    @property
     def _artifact_schema_hash(self) -> str:
-        return _hash_dict_deterministically(
-            _schema_type(
-                type(self),
-                {},
-                artifact_serializers=self.artifact_serializers,
-                for_hash=True,
-            )
-        )
+        return _class_identity(type(self))[2]
 
     @final
-    @cached_property
+    @property
     def _fully_qualified_name(self) -> str:
-        return fully_qualified_name(type(self))
+        return _class_identity(type(self))[0]
 
     @final
     @cached_property

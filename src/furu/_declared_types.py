@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from functools import cache
+from itertools import chain, repeat
 from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
-    Final,
     TypeVar,
     get_args,
     get_origin,
@@ -15,22 +15,6 @@ from typing import (
 
 if TYPE_CHECKING:
     from furu.core import Spec
-
-
-class _SkipHash:
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return "furu.skip_hash"
-
-
-skip_hash: Final = _SkipHash()
-
-
-def has_skip_hash(declared_type: object) -> bool:
-    if get_origin(declared_type) is not Annotated:
-        return False
-    return any(metadata is skip_hash for metadata in get_args(declared_type)[1:])
 
 
 @cache
@@ -60,6 +44,19 @@ def child_declared_type(declared_type: object, key: object) -> object:
         if isinstance(key, int) and key < len(args):
             return args[key]
     return Any
+
+
+def item_declared_types(declared_type: object) -> Iterator[object]:
+    """The declared type of each item of a list or tuple, in order.
+
+    Worked out once per container, not per item: one tuple can hold thousands
+    of specs.
+    """
+    declared_type = strip_annotated(declared_type)
+    args = get_args(declared_type)
+    if get_origin(declared_type) is tuple and args and args[1:] != (Ellipsis,):
+        return chain(args, repeat(Any))
+    return repeat(child_declared_type(declared_type, 0))
 
 
 @cache
