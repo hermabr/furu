@@ -440,25 +440,42 @@ class FileTrace(BaseModel):
         return "all" if self.uses == "all" else frozenset(self.uses)
 
 
+_MODULES: dict[str, tuple[tuple[tuple[str, object], ...], dict]] = {}
+
+
+def _repo_modules(root: str) -> dict[str, tuple[str, str | None]]:
+    """The file and package of each loaded module that is repo code, by name.
+
+    Kept while sys.modules holds the same module objects under the same names.
+    """
+    loaded = tuple(sys.modules.items())
+    if (seen := _MODULES.get(root)) is None or seen[0] != loaded:
+        seen = _MODULES[root] = (
+            loaded,
+            {
+                name: (rel, getattr(module, "__package__", None))
+                for name, module in loaded
+                if isinstance(file := getattr(module, "__file__", None), str)
+                and (rel := _rel(file, root)) is not None
+            },
+        )
+    return seen[1]
+
+
 def _code(
     ran: Mapping[str, frozenset[str]],
     source: Callable[[str], str | None],
-    root: str,
+    modules: Mapping[str, tuple[str, str | None]],
 ) -> tuple[dict[str, FileTrace], list[str]]:
     """Fingerprint every repo file reached from the functions that ran.
 
-    Also returns warnings about what the fingerprints cannot see.
+    ``modules`` is what _repo_modules gives. Also returns warnings about what
+    the fingerprints cannot see.
     """
-    packages = {
-        rel: getattr(module, "__package__", None)
-        for module in list(sys.modules.values())
-        if isinstance(file := getattr(module, "__file__", None), str)
-        and (rel := _rel(file, root)) is not None
-    }
+    packages = dict(modules.values())
 
     def module_file(name: str) -> str | None:
-        file = getattr(sys.modules.get(name), "__file__", None)
-        return _rel(file, root) if isinstance(file, str) else None
+        return modules[name][0] if name in modules else None
 
     def imports_repo_code(
         imp: ast.Import | ast.ImportFrom, alias: ast.alias, rel: str
@@ -981,13 +998,8 @@ def recording(
     root = str(repo_root()) + os.sep
     log = _TraceLog(log_path)
     collector = _Collector(root, log, resumed)
-    for module in list(sys.modules.values()):
-        file = getattr(module, "__file__", None)
-        if (
-            isinstance(file, str)
-            and (rel := _rel(file, root)) is not None
-            and rel not in collector.hashes
-        ):
+    for rel, _ in _repo_modules(root).values():
+        if rel not in collector.hashes:
             collector.record(rel, importing=False)
     with _RECORDING:
         outer = _active
@@ -1008,6 +1020,7 @@ def why_not_resumable(state: LogState | None, *, storage_root: Path) -> str | No
     root = repo_root()
     prefix = str(root) + os.sep
     ran = {rel: frozenset(names) for rel, names in state.ran.items()}
+    modules = _repo_modules(prefix)
 
     class Changed(Exception):
         pass
@@ -1021,10 +1034,10 @@ def why_not_resumable(state: LogState | None, *, storage_root: Path) -> str | No
         return text
 
     try:
-        before, _ = _code(ran, logged, prefix)
+        before, _ = _code(ran, logged, modules)
     except Changed as exc:
         return f"{exc} changed"
-    now, _ = _code(ran, lambda rel: _read(root / rel), prefix)
+    now, _ = _code(ran, lambda rel: _read(root / rel), modules)
     for rel in sorted(before.keys() | now.keys()):
         if (
             (b := before.get(rel)) is None
@@ -1039,12 +1052,24 @@ def why_not_resumable(state: LogState | None, *, storage_root: Path) -> str | No
 
 
 _WARNED: set[str] = set()
+# What _code gave, by what it was given but the source, with each text it read.
+type _Built = tuple[dict[str, str | None], dict[str, FileTrace], list[str]]
+_CODE: dict[object, _Built] = {}
 
 
 def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> Trace:
     """The trace of a finished call; raises StaleCodeError if unsafe."""
     root = repo_root()
-    code, warnings = _code(run.ran, lambda rel: _read(root / rel), str(root) + os.sep)
+    modules = _repo_modules(str(root) + os.sep)
+    key = (root, frozenset(run.ran.items()), frozenset(modules.items()))
+    texts, code, found = _CODE.get(key, (None, {}, []))
+    if texts is None or any(_read(root / rel) != text for rel, text in texts.items()):
+        read: dict[str, str | None] = {}
+        code, found = _code(
+            run.ran, lambda rel: read.setdefault(rel, _read(root / rel)), modules
+        )
+        _CODE[key] = read, code, found
+    warnings = list(found)
     assert run._collector is not None
     if opened := sorted(run._collector.opened):
         more = f" and {len(opened) - 3} more" if len(opened) > 3 else ""
