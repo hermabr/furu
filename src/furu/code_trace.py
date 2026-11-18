@@ -945,6 +945,7 @@ class Recording:
     built_on: set[str] = field(default_factory=set)
     _log: Callable[[list[str]], None] | None = None
     _collector: _Collector | None = None
+    checked: set[str] = field(default_factory=set)  # untraced checks, to warn about
 
     @property
     def ran(self) -> dict[str, frozenset[str]]:
@@ -1050,6 +1051,11 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
         warnings.append(
             f"read {', '.join(opened[:3])}{more}, which furu does not "
             f"trace: {_KEEPS_OLD_RESULT}"
+        )
+    if run.checked:
+        warnings.append(
+            f"{' and '.join(sorted(run.checked))}, which furu does not trace: the "
+            "method is not called again when that changes"
         )
     for warning in warnings:
         if warning not in _WARNED:  # once per process

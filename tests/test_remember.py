@@ -96,6 +96,22 @@ class Scaled(Spec[int]):
 SCALED = Scaled(name="s", scale=2)
 
 
+class StoredSplits(Spec[int]):
+    name: str
+
+    @furu.dependency(remember=True)
+    def runs(self) -> list[Cifar]:
+        split = Cifar(split=self.name)
+        try:
+            split.load_existing()
+        except furu.Missing:
+            pass
+        return [split] if split.done else []
+
+    def create(self) -> int:
+        return len(self.runs)
+
+
 class ScaledSweep(Spec[int]):
     name: str
 
@@ -192,6 +208,16 @@ def test_a_remembered_list_that_differs_stops_whoever_reads_it(
     with pytest.raises(RuntimeError, match="remember=True reads something") as stopped:
         _ = sweep.runs
     assert f"{sweep._log_label}.runs returned something else" in str(stopped.value)
+
+
+def test_a_method_that_checks_whether_a_result_is_stored_is_warned_about(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assert furu.create(StoredSplits(name="a")) == 0
+    assert (
+        "StoredSplits.runs: caught furu.Missing and read .done, which furu does "
+        "not trace: the method is not called again when that changes"
+    ) in caplog.messages
 
 
 def test_a_worker_rebuilds_a_remembered_list_that_its_create_reads() -> None:

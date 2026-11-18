@@ -21,6 +21,7 @@ from furu._declared_types import cached_type_hints
 from furu.dependencies import (
     Returned,
     _Dependency,
+    checked,
     dependency_field,
     is_under_creation,
     remembered_methods,
@@ -225,6 +226,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     def load_existing(self) -> T:
         if (row := stored_row(self)) is not None:
             return load_rows([self], [row])[0]
+        checked("caught furu.Missing")
         raise Missing(
             f"{self._log_label}.load_existing() could not find a result. "
             "load_existing() only loads existing results; use create() to compute "
@@ -238,6 +240,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
         A spec that is being computed, or whose attempt stopped, is not done.
         """
+        checked("read .done")
         return stored_row(self) is not None
 
     @final
