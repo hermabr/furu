@@ -352,6 +352,17 @@ class BatchedRunLeaf(furu.Spec):
         return [obj.value for obj in objs]
 
 
+class ChainedBatchedLeaf(furu.Spec):
+    value: int
+    previous: "ChainedBatchedLeaf | None" = None
+
+    @furu.batched(lambda _, __: (None, 10))
+    def create(
+        objs: list["ChainedBatchedLeaf"], directory: furu.SpecDirectory
+    ) -> list[int]:
+        return [obj.value for obj in objs]
+
+
 class MixedMetadataLeaf(furu.Spec):
     value: int
 
@@ -1126,6 +1137,29 @@ def test_a_blocked_attempt_reruns_once_what_it_found_is_built() -> None:
     ]
 
 
+def test_a_batch_whose_create_found_one_of_its_own_specs_missing_runs_that_one_first() -> (
+    None
+):
+    objs = {obj.object_id: obj for obj in (BatchedRunLeaf(value=v) for v in (0, 1))}
+    manager = Manager(url="ws://unused", manager_dir=None)
+    script, run = _submit(manager, list(objs.values()))
+    lease = _leased(manager)
+    asks, found = (objs[spec] for spec in lease.specs)
+
+    _end(manager, lease, _blocked(found))
+    _answer(manager, script, run)
+    alone = _leased(manager)
+    assert alone.specs == [found.object_id]
+    assert [type(message) for message in _sent(manager)] == [WarningMessage]
+    _end(manager, alone)
+    _answer(manager, script, run)
+    then = _leased(manager)
+    assert then.specs == [asks.object_id]
+    _end(manager, then)
+    _answer(manager, script, run)
+    assert run.completed == set(objs) and not manager.placed
+
+
 def _stopped_sweep(count: int) -> tuple[Manager, list[str]]:
     """A launch of ``count`` specs whose first 5 were a batch that stopped."""
     specs = [SweepLeaf(value=value) for value in range(1, count + 1)]
@@ -1201,6 +1235,24 @@ def test_a_new_manager_takes_up_the_working_folders_on_disk_once_their_lock_is_f
         assert _lease(manager, SMALL) is None
     assert _leased(manager, SMALL).specs == _ids(started)
     assert _sent(manager) == []
+
+
+def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_goes_out_in_order() -> (
+    None
+):
+    first = ChainedBatchedLeaf(value=0)
+    then = ChainedBatchedLeaf(value=1, previous=first)
+    folder = working_folder([first, then])
+    folder.mkdir(parents=True)
+    events.start(folder, [first._artifact_hash, then._artifact_hash], _plan(), _plan())
+
+    manager = _manager([then])
+
+    assert manager.demand(CPU_POOL.pool_key) == 1
+    lease = _leased(manager)
+    assert lease.specs == [first.object_id]
+    _end(manager, lease)
+    assert _leased(manager).specs == [then.object_id]
 
 
 # --- the manager's server ------------------------------------------------------

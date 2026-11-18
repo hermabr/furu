@@ -374,12 +374,20 @@ class Manager:
     def _queue_ready(self) -> None:
         """Queue the specs that have nothing left to wait for.
 
-        A spec of a stopped batch goes out with that batch.
+        A spec of a stopped batch goes out with that batch. Once one of them
+        can, the ones that still wait leave the batch, since what they wait
+        for may be in it; they are queued like any spec once nothing holds them.
         """
+        stopped = set()
         for spec in self.dag.ready:
-            if spec not in self.stopped_in:
+            if spec in self.stopped_in:
+                stopped.add(self.stopped_in[spec])
+            else:
                 self._queue(spec)
         self.dag.ready.clear()
+        for batch in stopped:
+            for spec in [spec for spec in batch.specs if self.dag.waits(spec)]:
+                self._unstop(spec)
 
     def _unqueue(self, spec: str) -> None:
         placed = self.placed[spec]
@@ -425,9 +433,15 @@ class Manager:
     def _rerun(self, script: _Script, message: RerunMessage) -> None:
         with self.lock:
             theirs = [spec for spec in message.specs if self._answers(script, spec)]
+            # The specs of its own batch that its create() found missing go
+            # out first, so they wait only for what is outside it; unless
+            # that is all of them, which then wait for themselves.
+            inside = [spec for spec in message.after if spec in message.specs]
+            outside = [spec for spec in message.after if spec not in message.specs]
+            first = inside if len(inside) < len(message.specs) else []
             try:
                 for spec in theirs:
-                    self.dag.block(spec, message.after)
+                    self.dag.block(spec, outside if spec in first else message.after)
             except RuntimeError as exc:  # a dependency cycle
                 self.outbox.append((script, ErrorMessage(reason=str(exc))))
             for spec in theirs:
