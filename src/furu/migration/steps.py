@@ -81,6 +81,10 @@ def describe(step: MigrationStep) -> str:
     return f"{type(step).__name__}({body}{', breaking=True' if step.breaking else ''})"
 
 
+def class_part_of(first_names: tuple[str, ...]) -> str:
+    return _hash_dict_deterministically(first_names)
+
+
 @dataclass(frozen=True, slots=True)
 class Naming:
     """How a class's values are named: as the class was before any declared change."""
@@ -146,7 +150,7 @@ def naming(cls: type) -> Naming:
     first_names = tuple(sorted(first))
     return Naming(
         first_names=first_names,
-        class_part=_hash_dict_deterministically(first_names),
+        class_part=class_part_of(first_names),
         fields=(
             *((attribute, name, None) for name, attribute in first.items()),
             *(
@@ -156,6 +160,29 @@ def naming(cls: type) -> Naming:
         ),
         moved_from=moved_from,
     )
+
+
+@cache
+def explained_names(cls: type) -> frozenset[tuple[str, ...]]:
+    """The sets of first names that results of ``cls`` may be stored under.
+
+    The one the source gives now, and the one from before each breaking step,
+    which that fresh start left behind on purpose.
+    """
+    assert dataclasses.is_dataclass(cls)
+    names = {field.name for field in dataclasses.fields(cls)}
+    explained = set()
+    for step in reversed(getattr(cls, "migrations", ())):
+        if step.breaking:
+            explained.add(tuple(sorted(names)))
+        # Steps from before a fresh start are not required to fit the fields.
+        match step:
+            case Added(name=name):
+                names.discard(name)
+            case Renamed(old=old, to=to) if to in names:
+                names.remove(to)
+                names.add(old)
+    return frozenset({*explained, tuple(sorted(names))})
 
 
 @cache

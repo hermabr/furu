@@ -1,6 +1,7 @@
 import inspect
 import itertools
 import json
+import logging
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -12,16 +13,23 @@ import pytest
 
 import furu
 from furu import Added, MovedFrom, Renamed, Spec
+from furu.config import get_config
+from furu.execution.launch import stage_table
 from furu.metadata import ArtifactSpec
 from furu.migration import schema
 from furu.migration.steps import MigrationError, naming
 from furu.storage._layout import schema_path_in
+from furu.worker.backends.local import LocalThreadWorkerBackend
 
 _runs = itertools.count()
 
 
 def _spec(
-    name: str = "Merge", *, migrations: object = (), **fields: Any
+    name: str = "Merge",
+    *,
+    migrations: object = (),
+    create: Callable[[Any], int] = lambda self: next(_runs),
+    **fields: Any,
 ) -> Callable[..., Spec[int]]:
     """The spec class ``name`` as its source reads at one point in time.
 
@@ -33,7 +41,7 @@ def _spec(
         "__module__": __name__,
         "__annotations__": {},
         "migrations": migrations,
-        "create": lambda self: next(_runs),
+        "create": create,
     }
     for field, declared in fields.items():
         if inspect.isfunction(declared):
@@ -176,6 +184,7 @@ def test_a_breaking_step_is_a_fresh_start() -> None:
     stored = before(tokenizer="bpe").create()
 
     assert after(tokenizer="bpe")._class_part != before(tokenizer="bpe")._class_part
+    # The step explains the folder from before it, so the launch does not ask.
     assert after(tokenizer="bpe").create() != stored
     # The steps up to the breaking one are ignored, so they can be deleted.
     assert cut(tokenizer="bpe").object_id == after(tokenizer="bpe").object_id
@@ -298,6 +307,7 @@ def test_a_new_class_folder_records_every_default_before_its_first_result() -> N
             "nested": f"{__name__}.Vimeo",
             "class_part": naming(type(source)).class_part,
         },
+        {"nested": f"{__name__}.Vimeo", "at": ["source"], "names": ["clip"]},
     ]
 
 
@@ -310,10 +320,14 @@ class Failing(Spec[int]):
 
 def test_a_class_folder_is_recorded_before_its_first_create_runs() -> None:
     spec = Failing(lemma="comer")
+    video = _spec("Video", source=Any, upstream=Any)
+    after = video(source=_nested(clip=str)(clip="x"), upstream=spec)
 
     with pytest.raises(RuntimeError, match="out of memory"):
-        spec.create()
+        after.create()
     assert _schema_lines(spec) == [{"names": ["lemma"]}]
+    # The launch stores nothing for a class none of whose specs it starts.
+    assert not after._base_dir.parent.exists()
 
 
 class _Sources:
@@ -348,7 +362,9 @@ def test_a_nested_default_is_recorded_for_one_class_part_of_the_nested_class() -
 
 
 @pytest.mark.parametrize("nested", [False, True])
-def test_an_edited_default_stops_with_the_step_and_both_values(nested: bool) -> None:
+def test_an_edited_default_stops_with_the_step_and_both_values(
+    nested: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def video(default: int) -> Spec[int]:
         step = Added("fps", default=default)
         if nested:
@@ -360,6 +376,10 @@ def test_an_edited_default_stops_with_the_step_and_both_values(nested: bool) -> 
 
     video(30).create()
 
+    # Naming the folder does not get past this stop.
+    monkeypatch.setenv(
+        "FURU_IGNORE_STORED", f"{__name__}.Video:{video(30)._class_part}"
+    )
     with pytest.raises(MigrationError) as stopped:
         video(25).create()
     assert "Added('fps', default=25)" in str(stopped.value)
@@ -439,6 +459,203 @@ def test_a_names_line_cut_short_is_written_again() -> None:
 
     spec.create()
     assert path.read_text() == '{"names":["le\n{"names":["lemma"]}\n'
+
+
+def _in_process(spec: Spec[int]) -> int:
+    return spec.create()
+
+
+def _on_workers(spec: Spec[int]) -> int:
+    return furu.create(spec, on=[LocalThreadWorkerBackend()])
+
+
+@pytest.mark.parametrize("launch", [_in_process, _on_workers])
+def test_a_launch_asks_before_it_leaves_stored_results_behind(
+    launch: Callable[[Spec[int]], int],
+) -> None:
+    old = _spec(lemma=str)(lemma="comer")
+    old.create()
+    new = _spec(lemma=str, min_overlap=(float, 0.5))(lemma="comer")
+    table = "    stage   missing\n    Merge         1\n"
+
+    with pytest.raises(MigrationError) as asks:
+        launch(new)
+    message = str(asks.value)
+    assert table in message
+    assert (
+        f"Merge: {old._base_dir.parent} was stored without the field 'min_overlap'"
+        in message
+    )
+    assert message.index("Added(name, default=...)") < message.index("breaking=True")
+    assert message.endswith(
+        f"FURU_IGNORE_STORED={__name__}.Merge:{old._class_part} for this one launch."
+    )
+    # Nothing ran, and nothing was stored.
+    assert not new._base_dir.parent.exists()
+    if launch is _on_workers:
+        (log,) = get_config().directories.anchored().executions.glob("*/execution.log")
+        assert table in log.read_text()
+
+    # The step makes the old folder the class's own again.
+    declared = _spec(
+        lemma=str,
+        min_overlap=(float, 0.5),
+        migrations=(Added("min_overlap", default=0.5),),
+    )
+    declared(lemma="comer", min_overlap=0.8).create()
+
+
+def test_the_variable_names_the_folders_one_launch_leaves_behind(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    first = _spec(lemma=str)(lemma="comer")
+    second = _spec(lemma=str, min_overlap=(float, 0.5))
+    third = _spec(lemma=str, seed=(int, 0))(lemma="comer")
+    folders = [
+        f"{__name__}.Merge:{spec._class_part}"
+        for spec in (first, second(lemma="comer"), third)
+    ]
+    first.create()
+
+    monkeypatch.setenv("FURU_IGNORE_STORED", folders[0])
+    furu_logger = logging.getLogger("furu")
+    monkeypatch.setattr(
+        furu_logger, "handlers", [*furu_logger.handlers, caplog.handler]
+    )
+    second(lemma="comer").create()
+    assert (
+        f"ignoring stored results · Merge: {first._base_dir.parent} was stored "
+        "without the field 'min_overlap', and this launch stores in "
+        f"{second(lemma='comer')._base_dir.parent}"
+    ) in caplog.messages
+    # Nothing about the variable is stored in the class folder.
+    assert _schema_lines(second(lemma="comer")) == [{"names": ["lemma", "min_overlap"]}]
+
+    monkeypatch.setenv("FURU_IGNORE_STORED", ",".join(folders[:2]))
+    third.create()
+
+    # A folder that appeared later asks again.
+    monkeypatch.setenv("FURU_IGNORE_STORED", folders[0])
+    with pytest.raises(MigrationError) as asks:
+        second(lemma="beber").create()
+    assert f"{third._base_dir.parent} was stored" in str(asks.value)
+    assert f"FURU_IGNORE_STORED={folders[0]},{folders[2]} " in str(asks.value)
+
+    # A launch with nothing missing asks nothing.
+    monkeypatch.delenv("FURU_IGNORE_STORED")
+    second(lemma="comer").create()
+
+
+def test_a_name_in_the_variable_that_matches_no_folder_is_warned_about(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    typo = f"{__name__}.Merge:{'0' * 20}"
+    monkeypatch.setenv("FURU_IGNORE_STORED", typo)
+    furu_logger = logging.getLogger("furu")
+    monkeypatch.setattr(
+        furu_logger, "handlers", [*furu_logger.handlers, caplog.handler]
+    )
+    _spec(lemma=str)(lemma="comer").create()
+    assert (
+        f"FURU_IGNORE_STORED names {typo}, which is no folder this launch would "
+        "leave behind"
+    ) in caplog.messages
+
+
+def test_a_nested_class_is_compared_with_the_names_it_was_stored_with(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def line(nested: str, *names: str) -> dict[str, Any]:
+        return {"nested": f"{__name__}.{nested}", "at": ["source"], "names": [*names]}
+
+    video = _spec("Video", source=Any)
+    youtube = _nested("Youtube", video_id=str)
+    stored = video(source=_nested(clip=str)(clip="x"))
+    stored.create()
+    assert _schema_lines(stored) == [{"names": ["source"]}, line("Vimeo", "clip")]
+
+    # A class the file has not seen gets a line: a union grows with no step.
+    video(source=youtube(video_id="abc")).create()
+    assert _schema_lines(stored)[2:] == [line("Youtube", "video_id")]
+
+    changed = _nested(clip=str, fps=(int, 30))
+    with pytest.raises(MigrationError) as asks:
+        video(source=changed(clip="x")).create()
+    assert (
+        "Video: Vimeo at source was stored without the field 'fps' in "
+        f"{stored._base_dir.parent}"
+    ) in str(asks.value)
+    folder = f"{__name__}.Video:{stored._class_part}"
+    assert f"FURU_IGNORE_STORED={folder} " in str(asks.value)
+    assert len(_schema_lines(stored)) == 3
+
+    # Only the classes that the missing specs hold are compared.
+    video(source=youtube(video_id="xyz")).create()
+
+    # The folder of the spec class that holds it names the stored set.
+    monkeypatch.setenv("FURU_IGNORE_STORED", folder)
+    video(source=changed(clip="x")).create()
+    assert _schema_lines(stored)[3:] == [line("Vimeo", "clip", "fps")]
+    monkeypatch.delenv("FURU_IGNORE_STORED")
+    with pytest.raises(MigrationError):
+        video(source=changed(clip="y")).create()
+
+    fresh = _nested(clip=str, fps=(int, 30), migrations=(Added("fps", breaking=True),))
+    video(source=fresh(clip="y")).create()
+
+
+def test_a_nested_class_is_recorded_where_a_spec_that_holds_it_is_created() -> None:
+    video = _spec("Video", source=Any)
+    seen = video(source=_nested(clip=str)(clip="x"))
+    found = video(source=_nested("Youtube", video_id=str)(video_id="abc"))
+    search = _spec("Search", n=int, create=lambda self: found.create())
+
+    furu.create([seen, search(n=1)])
+    assert _schema_lines(seen)[1:] == [
+        {"nested": f"{__name__}.Vimeo", "at": ["source"], "names": ["clip"]},
+        {"nested": f"{__name__}.Youtube", "at": ["source"], "names": ["video_id"]},
+    ]
+
+
+def test_a_spec_built_inside_a_create_is_checked_where_it_is_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _spec("Tok", v=int)(v=1)
+    old.create()
+    tok = _spec("Tok", v=int, extra=(int, 0))
+
+    def a_tok(self: Any) -> Spec[int]:
+        return tok(v=int(self.peak))
+
+    # The class that changed is under the spec the create() asks for.
+    run = _spec("Run", peak=float, tok=a_tok)
+    search = _spec("Search", n=int, create=lambda self: run(peak=1.0).create())
+
+    # The launch never saw the class, so there is no launch to let go on.
+    monkeypatch.setenv("FURU_IGNORE_STORED", f"{__name__}.Tok:{old._class_part}")
+    with pytest.raises(MigrationError, match="a create.. built a spec") as failed:
+        search(n=1).create()
+    # A worker's failure shows the last line of the error.
+    last_line = str(failed.value).splitlines()[-1]
+    assert f"Tok: {old._base_dir.parent} was stored" in last_line
+    assert run(peak=1.0).status == "missing"
+
+    # A class the launch asked about is not asked about again.
+    furu.create([run(peak=2.0), search(n=1)])
+    assert run(peak=1.0).status == "done"
+
+
+def test_the_launch_table_has_a_row_for_each_stage_with_specs_missing() -> None:
+    report = _spec("InfluenceReport", top_k=int)
+    train = _spec("Train", seed=int)
+
+    assert stage_table(
+        [report(top_k=20), *(train(seed=seed) for seed in range(12))]
+    ) == (
+        "stage             missing\n"
+        "InfluenceReport         1\n"
+        "Train                  12"
+    )
 
 
 @pytest.mark.parametrize(

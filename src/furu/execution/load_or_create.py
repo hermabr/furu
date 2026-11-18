@@ -29,6 +29,7 @@ from furu.dependencies import (
     record_dependency,
     under_creation,
 )
+from furu.execution.launch import ask, asked, held_in
 from furu.locking import lock
 from furu.logging import (
     _close_sections,
@@ -38,7 +39,7 @@ from furu.logging import (
     get_logger,
 )
 from furu.metadata import ArtifactSpec
-from furu.migration.schema import check_defaults
+from furu.migration.schema import check_defaults, record_nested_names
 from furu.provenance import (
     ExecuteContext,
     Provenance,
@@ -197,7 +198,9 @@ def _ensure_group_result[T](
             obj.logger.info("cache hit for %s", obj._log_label)
             continue
         obj._base_dir.mkdir(parents=True, exist_ok=True)
-        check_defaults(obj._base_dir.parent, type(obj), record=True)
+        class_dir = obj._base_dir.parent
+        check_defaults(class_dir, type(obj), record=True)
+        record_nested_names(class_dir, held_in(obj))
         missing.append(obj)
 
     if not missing:
@@ -336,6 +339,11 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if missing:
+        # What a launch would list for them: the classes under them can have
+        # changed too.
+        dag = Dag()
+        dag.add(missing)
+        ask([node.obj for node in dag.nodes_by_id.values()], found=True)
         raise _DependencyNotReady(missing)
 
     return loaded
@@ -355,7 +363,8 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
     if dag.ready:
-        _run_in_process(dag)
+        with asked(ask([node.obj for node in dag.nodes_by_id.values()])):
+            _run_in_process(dag)
     if not load:
         return []
     # Load the way a cache hit does, so the first run returns what every later

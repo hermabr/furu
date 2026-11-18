@@ -2,11 +2,17 @@
 
 The first line holds the names the class part is a hash of. Each later line is
 one ``Added`` step and the default it declared, for a field or dependency
-method of the class or for a field of a dataclass its specs hold.
+method of the class or for a field of a dataclass its specs hold, or one set
+of field names that such a dataclass was stored with.
 
 A spec at a declared default has the id of a result stored before the field
 existed, so a spec at an edited default would load a result computed at
 another value. The recorded default is what the source is compared with.
+
+A dataclass's field names are part of the value of the field that holds it,
+so the class part does not cover them. They are recorded before a spec that
+holds the dataclass is created, and the recorded names are what a launch
+compares the source with, as it compares a spec class with its folders.
 
 The file only grows, by whole lines: a writer holds schema.lock and a reader
 takes no lock.
@@ -40,6 +46,10 @@ held: defaultdict[type, set[type]] = defaultdict(set)
 # What this process has checked: a class, its folder, how many dataclasses its
 # values had held by then, and whether a folder with no file was given one.
 _checked: set[tuple[type, Path, int, bool]] = set()
+
+# The lines of nested names this process has seen in a class folder's file: the
+# folder, the dataclass's stored name and its first names.
+_nested_recorded: set[tuple[Path, str, tuple[str, ...]]] = set()
 
 
 def _declared_defaults(cls: type[Spec]) -> dict[_Step, tuple[str, JsonValue]]:
@@ -143,3 +153,48 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
     # default, so a declared default is looked for again.
     if lines is not None or not declared:
         _checked.add((*key, False))
+
+
+def stored_names(class_dir: Path) -> list[str] | None:
+    """The names a class folder's results are stored under, when its file says."""
+    for line in _read(schema_path_in(class_dir)) or ():
+        if "names" in line and "nested" not in line:
+            return line["names"]
+    return None
+
+
+def nested_names(class_dir: Path) -> dict[str, set[tuple[str, ...]]]:
+    """Each set of first names a dataclass was stored with in a class folder."""
+    recorded: defaultdict[str, set[tuple[str, ...]]] = defaultdict(set)
+    for line in _read(schema_path_in(class_dir)) or ():
+        if "names" in line and "nested" in line:
+            recorded[line["nested"]].add(tuple(line["names"]))
+    return recorded
+
+
+def record_nested_names(class_dir: Path, holds: dict[type, tuple[str, ...]]) -> None:
+    """Give the names each held dataclass has now a line, if they have none.
+
+    ``holds`` says where a spec stored in ``class_dir`` holds each: the fields
+    that lead to it.
+    """
+    lines = {
+        (class_dir, stored_name(nested), naming(nested).first_names): at
+        for nested, at in holds.items()
+    }
+    if lines.keys() <= _nested_recorded:
+        return
+
+    def unrecorded() -> list[dict[str, Any]]:
+        recorded = nested_names(class_dir)
+        return [
+            {"nested": name, "at": list(at), "names": list(names)}
+            for (_, name, names), at in lines.items()
+            if names not in recorded.get(name, ())
+        ]
+
+    if unrecorded():
+        with lock(schema_lock_path_in(class_dir)):
+            if new := unrecorded():
+                _append(schema_path_in(class_dir), new)
+    _nested_recorded.update(lines)

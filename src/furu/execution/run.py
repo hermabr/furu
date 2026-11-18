@@ -71,6 +71,8 @@ class Run(Dag):
     # Each failed attempt's error, per spec not yet completed.
     failures: dict[str, list[str]] = field(default_factory=dict)
     batch_keys: list[object] = field(default_factory=list)
+    # The stored names of the classes this launch asked about.
+    asked: frozenset[str] = frozenset()
 
     # A worker's filesystem can take about a minute to show a version another
     # node just published (NFS caches directory listings).
@@ -148,6 +150,7 @@ class Run(Dag):
                 process=ProcessSettings.from_metadata(obj._metadata),
                 config=self.config,
                 code=self.code,
+                asked=self.asked,
             ),
             pools=self.placement[obj.object_id],
             throttle=None

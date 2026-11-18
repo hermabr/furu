@@ -13,6 +13,7 @@ from furu.code_trace import StaleCodeError
 from furu.config import _Config, _set_config
 from furu.core import Spec
 from furu.dependencies import _DependencyNotReady, missing_dependencies
+from furu.execution.launch import asked
 from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import (
     _close_sections,
@@ -36,7 +37,8 @@ def _execute(job: Job) -> JobResult:
     _set_submitted_repo_root(Path(job.provenance.git.repo_root))
     try:
         objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
-        _ensure_group_result(objs, submit_provenance=job.provenance)
+        with asked(job.asked):
+            _ensure_group_result(objs, submit_provenance=job.provenance)
         return JobCompletedResult()
     except _DependencyNotReady as exc:
         return JobBlockedResult(
