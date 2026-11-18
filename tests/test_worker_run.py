@@ -1089,25 +1089,20 @@ def test_a_failed_batch_retries_each_spec_and_points_at_the_batchs_log(
 def test_two_metadata_under_one_batch_key_stop_the_run_before_anything_is_sent() -> (
     None
 ):
-    with pytest.raises(dag_module.MixedBatchError, match="differ in Metadata reuse"):
+    with pytest.raises(ValueError, match="differ in Metadata reuse"):
         _new_run([MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)])
 
 
-def test_two_metadata_among_found_specs_fail_the_job_that_asked() -> None:
-    parent, other = RunLeaf(value=1), RunLeaf(value=2)
-    run = _new_run([parent, other], max_retries_per_object=0)
+def test_two_metadata_among_found_specs_stop_the_run() -> None:
+    parent = RunLeaf(value=1)
+    run = _new_run([parent])
     run.take_submissions()
 
-    run.job_result(
-        parent.object_id,
-        _blocked(MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)),
-    )
-
-    assert set(run.failed) == {parent.object_id}
-    assert "differ in Metadata reuse" in run.failures[parent.object_id][0]
-    # The rest of the run goes on.
-    assert set(run.running) == {other.object_id}
-    _assert_one_state(run)
+    with pytest.raises(RuntimeError, match="ValueError: .* differ in Metadata reuse"):
+        run.job_result(
+            parent.object_id,
+            _blocked(MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)),
+        )
 
 
 @pytest.mark.parametrize(
