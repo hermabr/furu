@@ -251,6 +251,12 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
                     "stores too"
                 )
 
+    for name in sorted(ignore - unexplained.keys() - {""}):
+        logger.warning(
+            "%s names %s, which is no folder this launch would leave behind",
+            IGNORE_STORED,
+            name,
+        )
     if asking := sorted(unexplained.keys() - ignore):
         lines = "".join(
             f"  {line}\n" for name in asking for line in sorted(unexplained[name])

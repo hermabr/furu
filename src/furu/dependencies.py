@@ -70,10 +70,12 @@ def dependency[TSpec: Spec, T](
     field of the spec, code the method ran or a result it loaded has changed,
     or when something reads the field. It changes speed and nothing else, as
     long as the method reads nothing but those: furu does not notice a file, an
-    environment variable or a web page that changes. A spec the method uses
-    that was already named or filled, and that no field this one was built with
-    holds, directly or through another spec, has its own dependency methods
-    called again in each such call, so that a change to their code is noticed too.
+    environment variable or a web page that changes, nor whether a result is
+    stored as ``.done`` or a caught ``furu.Missing`` told it, which it warns
+    about. A spec the method uses that was already named or filled, and that
+    no field this one was built with holds, directly or through another spec,
+    has its own dependency methods called again in each such call, so that a
+    change to their code is noticed too.
     """
     if func is None:
         return partial(_Dependency, remember=remember)
@@ -206,12 +208,13 @@ class Returned:
                 if id(spec := pending.pop()) not in met:
                     met[id(spec)] = spec, spec
                     pending += specs_in(_field_values(spec))
-            token = _met.set(met)
+            token, checks = _met.set(met), _checked.set(run.checked)
             try:
                 value = vars(obj)[self.name] = self.func(obj)
                 found = self._fingerprint(obj, value)
             finally:
                 _met.reset(token)
+                _checked.reset(checks)
         try:
             trace = build_trace(
                 run,
@@ -229,6 +232,14 @@ class Returned:
 # Inside the traced call of a ``remember=True`` method: each spec the call has
 # met, by identity, with the spec that stands in for it there.
 _met: ContextVar[dict[int, tuple[Spec, Spec]] | None] = ContextVar("_met", default=None)
+# And what the call checked that its trace does not see.
+_checked: ContextVar[set[str] | None] = ContextVar("_checked", default=None)
+
+
+def checked(what: str) -> None:
+    """Note that the traced ``remember=True`` call this runs in, if any, did ``what``."""
+    if (checks := _checked.get()) is not None and not any_under_creation():
+        checks.add(what)
 
 
 def fresh(obj: Spec) -> Spec:
