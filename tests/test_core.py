@@ -10,7 +10,6 @@ from dataclasses import (
     replace,
 )
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 from unittest.mock import patch
@@ -146,11 +145,6 @@ class ScratchWritingValue(Spec[str]):
         if not payload_path.exists():
             payload_path.write_text(self.name, encoding="utf-8")
         return payload_path.read_text(encoding="utf-8")
-
-
-class Fruit(Enum):  # TODO: test enums at some point
-    apple = "apple"
-    banana = "banana"
 
 
 class A[T](Spec):
