@@ -430,8 +430,7 @@ class Manager:
                 for spec in theirs:
                     self.dag.block(spec, message.after)
             except RuntimeError as exc:  # a dependency cycle
-                reason = f"{type(exc).__name__}: {exc}"
-                self.outbox.append((script, ErrorMessage(reason=reason)))
+                self.outbox.append((script, ErrorMessage(reason=str(exc))))
             for spec in theirs:
                 self.stopped_in[spec].held = False
             self._queue_ready()

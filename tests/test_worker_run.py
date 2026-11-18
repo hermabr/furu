@@ -1120,8 +1120,8 @@ def test_a_blocked_attempt_reruns_once_what_it_found_is_built() -> None:
     manager._rerun(script, RerunMessage(specs=_ids([cycle]), after=_ids([lazy])))
     assert _sent(manager) == [
         ErrorMessage(
-            reason=f"RuntimeError: dependency cycle: {cycle._log_label} and "
-            f"{lazy._log_label} wait for each other"
+            reason=f"dependency cycle: {cycle._log_label} asks for "
+            f"{lazy._log_label}, which already waits for it"
         )
     ]
 

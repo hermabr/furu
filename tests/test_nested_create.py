@@ -159,7 +159,8 @@ def test_dependency_cycle_raises_instead_of_looping() -> None:
         a.create()
 
     assert str(exc_info.value) == (
-        f"dependency cycle: {b._log_label} and {a._log_label} wait for each other"
+        f"dependency cycle: {b._log_label} asks for {a._log_label}, "
+        "which already waits for it"
     )
 
 
