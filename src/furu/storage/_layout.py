@@ -18,16 +18,19 @@ from furu.utils import _hash_dict_deterministically
 # or the one spec of a class without @furu.batched.
 
 FIXED = "fixed"
+# Starts the name of a run with more than one row; a spec hash is hex only.
+BATCH = "batch-"
 
 
 def run_name(spec_hashes: Sequence[str]) -> str:
     """A run is named by the hashes of its specs in row order.
 
-    One spec's run has that spec's own hash, so it is found by name.
+    One spec's run has that spec's own hash, so it is found by name. A batch's
+    name starts with BATCH, so a listing tells the two apart.
     """
     if len(spec_hashes) == 1:
         return spec_hashes[0]
-    return _hash_dict_deterministically(list(spec_hashes))
+    return BATCH + _hash_dict_deterministically(list(spec_hashes))
 
 
 def attempts_dir_in(class_dir: Path) -> Path:
