@@ -318,10 +318,12 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 for k, v in obj.items()
             }
         case x if is_dataclass(x):
+            # Named first: a class whose name is refused must stay off the list.
+            name = stored_name(type(x))
             nested.add(type(x))
             return {
                 KINDMARKER: "instance",
-                CLASSMARKER: stored_name(type(x)),
+                CLASSMARKER: name,
                 FIELDSMARKER: hashed_fields(x, artifact_serializers, nested),
             }
         case PydanticBaseModel():
