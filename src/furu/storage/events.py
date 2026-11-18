@@ -42,7 +42,7 @@ def _append(run_dir: Path, text: str) -> None:
 
 
 def _line(event: str, **fields: object) -> str:
-    at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     return json.dumps({"event": event, "at": at, **fields}, separators=(",", ":"))
 
 
