@@ -45,7 +45,7 @@ from furu.storage._layout import (
     version_dirs_in,
 )
 from furu.storage.directory import SpecDirectory
-from furu.storage.stored import load_rows, stored_row
+from furu.storage.stored import Stored, load_rows, stored_row
 from furu.utils import (
     _hash_dict_deterministically,
     nfs_safe_unique_name,
@@ -226,10 +226,17 @@ class Spec[T](_FuruDataclassTransform, ABC):
     def load_existing(self) -> T:
         if (row := stored_row(self)) is not None:
             return load_rows([self], [row])[0]
+        # A spec without the decorator is not looked for in batch folders.
+        row = None if is_batched(type(self)) else Stored().listed(self, batches=True)
         raise Missing(
             f"{self._log_label}.load_existing() could not find a result. "
-            "load_existing() only loads existing results; use create() to compute "
-            "missing results."
+            + (
+                f"Its result is in the batch folder {row.run}, stored when its "
+                "class had @furu.batched. Put the decorator back to load it."
+                if row
+                else "load_existing() only loads existing results; use create() "
+                "to compute missing results."
+            )
         )
 
     @final

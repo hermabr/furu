@@ -119,6 +119,7 @@ class BlocksThenFailsOnce(Spec[int]):
 def test_one_specs_run_is_named_by_its_hash_and_a_batch_by_its_row_order() -> None:
     assert run_name(["03be"]) == "03be"
     assert run_name(["03be", "9c02"]) != run_name(["9c02", "03be"])
+    assert run_name(["03be", "9c02"]).startswith("batch-")
 
 
 def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
@@ -281,9 +282,9 @@ def test_a_run_is_read_once_and_a_new_listing_reads_what_was_added(
     assert read == [run_of(old).name, new._artifact_hash]
 
 
-def test_adding_the_decorator_finds_one_row_runs_and_removing_it_stops_the_launch() -> (
-    None
-):
+def test_adding_the_decorator_finds_one_row_runs_and_removing_it_stops_the_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert furu.create([Merge(n=1), Merge(n=2)]) == [1, 2]
 
     # Nothing moves: a run with one row is found by the same listing.
@@ -294,9 +295,24 @@ def test_adding_the_decorator_finds_one_row_runs_and_removing_it_stops_the_launc
 
     assert Merge(n=1).done
     assert not Merge(n=3).done
+    held = run_of(batch[0])
+    read: list[str] = []
+    events = stored._events
+
+    def spy(runs: Sequence[Path]) -> list[bytes]:
+        read.extend(run.name for run in runs)
+        return events(runs)
+
+    monkeypatch.setattr(stored, "_events", spy)
+    monkeypatch.setattr(stored, "_READ", {})  # as a new process
+    with pytest.raises(furu.Missing, match=re.escape(str(held))):
+        Merge(n=3).load_existing()
+
     with pytest.raises(RuntimeError, match="Put the decorator back") as error:
         furu.create([Merge(n=1), Merge(n=3)])
-    assert f"Merge: {run_of(batch[0])}" in str(error.value)
+    assert f"Merge: {held}" in str(error.value)
+    # Only the batch folder is read, once per process; never the one-row runs.
+    assert read == [held.name]
 
 
 def test_delete_raises_on_a_batched_spec_and_names_its_run() -> None:
