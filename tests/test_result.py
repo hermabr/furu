@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import BaseModel, ConfigDict
+from runs import run_of
 
 import furu
 from furu import Ref, Spec
@@ -27,11 +28,7 @@ from furu.result.codec import (
     CodecMeta,
     NumpyNpyCodec,
 )
-from furu.storage._layout import (
-    data_dir_in,
-    result_dir_in,
-    version_dir_in,
-)
+from furu.storage._layout import data_dir_in, result_dir_in
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")
@@ -119,13 +116,13 @@ def test_json_only_result_is_one_manifest_and_is_not_recomputed() -> None:
     obj = JsonResult()
     expected = {"metrics": {"loss": 0.12, "ok": True}, "items": [1, 2, None, "x"]}
 
-    assert obj.status == "missing"
+    assert not obj.done
     assert obj.create() == expected
-    assert obj.status == "done"
+    assert obj.done
     assert obj.create() == expected
     assert obj.load_existing() == expected
     assert len(JsonResult.create_calls) == 1
-    result_dir = result_dir_in(version_dir_in(obj._base_dir))
+    result_dir = result_dir_in(run_of(obj))
     assert [path.name for path in result_dir.iterdir()] == ["manifest.json"]
 
 
@@ -156,7 +153,7 @@ def test_data_dir_path_follows_publish() -> None:
 
     result = obj.create()
 
-    version = version_dir_in(obj._base_dir)
+    version = run_of(obj)
     assert result == data_dir_in(version).resolve() / "model.bin"
     assert result.read_text(encoding="utf-8") == "weights"
     assert obj.load_existing() == result
@@ -554,8 +551,8 @@ def test_scratch_files_survive_until_codec_save() -> None:
 
     value = obj.create()
 
-    assert not (version_dir_in(obj._base_dir) / "scratch").exists()
-    assert value.source.is_relative_to(result_dir_in(version_dir_in(obj._base_dir)))
+    assert not (run_of(obj) / "scratch").exists()
+    assert value.source.is_relative_to(result_dir_in(run_of(obj)))
     assert value.source.read_text(encoding="utf-8") == "lazy"
 
 
@@ -626,7 +623,7 @@ def test_task_result_codecs_take_priority_over_auto_registered_codec() -> None:
 
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 10
-    artifact_dir = result_dir_in(version_dir_in(obj._base_dir)) / "rows" / "0" / "root"
+    artifact_dir = result_dir_in(run_of(obj)) / "rows" / "0" / "root"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
 
@@ -638,7 +635,7 @@ def test_annotated_codec_takes_priority_over_auto_registered_codec() -> None:
 
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 11
-    artifact_dir = result_dir_in(version_dir_in(obj._base_dir)) / "rows" / "0" / "root"
+    artifact_dir = result_dir_in(run_of(obj)) / "rows" / "0" / "root"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
 
@@ -825,12 +822,7 @@ def test_annotated_codec_selects_artifact_storage() -> None:
 
     assert isinstance(loaded, AnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
-    assert (
-        result_dir_in(version_dir_in(obj._base_dir))
-        / "artifacts"
-        / "weights"
-        / "data.npy"
-    ).exists()
+    assert (result_dir_in(run_of(obj)) / "artifacts" / "weights" / "data.npy").exists()
 
 
 def test_generic_furu_base_with_annotated_result_codec_is_rejected() -> None:
@@ -846,12 +838,7 @@ def test_strict_pydantic_annotated_codec_selects_artifact_storage() -> None:
 
     assert isinstance(loaded, StrictAnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
-    assert (
-        result_dir_in(version_dir_in(obj._base_dir))
-        / "artifacts"
-        / "weights"
-        / "data.npy"
-    ).exists()
+    assert (result_dir_in(run_of(obj)) / "artifacts" / "weights" / "data.npy").exists()
 
     loaded_again = obj.create()
     assert isinstance(loaded_again, StrictAnnotatedArrayOutput)
@@ -900,12 +887,7 @@ def test_ref_field_resolves_codec_from_registry_and_loads_on_demand() -> None:
     assert isinstance(created, RefArrayOutput)
     assert isinstance(created.weights, Ref)
     assert np.array_equal(created.weights.load(), np.arange(4))
-    assert (
-        result_dir_in(version_dir_in(obj._base_dir))
-        / "artifacts"
-        / "weights"
-        / "data.npy"
-    ).exists()
+    assert (result_dir_in(run_of(obj)) / "artifacts" / "weights" / "data.npy").exists()
 
     loaded_again = obj.create()
     assert isinstance(loaded_again, RefArrayOutput)
@@ -962,7 +944,7 @@ def test_ref_codec_conflicts_with_different_annotated_codec() -> None:
 def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     obj = DataDirPathResult()
     loaded = obj.create()
-    data_path = data_dir_in(version_dir_in(obj._base_dir)) / "data.zarr"
+    data_path = data_dir_in(run_of(obj)) / "data.zarr"
 
     assert loaded["first"].path.resolve() == data_path.resolve()
     # Data-dir paths move when the attempt is published, so the creating run
@@ -971,11 +953,7 @@ def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     assert loaded["second"].path.resolve() == data_path.resolve()
 
     assert not (
-        result_dir_in(version_dir_in(obj._base_dir))
-        / "rows"
-        / "0"
-        / "first"
-        / "data.zarr"
+        result_dir_in(run_of(obj)) / "rows" / "0" / "first" / "data.zarr"
     ).exists()
 
     loaded_again = obj.load_existing()
@@ -1100,12 +1078,7 @@ def test_numpy_array_round_trips_as_a_plain_array() -> None:
     obj = NumpyResult()
     created = obj.create()
 
-    assert (
-        result_dir_in(version_dir_in(obj._base_dir))
-        / "artifacts"
-        / "weights"
-        / "data.npy"
-    ).exists()
+    assert (result_dir_in(run_of(obj)) / "artifacts" / "weights" / "data.npy").exists()
     for loaded in (created, obj.load_existing()):
         assert _same(loaded, {"weights": np.arange(10, dtype=np.float32)})
 
@@ -1120,10 +1093,7 @@ def test_polars_dataframe_round_trips() -> None:
     loaded = obj.create()
 
     assert (
-        result_dir_in(version_dir_in(obj._base_dir))
-        / "artifacts"
-        / "frame"
-        / "data.parquet"
+        result_dir_in(run_of(obj)) / "artifacts" / "frame" / "data.parquet"
     ).exists()
     assert isinstance(loaded, dict)
     frame = loaded["frame"]
@@ -1142,7 +1112,7 @@ def test_nested_numpy_paths_use_list_length_padded_indexes() -> None:
     obj = NestedNumpyResult()
     loaded = obj.create()
 
-    layers_dir = result_dir_in(version_dir_in(obj._base_dir)) / "artifacts" / "layers"
+    layers_dir = result_dir_in(run_of(obj)) / "artifacts" / "layers"
     for i in range(10):
         weights_file = layers_dir / f"{i:02d}" / "weights" / "data.npy"
         assert weights_file.exists(), f"missing {weights_file}"

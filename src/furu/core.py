@@ -22,9 +22,9 @@ from furu.dependencies import (
     _Dependency,
     dependency_field,
     is_under_creation,
-    record_dependency,
+    record_loaded,
 )
-from furu.locking import LockError, is_active_lock, lock
+from furu.locking import lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.migration.schema import held
@@ -38,11 +38,15 @@ from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
     attempt_dir_in,
-    compute_lock_path_in,
+    attempts_dir_in,
+    lock_path_in,
     provenance_path_in,
+    run_dir_in,
+    run_name,
+    version_dirs_in,
 )
 from furu.storage.directory import SpecDirectory
-from furu.storage.stored import load_stored_result, stored_version
+from furu.storage.stored import load_stored_result, stored_run
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
@@ -74,7 +78,7 @@ _RESERVED_FIELD_NAMES = frozenset(
     {
         "create",
         "metadata",
-        "status",
+        "done",
         "directory",
         "load_existing",
         "delete",
@@ -204,7 +208,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 "create() spawns threads that need .directory, propagate "
                 "context with contextvars.copy_context()."
             )
-        return SpecDirectory(attempt_dir_in(self._base_dir))
+        return SpecDirectory(self._attempt_dir)
 
     @final
     @cached_property
@@ -217,9 +221,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def load_existing(self) -> T:
-        if (version := stored_version(self)) is not None:
-            record_dependency(self, version)
-            return load_stored_result(self, version)
+        if (run := stored_run(self)) is not None:
+            record_loaded(run)
+            return load_stored_result(self, run)
         raise Missing(
             f"{self._log_label}.load_existing() could not find a result. "
             "load_existing() only loads existing results; use create() to compute "
@@ -228,14 +232,14 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def provenance(self) -> Provenance:
-        if (version := stored_version(self)) is None:
+        if (run := stored_run(self)) is None:
             raise Missing(
                 f"{self._log_label}.provenance() could not find a result. "
                 "Provenance is recorded when a result is computed; use create() "
                 "to compute it first."
             )
-        record_dependency(self, version)
-        path = provenance_path_in(version)
+        record_loaded(run)
+        path = provenance_path_in(run)
         if not path.exists():
             raise Missing(
                 f"{self._log_label}.provenance(): the result exists but "
@@ -247,45 +251,41 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @property
-    def status(self) -> Literal["missing", "running", "incomplete", "done"]:
-        if stored_version(self) is not None:
-            return "done"
-        if is_active_lock(compute_lock_path_in(self._base_dir)):
-            return "running"
-        if attempt_dir_in(self._base_dir).exists():
-            # An attempt started and did not finish (crashed, failed, or
-            # blocked on a dependency).
-            return "incomplete"
-        return "missing"
+    def done(self) -> bool:
+        """Whether a result is stored and its code still matches.
+
+        A spec that is being computed, or whose attempt stopped, is not done.
+        """
+        return stored_run(self) is not None
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
-        if not self._base_dir.exists():
-            return False
+        """Remove this spec's runs under every code version, and its working folder.
 
-        tombstone_path: Path | None = None
-        try:
-            with lock(compute_lock_path_in(self._base_dir)):
-                if not self._base_dir.exists():
+        A traced class keeps each version's trace.json, so what was built on
+        the deleted results stays done.
+        """
+        if not self._class_dir.is_dir():
+            return False  # nothing of this class was ever stored here
+        attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
+        with lock(lock_path_in(self._class_dir, self._run_name)):
+            folders = [self._attempt_dir] + [
+                run_dir_in(version, self._run_name)
+                for version in version_dirs_in(self._class_dir)
+            ]
+            folders = [folder for folder in folders if folder.is_dir()]
+            if not folders:
+                return False
+            if mode == "prompt":
+                listed = ", ".join(map(str, folders))
+                answer = input(f"Do you want to delete {listed}? [y/N] ")
+                if answer.strip().lower() != "y":
                     return False
-
-                if mode == "prompt" and (
-                    input(f"Do you want to delete {self._base_dir}? [y/N] ")
-                    .strip()
-                    .lower()
-                    != "y"
-                ):
-                    return False
-
-                tombstone_path = nfs_safe_unique_name(self._base_dir, name="deleting")
-                self._base_dir.rename(tombstone_path)
-        except LockError:
-            if tombstone_path is None:
-                raise
-
-        if tombstone_path is None:
-            return False
-        shutil.rmtree(tombstone_path)
+            for folder in folders:
+                # Renamed first, so no reader finds half a run.
+                tombstone = nfs_safe_unique_name(folder, name="deleting")
+                folder.rename(tombstone)
+                shutil.rmtree(tombstone)
         return True
 
     @final
@@ -334,13 +334,18 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @cached_property
-    def _base_dir(self) -> Path:
-        return (
-            self._metadata.storage
-            / self._stored_name
-            / self._class_part
-            / self._artifact_hash
-        )
+    def _class_dir(self) -> Path:
+        return self._metadata.storage / self._stored_name / self._class_part
+
+    @final
+    @property
+    def _run_name(self) -> str:
+        return run_name([self._artifact_hash])
+
+    @final
+    @property
+    def _attempt_dir(self) -> Path:
+        return attempt_dir_in(self._class_dir, self._run_name)
 
     @final
     @cached_property

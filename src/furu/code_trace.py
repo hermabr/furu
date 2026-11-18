@@ -1,9 +1,13 @@
 """Traced code versions: which repo code a create() ran, and whether it changed.
 
-A traced spec publishes its result to ``v-<hash>/``, where the hash covers a
-fingerprint of every repo file its create() reached and the versions of the
-dependencies it loaded. A lookup re-fingerprints the files named in the
-version's trace.json and accepts it only if the hash still equals its name.
+A traced class publishes its runs under one folder per code version. The
+folder's trace.json says which of the class's own functions ran, with a
+fingerprint of each repo file they reached, and names the code-version folders
+of the results create() loaded: what it was built on, not a copy of their
+traces. The folder's name is a hash of both. A version is live while the files
+still have those fingerprints and every version it names is live, so an edit
+upstream reaches the results built on it one name at a time. A process decides
+this once per version: it runs the code it imported, whatever is edited later.
 
 A file's fingerprint is its AST with docstrings dropped, keeping only the
 functions that ran, the module-level bindings that kept code uses (a closure
@@ -45,9 +49,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.config import CodeVersion, get_config
-from furu.storage._layout import trace_path_in
-from furu.utils import _hash_dict_deterministically, spec_label
+from furu.config import get_config
+from furu.logging import get_logger
+from furu.storage._layout import FIXED, trace_path_in, version_dirs_in
+from furu.utils import _hash_dict_deterministically
 
 _PROCESS_START_NS = time.time_ns()
 _PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -605,144 +610,117 @@ def _code(
     return code, warnings
 
 
-# --- trace.json and lookup --------------------------------------------------
+# --- trace.json and code versions ---------------------------------------------
 
 
 class Trace(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    code_version: CodeVersion
-    python: str | None = None  # the minor version, for traced specs
-    code: dict[str, FileTrace] | None = None
-    # object_id -> its loaded version directory, relative to the storage root
-    dependencies: dict[str, str] = {}
+    python: str  # the minor version
+    code: dict[str, FileTrace]
+    # The code-version folders of the results create() loaded, relative to the
+    # storage root. "fixed" ones are always live, so they are left out.
+    built_on: tuple[str, ...] = ()
 
-    def hashed_dependencies(self) -> dict[str, str]:
-        """A fixed spec's version covers only dependencies that were traced."""
-        if self.code is not None:
-            return self.dependencies
-        return {k: v for k, v in self.dependencies.items() if Path(v).name != "v-fixed"}
-
-    def version_name(self, fingerprints: Mapping[str, str | None] | None = None) -> str:
-        dependencies = self.hashed_dependencies()
-        if self.code is None:
-            if not dependencies:
-                return "v-fixed"
-            return "v-fixed-" + _hash_dict_deterministically(
-                {"dependencies": dependencies}
-            )
-        if fingerprints is None:
-            fingerprints = {rel: entry.fingerprint for rel, entry in self.code.items()}
-        return "v-" + _hash_dict_deterministically(
-            {
-                "python": self.python,
-                "code": dict(fingerprints),
-                "dependencies": dependencies,
-            }
+    @property
+    def version(self) -> str:
+        """The name of the code-version folder this trace is published under."""
+        fingerprints = {rel: entry.fingerprint for rel, entry in self.code.items()}
+        return _hash_dict_deterministically(
+            {"python": self.python, "code": fingerprints, "built_on": self.built_on}
         )
 
 
-_TRACES: dict[Path, Trace] = {}  # published versions never change
+# What this process found in each code-version folder: its trace, and why it
+# is outdated (None when live). A published trace.json never changes, and the
+# process keeps running the code it imported.
+_CHECKED: dict[str, tuple[Trace, str | None]] = {}
+_MANY_LIVE_VERSIONS = 100
+_WARNED_MANY: set[Path] = set()
 
 
-def _read_trace(version: Path) -> Trace | None:
-    if (trace := _TRACES.get(version)) is None:
-        try:
-            trace = Trace.model_validate_json(trace_path_in(version).read_bytes())
-        except (OSError, ValueError):
-            return None
-        _TRACES[version] = trace
-    return trace
-
-
-def _check(
-    version: Path, storage_root: Path, memo: dict[Path, str | None]
-) -> str | None:
-    """None if version is valid for the code on disk now, otherwise why not."""
-    if version in memo:
-        return memo[version]
-    memo[version] = why = _check_uncached(version, storage_root, memo)
-    return why
-
-
-def _check_uncached(
-    version: Path, storage_root: Path, memo: dict[Path, str | None]
-) -> str | None:
-    if version.name == "v-fixed":
-        return None if version.is_dir() else f"{version} is missing"
-    if (trace := _read_trace(version)) is None:
-        return f"{version} has no readable trace.json"
-    fingerprints = None
-    if trace.code is not None:
-        if trace.python != _PYTHON:
-            return f"Python {trace.python} → {_PYTHON}"
-        root = repo_root()
-        fingerprints = {
-            rel: _fingerprint(_read(root / rel), frozenset(entry.ran), entry.uses_key)
-            for rel, entry in trace.code.items()
-        }
-        for rel, entry in trace.code.items():
-            if fingerprints[rel] != entry.fingerprint:
-                why = f"{rel} changed" if fingerprints[rel] else f"{rel} is missing"
-                if entry.uses == "all":
-                    why += f" (all names kept: {entry.reason})"
-                return why
-    for object_id, dependency in trace.hashed_dependencies().items():
-        if _check(storage_root / dependency, storage_root, memo) is not None:
-            return f"its dependency {spec_label(*object_id.split(':'))} changed"
-    if trace.version_name(fingerprints) != version.name:
-        return f"{version.name} does not match its trace.json"
+def _changed(trace: Trace) -> str | None:
+    """Why the code a trace ran differs from the code on disk, if it does."""
+    if trace.python != _PYTHON:
+        return f"Python {trace.python} → {_PYTHON}"
+    root = repo_root()
+    for rel, entry in trace.code.items():
+        now = _fingerprint(_read(root / rel), frozenset(entry.ran), entry.uses_key)
+        if now != entry.fingerprint:
+            why = f"{rel} changed" if now else f"{rel} is missing"
+            if entry.uses == "all":
+                why += f" (all names kept: {entry.reason})"
+            return why
     return None
 
 
-def _candidates(identity_dir: Path, code_version: CodeVersion) -> list[Path]:
+def _check(version: Path) -> tuple[Trace, str | None] | None:
+    """A hashed version folder's trace and why it is outdated (None if live).
+
+    None when it has no readable trace.json. The file may only not be visible
+    on this machine yet, so that answer is not kept, nor one that rests on it.
+    """
+    key = os.path.normpath(version)
+    if (checked := _CHECKED.get(key)) is not None:
+        return checked
     try:
-        entries = [
-            entry
-            for entry in os.scandir(identity_dir)
-            if entry.name.startswith("v-")
-            and entry.name != "v-fixed"
-            and entry.is_dir()
-        ]
-    except FileNotFoundError:
-        return []
-    fixed = code_version == "fixed"
-    entries = [e for e in entries if e.name.startswith("v-fixed-") == fixed]
-    entries.sort(key=lambda entry: entry.stat().st_mtime_ns, reverse=True)
-    return [Path(entry.path) for entry in entries]
+        trace = Trace.model_validate_json(trace_path_in(Path(key)).read_bytes())
+    except (OSError, ValueError):
+        return None
+    why = _changed(trace)
+    if why is None:
+        storage_root = Path(key).parents[2]
+        for name in trace.built_on:
+            upstream = storage_root / name
+            if why_outdated(upstream) is not None:
+                why = f"it was built on {name}, which is outdated"
+                if os.path.normpath(upstream) not in _CHECKED:
+                    return trace, why
+                break
+    _CHECKED[key] = trace, why
+    return trace, why
 
 
-def valid_version(
-    identity_dir: Path, code_version: CodeVersion, *, storage_root: Path
-) -> Path | None:
-    """The published version still valid for the code on disk."""
-    if code_version != "traced" and (fixed := identity_dir / "v-fixed").is_dir():
-        return fixed  # one stat, the common case
-    memo: dict[Path, str | None] = {}
-    for version in _candidates(identity_dir, code_version):
-        if _check(version, storage_root, memo) is None:
-            return version
-    return None
+def why_outdated(version: Path) -> str | None:
+    """None if the code version at ``version`` is live, otherwise why not.
+
+    It is live when its own code still matches the code on disk and every
+    version it was built on is live.
+    """
+    if version.name == FIXED:
+        return None
+    checked = _check(version)
+    return checked[1] if checked is not None else "its trace.json is missing"
 
 
-def why_outdated(
-    identity_dir: Path, code_version: CodeVersion, *, storage_root: Path
-) -> str | None:
-    """Why the newest stored version of this kind is no longer valid, if any."""
-    candidates = _candidates(identity_dir, code_version)
-    return _check(candidates[0], storage_root, {}) if candidates else None
+def versions(class_dir: Path) -> list[tuple[Path, str | None]]:
+    """A traced class's code versions, each with why it is outdated (None if live)."""
+    found = [
+        (version, checked[1])
+        for version in version_dirs_in(class_dir)
+        if version.name != FIXED and (checked := _check(version)) is not None
+    ]
+    live = sum(why is None for _, why in found)
+    if live > _MANY_LIVE_VERSIONS and class_dir not in _WARNED_MANY:
+        _WARNED_MANY.add(class_dir)
+        get_logger().warning(
+            "%s has %d live code versions, and every lookup checks each of them",
+            class_dir,
+            live,
+        )
+    return found
 
 
 # --- tracing create() ---------------------------------------------------------
 
 
 class _TraceLog:
-    """attempt/trace.log: an append-only record of what a traced create() ran.
+    """trace.log in a working folder: an append-only record of what a traced create() ran.
 
     One JSON array per line: ["source", file, text] when a file first runs,
     ["hash", file, digest] for the code of a file imported earlier,
-    ["ran", file, qualname], ["dependency", object_id, version] and
-    ["stale", file] when what the process imported is unknown.
+    ["ran", file, qualname], ["built_on", version] and ["stale", file] when
+    what the process imported is unknown.
     """
 
     def __init__(self, paths: Sequence[Path]) -> None:
@@ -781,7 +759,7 @@ class LogState:
     ran: dict[str, set[str]] = field(default_factory=dict)
     sources: dict[str, str] = field(default_factory=dict)
     hashes: dict[str, str] = field(default_factory=dict)
-    dependencies: dict[str, str] = field(default_factory=dict)
+    built_on: set[str] = field(default_factory=set)
     stale: set[str] = field(default_factory=set)
 
     @classmethod
@@ -803,8 +781,8 @@ class LogState:
                     state.hashes.setdefault(key, digest)
                 case "ran", [qualname]:
                     state.ran.setdefault(key, set()).add(qualname)
-                case "dependency", [version]:
-                    state.dependencies[key] = version
+                case "built_on", []:
+                    state.built_on.add(key)
                 case "stale", []:
                     state.stale.add(key)
         return state
@@ -814,7 +792,7 @@ class LogState:
             self.ran.setdefault(rel, set()).update(names)
         self.sources |= other.sources
         self.hashes |= other.hashes
-        self.dependencies |= other.dependencies
+        self.built_on |= other.built_on
         self.stale |= other.stale
 
 
@@ -932,11 +910,11 @@ def _trace_into(collector: _Collector | None) -> None:
 
 @dataclass(slots=True)
 class Recording:
-    """What one create() call (one spec, or one batch) ran and loaded."""
+    """What one traced create() call (one spec, or one batch) ran and loaded."""
 
-    code_version: CodeVersion
-    dependencies: dict[str, str]
-    log: Callable[[list[str]], None] | None = None
+    storage_root: Path
+    built_on: set[str] = field(default_factory=set)
+    _log: Callable[[list[str]], None] | None = None
     _collector: _Collector | None = None
 
     @property
@@ -945,19 +923,30 @@ class Recording:
             return {}
         return {rel: frozenset(names) for rel, names in self._collector.ran.items()}
 
+    def loaded(self, run: Path) -> None:
+        """Note the code version of a published run that create() loaded."""
+        version = run.parent.parent
+        if version.name == FIXED:
+            return
+        name = os.path.relpath(version, self.storage_root)
+        if name not in self.built_on:
+            self.built_on.add(name)
+            if self._log is not None:
+                self._log(["built_on", name])
+
 
 @contextmanager
 def recording(
-    log_paths: Sequence[Path], *, code_version: CodeVersion, resumed: LogState
+    log_paths: Sequence[Path],
+    *,
+    storage_root: Path,
+    resumed: LogState,
 ) -> Generator[Recording]:
     """Trace the repo code a create() runs.
 
     A create never runs another create inline (a missing dependency aborts it),
     so at most one create is traced at a time.
     """
-    if code_version == "fixed":
-        yield Recording(code_version, {})
-        return
     if _active is not None:
         raise RuntimeError("a traced create() is already running in this process")
     root = str(repo_root()) + os.sep
@@ -973,7 +962,7 @@ def recording(
             collector.record(rel, importing=False)
     _trace_into(collector)
     try:
-        yield Recording(code_version, dict(resumed.dependencies), log.write, collector)
+        yield Recording(storage_root, set(resumed.built_on), log.write, collector)
     finally:
         _trace_into(None)
         log.close()
@@ -1012,10 +1001,9 @@ def why_not_resumable(state: LogState | None, *, storage_root: Path) -> str | No
             or b.fingerprint != n.fingerprint
         ):
             return f"{rel} changed"
-    memo: dict[Path, str | None] = {}
-    for object_id, dependency in state.dependencies.items():
-        if _check(storage_root / dependency, storage_root, memo) is not None:
-            return f"its dependency {spec_label(*object_id.split(':'))} changed"
+    for name in sorted(state.built_on):
+        if why_outdated(storage_root / name) is not None:
+            return f"it was built on {name}, which is outdated"
     return None
 
 
@@ -1024,10 +1012,6 @@ _WARNED: set[str] = set()
 
 def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> Trace:
     """The trace.json for a finished create(); raises StaleCodeError if unsafe."""
-    if run.code_version == "fixed":
-        return Trace(
-            code_version="fixed", dependencies=dict(sorted(run.dependencies.items()))
-        )
     root = repo_root()
     code, warnings = _code(run.ran, lambda rel: _read(root / rel), str(root) + os.sep)
     assert run._collector is not None
@@ -1047,9 +1031,4 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
             "so the code that ran may not match the file on disk. Not publishing "
             "the result; rerun in a fresh process."
         )
-    return Trace(
-        code_version="traced",
-        python=_PYTHON,
-        code=code,
-        dependencies=dict(sorted(run.dependencies.items())),
-    )
+    return Trace(python=_PYTHON, code=code, built_on=tuple(sorted(run.built_on)))

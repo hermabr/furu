@@ -61,7 +61,7 @@ class Dag:
 
     def built(self, obj: Spec) -> bool:
         """Completed by this run, or done on disk (perhaps by another run)."""
-        return obj.object_id in self.completed or obj.status == "done"
+        return obj.object_id in self.completed or obj.done
 
     def _check_new(self, nodes: Sequence[DagNode]) -> None:
         """Reject new nodes before they join the graph; runners override this."""
@@ -78,7 +78,7 @@ class Dag:
             if obj.object_id in seen_object_ids:
                 continue
             seen_object_ids.add(obj.object_id)
-            if obj.status == "done":
+            if obj.done:
                 continue
             new.append(DagNode(obj=obj))
             refs = collect_declared_refs(obj)

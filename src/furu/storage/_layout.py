@@ -1,25 +1,71 @@
+import os
+from collections.abc import Sequence
 from pathlib import Path
 
-# A class folder {storage}/{class name}/{class part} holds schema.ndjson and
-# one identity directory per spec, named by its artifact hash. The class name
-# is one path component, so the folders under it are exactly its class parts.
+from furu.utils import _hash_dict_deterministically
+
+# A class folder {storage}/{class name}/{class part} holds schema.ndjson,
+# attempts/ and one folder per code version. The class name is one path
+# component, so the folders under it are exactly its class parts.
 #
-# An identity directory holds spec.json, compute.lock, run.log (every attempt's
-# log), the in-progress attempt/ and one published version directory per code
-# version (v-<hash>, v-fixed or v-fixed-<hash>). attempt/ and every version
-# directory share the run-directory layout below.
+#   attempts/<run>/           the working folder of a run in progress
+#   attempts/<run>.lock       its lock, beside it so that publishing never moves it
+#   <code version>/trace.json which code its runs ran; "fixed" has none
+#   <code version>/runs/<run> a published run, which never changes again
+#
+# A working folder is renamed into runs/ under the same name, so both share
+# the run layout below.
+
+FIXED = "fixed"
 
 
-def spec_path_in(identity_dir: Path) -> Path:
-    return identity_dir / "spec.json"
+def run_name(spec_hashes: Sequence[str]) -> str:
+    """A run is named by the hashes of its specs in row order.
+
+    One spec's run has that spec's own hash, so it is found by name.
+    """
+    if len(spec_hashes) == 1:
+        return spec_hashes[0]
+    return _hash_dict_deterministically(list(spec_hashes))
 
 
-def attempt_dir_in(identity_dir: Path) -> Path:
-    return identity_dir / "attempt"
+def attempts_dir_in(class_dir: Path) -> Path:
+    return class_dir / "attempts"
 
 
-def version_dir_in(identity_dir: Path) -> Path:
-    return identity_dir / "v-fixed"
+def attempt_dir_in(class_dir: Path, run: str) -> Path:
+    return attempts_dir_in(class_dir) / run
+
+
+def lock_path_in(class_dir: Path, run: str) -> Path:
+    return attempts_dir_in(class_dir) / f"{run}.lock"
+
+
+def version_dirs_in(class_dir: Path) -> list[Path]:
+    """The class's code-version folders: all but attempts/ and the schema files."""
+    try:
+        names = sorted(os.listdir(class_dir))
+    except FileNotFoundError:
+        return []
+    return [
+        class_dir / name for name in names if name != "attempts" and "." not in name
+    ]
+
+
+def trace_path_in(version_dir: Path) -> Path:
+    return version_dir / "trace.json"
+
+
+def run_dir_in(version_dir: Path, run: str) -> Path:
+    return version_dir / "runs" / run
+
+
+def events_path_in(run_dir: Path) -> Path:
+    return run_dir / "events.jsonl"
+
+
+def log_path_in(run_dir: Path) -> Path:
+    return run_dir / "log"
 
 
 def data_dir_in(run_dir: Path) -> Path:
@@ -42,16 +88,8 @@ def provenance_path_in(run_dir: Path) -> Path:
     return run_dir / "provenance.json"
 
 
-def trace_path_in(run_dir: Path) -> Path:
-    return run_dir / "trace.json"
-
-
 def trace_log_path_in(run_dir: Path) -> Path:
     return run_dir / "trace.log"
-
-
-def run_log_path_in(identity_dir: Path) -> Path:
-    return identity_dir / "run.log"
 
 
 def schema_path_in(class_dir: Path) -> Path:
@@ -64,7 +102,3 @@ def schema_lock_path_in(class_dir: Path) -> Path:
 
 def execution_log_path_in(executor_dir: Path) -> Path:
     return executor_dir / "execution.log"
-
-
-def compute_lock_path_in(identity_dir: Path) -> Path:
-    return identity_dir / "compute.lock"

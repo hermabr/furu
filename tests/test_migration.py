@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from runs import run_of
 
 import furu
 from furu import Added, MovedFrom, Renamed, Spec
@@ -70,7 +71,7 @@ def _nested(
 
 
 def _schema_lines(spec: Spec) -> list[dict[str, Any]]:
-    text = schema_path_in(spec._base_dir.parent).read_text()
+    text = schema_path_in(spec._class_dir).read_text()
     return [json.loads(line) for line in text.splitlines() if line]
 
 
@@ -89,7 +90,7 @@ def test_an_added_field_is_left_out_of_the_id_at_its_default() -> None:
     other = after(lemma="comer", min_overlap=0.8)
     assert other._class_part == before(lemma="comer")._class_part
     assert other.object_id != before(lemma="comer").object_id
-    assert other.status == "missing"
+    assert not other.done
 
 
 def test_an_added_default_can_be_a_nan_or_a_spec() -> None:
@@ -145,9 +146,11 @@ def test_a_moved_class_keeps_its_old_name_in_ids_and_folders() -> None:
     new = after(site="physics")
     new.create()
     storage = new._metadata.storage
-    assert new._base_dir.relative_to(storage).parts == (
+    assert run_of(new).relative_to(storage).parts == (
         old_name,
         new._class_part,
+        "fixed",
+        "runs",
         new._artifact_hash,
     )
     assert [path.name for path in storage.iterdir()] == [old_name]
@@ -265,13 +268,13 @@ def test_a_class_folder_records_its_names_and_each_added_default() -> None:
         migrations=(Added("min_overlap", default=0.5),),
     )
     spec = before(lemma="comer")
-    assert not schema_path_in(spec._base_dir.parent).exists()
+    assert not schema_path_in(spec._class_dir).exists()
 
     spec.create()
     assert _schema_lines(spec) == [{"names": ["lemma"]}]
 
     # A step is recorded the first time a process looks for the class's results.
-    assert after(lemma="beber").status == "missing"
+    assert not after(lemma="beber").done
     assert _schema_lines(spec) == [
         {"names": ["lemma"]},
         {"added": "min_overlap", "default": 0.5},
@@ -293,8 +296,8 @@ def test_a_new_class_folder_records_every_default_before_its_first_result() -> N
     source = _nested(clip=str, fps=(int, 30), migrations=(fps,))(clip="x")
     spec = video(source=source)
 
-    assert spec.status == "missing"
-    assert not spec._base_dir.parent.exists()
+    assert not spec.done
+    assert not spec._class_dir.exists()
 
     spec.create()
     assert _schema_lines(spec) == [
@@ -327,7 +330,7 @@ def test_a_class_folder_is_recorded_before_its_first_create_runs() -> None:
         after.create()
     assert _schema_lines(spec) == [{"names": ["lemma"]}]
     # The launch stores nothing for a class none of whose specs it starts.
-    assert not after._base_dir.parent.exists()
+    assert not after._class_dir.exists()
 
 
 class _Sources:
@@ -386,7 +389,7 @@ def test_an_edited_default_stops_with_the_step_and_both_values(
     assert "declares the default 25" in str(stopped.value)
     assert "recorded 30" in str(stopped.value)
     with pytest.raises(MigrationError):
-        _ = video(25).status
+        _ = video(25).done
 
 
 def test_a_default_another_checkout_recorded_after_a_lookup_stops_the_next() -> None:
@@ -397,11 +400,11 @@ def test_a_default_another_checkout_recorded_after_a_lookup_stops_the_next() -> 
         )
 
     ours = merge(0.5)
-    assert ours.status == "missing"
+    assert not ours.done
 
     merge(0.6).create()
     with pytest.raises(MigrationError, match="recorded 0.6"):
-        _ = ours.status
+        _ = ours.done
 
 
 def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
@@ -414,7 +417,7 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
     )
     spec = _spec(lemma=str)(lemma="comer")
     spec.create()
-    path = schema_path_in(spec._base_dir.parent)
+    path = schema_path_in(spec._class_dir)
     lock = schema.lock
 
     @contextmanager
@@ -427,7 +430,7 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
     monkeypatch.setattr(schema, "lock", another_process_first)
 
     with pytest.raises(MigrationError, match="recorded 0.5"):
-        _ = after(lemma="comer").status
+        _ = after(lemma="comer").done
     assert _schema_lines(spec) == [
         {"names": ["lemma"]},
         {"added": "min_overlap", "default": 0.5},
@@ -442,18 +445,18 @@ def test_a_line_cut_short_is_skipped_and_the_next_writer_starts_a_new_line() -> 
     )
     spec = _spec(lemma=str)(lemma="comer")
     spec.create()
-    path = schema_path_in(spec._base_dir.parent)
+    path = schema_path_in(spec._class_dir)
     with path.open("a") as file:
         file.write('{"added":"min_overlap","defau')
     torn = path.read_text()
 
-    assert after(lemma="comer").status == "done"
+    assert after(lemma="comer").done
     assert path.read_text() == torn + '\n{"added":"min_overlap","default":0.5}\n'
 
 
 def test_a_names_line_cut_short_is_written_again() -> None:
     spec = _spec(lemma=str)(lemma="comer")
-    path = schema_path_in(spec._base_dir.parent)
+    path = schema_path_in(spec._class_dir)
     path.parent.mkdir(parents=True)
     path.write_text('{"names":["le')
 
@@ -483,15 +486,14 @@ def test_a_launch_asks_before_it_leaves_stored_results_behind(
     message = str(asks.value)
     assert table in message
     assert (
-        f"Merge: {old._base_dir.parent} was stored without the field 'min_overlap'"
-        in message
+        f"Merge: {old._class_dir} was stored without the field 'min_overlap'" in message
     )
     assert message.index("Added(name, default=...)") < message.index("breaking=True")
     assert message.endswith(
         f"FURU_IGNORE_STORED={__name__}.Merge:{old._class_part} for this one launch."
     )
     # Nothing ran, and nothing was stored.
-    assert not new._base_dir.parent.exists()
+    assert not new._class_dir.exists()
     if launch is _on_workers:
         (log,) = get_config().directories.anchored().executions.glob("*/execution.log")
         assert table in log.read_text()
@@ -524,9 +526,9 @@ def test_the_variable_names_the_folders_one_launch_leaves_behind(
     )
     second(lemma="comer").create()
     assert (
-        f"ignoring stored results · Merge: {first._base_dir.parent} was stored "
+        f"ignoring stored results · Merge: {first._class_dir} was stored "
         "without the field 'min_overlap', and this launch stores in "
-        f"{second(lemma='comer')._base_dir.parent}"
+        f"{second(lemma='comer')._class_dir}"
     ) in caplog.messages
     # Nothing about the variable is stored in the class folder.
     assert _schema_lines(second(lemma="comer")) == [{"names": ["lemma", "min_overlap"]}]
@@ -538,7 +540,7 @@ def test_the_variable_names_the_folders_one_launch_leaves_behind(
     monkeypatch.setenv("FURU_IGNORE_STORED", folders[0])
     with pytest.raises(MigrationError) as asks:
         second(lemma="beber").create()
-    assert f"{third._base_dir.parent} was stored" in str(asks.value)
+    assert f"{third._class_dir} was stored" in str(asks.value)
     assert f"FURU_IGNORE_STORED={folders[0]},{folders[2]} " in str(asks.value)
 
     # A launch with nothing missing asks nothing.
@@ -583,7 +585,7 @@ def test_a_nested_class_is_compared_with_the_names_it_was_stored_with(
         video(source=changed(clip="x")).create()
     assert (
         "Video: Vimeo at source was stored without the field 'fps' in "
-        f"{stored._base_dir.parent}"
+        f"{stored._class_dir}"
     ) in str(asks.value)
     folder = f"{__name__}.Video:{stored._class_part}"
     assert f"FURU_IGNORE_STORED={folder} " in str(asks.value)
@@ -637,12 +639,12 @@ def test_a_spec_built_inside_a_create_is_checked_where_it_is_built(
         search(n=1).create()
     # A worker's failure shows the last line of the error.
     last_line = str(failed.value).splitlines()[-1]
-    assert f"Tok: {old._base_dir.parent} was stored" in last_line
-    assert run(peak=1.0).status == "missing"
+    assert f"Tok: {old._class_dir} was stored" in last_line
+    assert not run(peak=1.0).done
 
     # A class the launch asked about is not asked about again.
     furu.create([run(peak=2.0), search(n=1)])
-    assert run(peak=1.0).status == "done"
+    assert run(peak=1.0).done
 
 
 def test_the_launch_table_has_a_row_for_each_stage_with_specs_missing() -> None:

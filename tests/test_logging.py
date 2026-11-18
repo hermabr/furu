@@ -295,10 +295,10 @@ def test_file_formatter_is_always_plain_even_on_a_tty(
     assert furu_logging._Formatter().format(record) == _plain(record)
 
 
-# --- run.log scope ------------------------------------------------------------
+# --- a run's log ---------------------------------------------------------------
 
 
-def test_run_log_scope_writes_records_with_one_open_per_scope(
+def test_log_scope_writes_records_with_one_open_per_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     run_log = tmp_path / "run.log"
@@ -312,7 +312,7 @@ def test_run_log_scope_writes_records_with_one_open_per_scope(
     monkeypatch.setattr(Path, "open", counting_open)
     logger = furu_logging.get_logger()
 
-    with furu_logging._run_log_scope(run_log):
+    with furu_logging._log_scope(run_log):
         for index in range(5):
             logger.info("record %d", index)
     logger.info("outside the scope")
@@ -324,7 +324,7 @@ def test_run_log_scope_writes_records_with_one_open_per_scope(
     ]
 
 
-def test_run_log_scope_captures_stdlib_logging_without_touching_root_level(
+def test_log_scope_captures_stdlib_logging_without_touching_root_level(
     tmp_path: Path,
 ) -> None:
     run_log = tmp_path / "run.log"
@@ -332,7 +332,7 @@ def test_run_log_scope_captures_stdlib_logging_without_touching_root_level(
     level, handlers = root.level, list(root.handlers)
     library = logging.getLogger("some_library")
 
-    with furu_logging._run_log_scope(run_log):
+    with furu_logging._log_scope(run_log):
         library.warning("weights not used")
         library.info("below the root level")
         assert root.level == level
@@ -343,41 +343,15 @@ def test_run_log_scope_captures_stdlib_logging_without_touching_root_level(
     assert re.match(r"^\S+ W some_library weights not used  \[", line)
 
 
-def test_nested_run_log_scope_restores_the_outer_file(tmp_path: Path) -> None:
+def test_nested_log_scope_restores_the_outer_file(tmp_path: Path) -> None:
     logger = furu_logging.get_logger()
 
-    with furu_logging._run_log_scope(tmp_path / "outer.log"):
+    with furu_logging._log_scope(tmp_path / "outer.log"):
         logger.info("before")
-        with furu_logging._run_log_scope(tmp_path / "inner.log"):
+        with furu_logging._log_scope(tmp_path / "inner.log"):
             logger.info("inside")
         logger.info("after")
 
     assert "inside" not in (tmp_path / "outer.log").read_text()
     assert "after" in (tmp_path / "outer.log").read_text()
     assert "inside" in (tmp_path / "inner.log").read_text()
-
-
-def test_sections_frame_the_lead_and_point_batch_members_at_it(
-    tmp_path: Path,
-) -> None:
-    lead_log, member_log = tmp_path / "a" / "run.log", tmp_path / "b" / "run.log"
-    run_logs = [("A:00000:00000", lead_log), ("B:00000:00000", member_log)]
-
-    lead_log.parent.mkdir()
-    with lead_log.open("a") as lead:
-        furu_logging._open_sections(run_logs, lead, "in-process", notes=["a note"])
-        lead.write("output\n")
-        furu_logging._close_sections(run_logs, lead, "ok · 3ms")
-
-    header, note, output, footer, blank = lead_log.read_text().split("\n")[:5]
-    assert re.fullmatch(
-        r"── A:00000:00000 · in-process · host \S+ · pid \d+ · \S+Z", header
-    )
-    assert (note, output, footer, blank) == ("   a note", "output", "── ok · 3ms", "")
-    member_lines = member_log.read_text().splitlines()
-    assert member_lines[0].startswith("── B:00000:00000 · in-process · host ")
-    assert member_lines[1:] == [
-        f"   batched with A:00000:00000 → {lead_log}",
-        "── ok · 3ms",
-        "",
-    ]

@@ -188,7 +188,7 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     while not entered_path.exists():
         assert time.monotonic() < deadline
         time.sleep(POLL_INTERVAL_S)
-    (lock_path,) = data_dir.glob("**/compute.lock")
+    (lock_path,) = data_dir.glob("**/attempts/*.lock")
     _steal_lock(lock_path)
     release_path.touch()
 
@@ -197,10 +197,9 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     assert proc.exitcode == 0
     assert result[0] == "err"
     assert result[2] == RuntimeError.__name__
-    assert result[3].endswith("before writing final result")
-    assert list(data_dir.glob("**/result/manifest.json")) == []
-    assert list(data_dir.glob("**/error-*.log")) == []
-    (run_log,) = data_dir.glob("**/run.log")
-    log_text = run_log.read_text(encoding="utf-8")
+    assert result[3].endswith("before writing the result")
+    assert list(data_dir.glob("**/runs/*")) == []
+    (log,) = data_dir.glob("**/attempts/*/log")
+    log_text = log.read_text(encoding="utf-8")
     assert "create failed" in log_text
-    assert "before writing final result" in log_text
+    assert "before writing the result" in log_text

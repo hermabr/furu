@@ -62,7 +62,7 @@ def worker_loop(
     """
     logger = get_logger(component)
     note = logger.info if worker_log is not None else logger.debug
-    child_slot = ChildSlot(worker=component, backend=backend, worker_log=worker_log)
+    child_slot = ChildSlot(worker=component, backend=backend)
     events: queue.Queue[_Event] = queue.Queue()
     job: messages.Job | None = None
     cancelled = threading.Event()  # replaced with each new job
@@ -114,7 +114,7 @@ def worker_loop(
                             logger.info(
                                 "running %s",
                                 job.label,
-                                extra={"path": job.run_logs[0]},
+                                extra={"path": job.log},
                             )
                         cancelled = threading.Event()
                         _start_job_thread(job, child_slot, cancelled, events)

@@ -19,11 +19,12 @@ from furu.config import _Config, get_config
 from furu.core import Spec
 from furu.dag import Dag, DagNode
 from furu.dependencies import missing_dependencies
+from furu.locking import is_active_lock
 from furu.logging import _display_path, get_logger
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
-from furu.storage._layout import run_log_path_in
+from furu.storage._layout import lock_path_in, log_path_in
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.messages import (
@@ -46,6 +47,11 @@ from furu.worker.messages import (
 logger = get_logger("run")
 
 _POLL_INTERVAL_S = 5.0
+
+
+def _running_elsewhere(obj: Spec) -> bool:
+    """Whether a live worker holds obj's working folder."""
+    return is_active_lock(lock_path_in(obj._class_dir, obj._run_name))
 
 
 @dataclass(slots=True, kw_only=True)
@@ -117,18 +123,15 @@ class Run(Dag):
         while self.ready:  # completing one can make its dependents ready
             object_id = next(iter(self.ready))
             node = self.ready.pop(object_id)
-            match node.obj.status:
-                case "done":
-                    self.complete(node)
-                    logger.info("found %s done", node.obj._log_label)
-                case "running":
-                    self.waiting[object_id] = node
-                    locked += 1
-                case "missing" | "incomplete":
-                    self.running[object_id] = (node, time.monotonic())
-                    submissions.append(self._submission(node))
-                case unreachable:
-                    assert_never(unreachable)
+            if node.obj.done:
+                self.complete(node)
+                logger.info("found %s done", node.obj._log_label)
+            elif _running_elsewhere(node.obj):
+                self.waiting[object_id] = node
+                locked += 1
+            else:
+                self.running[object_id] = (node, time.monotonic())
+                submissions.append(self._submission(node))
         if locked:
             logger.info(
                 "waiting on %d spec%s running elsewhere",
@@ -143,8 +146,7 @@ class Run(Dag):
         return Submission(
             job=Job(
                 artifacts=[artifact],
-                run_logs=[run_log_path_in(obj._base_dir)],
-                attempt=len(self.failures.get(obj.object_id, ())) + 1,
+                log=log_path_in(obj._attempt_dir),
                 execution_log=self.execution_log,
                 provenance=self.provenance,
                 process=ProcessSettings.from_metadata(obj._metadata),
@@ -162,7 +164,7 @@ class Run(Dag):
 
     def poll_waiting(self) -> None:
         for object_id, node in list(self.waiting.items()):
-            if node.obj.status != "running":
+            if not _running_elsewhere(node.obj):
                 self.ready[object_id] = self.waiting.pop(object_id)
 
     def drive(self, connection: ClientConnection) -> None:
@@ -215,7 +217,7 @@ class Run(Dag):
                 errors.append(error)
                 will_retry = len(errors) <= self.max_retries_per_object
                 (self.ready if will_retry else self.failed)[object_id] = node
-                # The traceback lives in run.log; repeats say so instead.
+                # The traceback lives in the run's log; repeats say so instead.
                 summary = error_summary(error)
                 if len(errors) > 1 and error_summary(errors[-2]) == summary:
                     summary = "same error"
@@ -226,7 +228,7 @@ class Run(Dag):
                     len(errors),
                     self.max_retries_per_object,
                     summary,
-                    extra={"path": run_log_path_in(node.obj._base_dir)},
+                    extra={"path": log_path_in(node.obj._attempt_dir)},
                 )
             case JobBlockedResult(dependencies=dependencies):
                 try:
@@ -252,7 +254,7 @@ class Run(Dag):
                         "failed %s · %s",
                         node.obj._log_label,
                         why,
-                        extra={"path": run_log_path_in(node.obj._base_dir)},
+                        extra={"path": log_path_in(node.obj._attempt_dir)},
                     )
                 elif object_id in self.ready:
                     # Rerunning at once would likely miss the same specs again.
@@ -305,7 +307,7 @@ class Run(Dag):
                 f"  {obj._log_label} · {len(errors)} attempt"
                 f"{'' if len(errors) == 1 else 's'} · "
                 f"{error_summary(errors[-1])} → "
-                f"{_display_path(run_log_path_in(obj._base_dir))}"
+                f"{_display_path(log_path_in(obj._attempt_dir))}"
             )
         lines += [
             f"  {node.obj._log_label} · blocked" for node in self.blocked.values()

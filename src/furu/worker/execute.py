@@ -11,11 +11,11 @@ from typing import assert_never
 
 from furu.code_trace import _REPO_ROOT_ENV_VAR
 from furu.config import _Config
-from furu.logging import _append, get_logger
+from furu.logging import get_logger
 from furu.snapshot import CodeLocation
 from furu.worker.messages import Job, JobFailedResult, JobResult, job_result_adapter
 
-_RUN_LOG_TAIL_BYTES = 32 * 1024
+_LOG_TAIL_BYTES = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0
 
 
@@ -37,11 +37,7 @@ class ChildSlot:
 
     _child: _Child | None
 
-    def __init__(
-        self, *, worker: str, backend: str, worker_log: Path | None = None
-    ) -> None:
-        self._worker = worker
-        self._worker_log = worker_log
+    def __init__(self, *, worker: str, backend: str) -> None:
         self._logger = get_logger(worker)
         self._backend = backend
         self._child = None
@@ -58,7 +54,7 @@ class ChildSlot:
         settings = job.process
         environment = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         # Progress bars redraw up to 10 times a second, and every redraw lands
-        # in run.log; tqdm >= 4.66 reads this unless you set your own.
+        # in the run's log; tqdm >= 4.66 reads this unless you set your own.
         environment.setdefault("TQDM_MININTERVAL", "30")
         for name, value in settings.environment.items():
             if value is None:
@@ -132,8 +128,8 @@ class ChildSlot:
         self._logger.debug("retired child %d", child.process.pid)
 
     def _spawn(self, environment: dict[str, str], *, job: Job) -> _Child:
-        # The child's stderr is ours: each job points it at its run.log, and
-        # anything written between jobs lands in this worker's own output.
+        # The child's stderr is ours: a create() points it at its run's log,
+        # and anything written outside one lands in this worker's own output.
         # Its own process group lets a kill reach what the job started.
         process = subprocess.Popen(
             [str(job.code.python), "-m", "furu.worker._child"],
@@ -147,8 +143,6 @@ class ChildSlot:
         assert process.stdin is not None
         process.stdin.write(job.config.model_dump_json() + "\n")
         process.stdin.write(self._backend + "\n")
-        process.stdin.write(self._worker + "\n")
-        process.stdin.write(f"{self._worker_log or ''}\n")
         process.stdin.flush()
         self._logger.debug("spawned child %d", process.pid)
         return _Child(
@@ -186,12 +180,9 @@ class ChildSlot:
             reason,
             job.artifacts[0].log_label,
         )
-        # The child never wrote its footer; the run.log tail is its last words,
-        # and the reason goes last so it reads as the error's summary.
-        tail = _tail(job.run_logs[0])
-        for run_log in job.run_logs:
-            _append(run_log, f"── died · {reason}\n\n")
-        return JobFailedResult(error=f"{tail}subprocess died: {reason}")
+        # The log's tail is the child's last words, and the reason goes last
+        # so it reads as the error's summary.
+        return JobFailedResult(error=f"{_tail(job.log)}subprocess died: {reason}")
 
 
 def _kill(process: subprocess.Popen[str]) -> None:
@@ -208,7 +199,7 @@ def _kill(process: subprocess.Popen[str]) -> None:
 def _tail(path: Path) -> str:
     try:
         with path.open("rb") as file:
-            file.seek(max(0, file.seek(0, os.SEEK_END) - _RUN_LOG_TAIL_BYTES))
+            file.seek(max(0, file.seek(0, os.SEEK_END) - _LOG_TAIL_BYTES))
             tail = file.read().decode(errors="replace")
     except OSError:
         return ""

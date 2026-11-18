@@ -40,10 +40,9 @@ class ProcessSettings(_Message):
 class Job(_Message):
     kind: Literal["job"] = "job"
     artifacts: list[ArtifactSpec]
-    # One run.log per artifact; the worker cannot compute them without
-    # importing the spec classes.
-    run_logs: list[Path]
-    attempt: int
+    # Where its create() writes: the log in the first artifact's working
+    # folder, which the worker cannot compute without importing the spec class.
+    log: Path
     execution_log: Path
     provenance: SubmitProvenance
     process: ProcessSettings

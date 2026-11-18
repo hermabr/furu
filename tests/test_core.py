@@ -1,6 +1,4 @@
-import json
 import logging
-import os
 import re
 import types
 from contextlib import contextmanager
@@ -18,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, ConfigDict
+from runs import ends_of, fixed_run, log_of, run_of
 
 import furu
 import furu.execution.load_or_create as execution_module
@@ -29,35 +28,20 @@ from furu.dependencies import (
     under_creation,
 )
 from furu.execution.load_or_create import _load_or_create
-from furu.locking import LockManifest, lock
-from furu.logging import _run_log_scope
+from furu.logging import _execution_log
 from furu.metadata import ArtifactSpec
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
 from furu.storage._layout import (
-    attempt_dir_in,
-    compute_lock_path_in,
     data_dir_in,
+    events_path_in,
+    lock_path_in,
+    log_path_in,
     result_dir_in,
     result_manifest_path_in,
-    run_log_path_in,
-    spec_path_in,
-    trace_path_in,
-    version_dir_in,
 )
 
 type SOME_TYPE = Literal["a", "b"] | int
-
-
-def write_stale_lock(lock_path: Path) -> None:
-    claim_path = lock_path.with_name(f"{lock_path.name}.claim")
-    manifest = LockManifest(
-        claim_path=claim_path.resolve(strict=False),
-        lock_paths=(lock_path.resolve(strict=False),),
-    )
-    claim_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
-    os.link(claim_path, lock_path)
-    os.utime(claim_path, times=(1, 1))
 
 
 def _to_json(obj: Any, declared_type: object) -> Any:
@@ -127,9 +111,14 @@ class UserDataWritingValue(Spec[str]):
         return payload_path.read_text(encoding="utf-8")
 
 
+class DoneProbe(Spec[bool]):
+    def create(self) -> bool:
+        return self.done
+
+
 class DirectoryPeekingValue(Spec[str]):
     def create(self) -> str:
-        assert self.directory.data == self._base_dir / "attempt" / "data"
+        assert self.directory.data == self._attempt_dir / "data"
         with pytest.raises(RuntimeError, match=r"only available inside"):
             _ = Node(name="other").directory
         return "ok"
@@ -144,7 +133,7 @@ class BatchedDirectoryValue(Spec[str]):
     @furu.batched(batch_key)
     def create(objs: list["BatchedDirectoryValue"]) -> list[str]:
         for obj in objs:
-            assert obj.directory.data == obj._base_dir / "attempt" / "data"
+            assert obj.directory.data == obj._attempt_dir / "data"
         return [f"dir:{obj.key}" for obj in objs]
 
 
@@ -458,8 +447,8 @@ class MetadataTimingValue(Spec[str]):
         type(self).create_events.append(
             (
                 self.key,
-                spec_path_in(self._base_dir).exists(),
-                spec_path_in(sibling._base_dir).exists(),
+                events_path_in(self._attempt_dir).exists(),
+                sibling.done,
             )
         )
         return f"timed:{self.key}"
@@ -522,35 +511,6 @@ class LoadsDeclaredDependencyParent(Spec[str]):
         return self.child.load_existing()
 
 
-class LazyDependencyParent(Spec[str]):
-    name: str
-
-    def create(self) -> str:
-        return Node(name=self.name).create()
-
-
-class LoadExistingDependencyParent(Spec[str]):
-    name: str
-
-    def create(self) -> str:
-        try:
-            Node(name=self.name).load_existing()
-        except furu.Missing:
-            return "missing"
-        return "loaded"
-
-
-class ProvenanceDependencyParent(Spec[str]):
-    name: str
-
-    def create(self) -> str:
-        try:
-            Node(name=self.name).provenance()
-        except furu.Missing:
-            return "missing"
-        return "recorded"
-
-
 class FuruBoundaryParent(Spec[str]):
     child: NodePair
 
@@ -611,19 +571,19 @@ def test_frozen_dataclass_inheritance():
 def test_reserved_field_name_raises_at_class_creation():
     with pytest.raises(TypeError) as excinfo:
 
-        class StatusField(Spec[int]):
-            status: str  # ty: ignore[override-of-final-method,invalid-property-type-override]
+        class DoneField(Spec[int]):
+            done: str  # ty: ignore[override-of-final-method,invalid-property-type-override]
 
             def create(self) -> int:
                 return 0
 
     message = str(excinfo.value)
-    assert "StatusField" in message
-    assert "['status']" in message
+    assert "DoneField" in message
+    assert "['done']" in message
     for name in (
         "create",
         "metadata",
-        "status",
+        "done",
         "directory",
         "load_existing",
         "delete",
@@ -925,35 +885,21 @@ def test_furu_from_artifact_returns_furu_object():
     )
 
     loaded = NodePair.from_artifact(artifact)
-    raw_spec = json.loads(spec_path_in(obj._base_dir).read_text())
 
     assert artifact.object_id == obj.object_id
     assert loaded == obj
     assert isinstance(loaded, NodePair)
-    assert loaded._base_dir == obj._base_dir
-    assert raw_spec == {
-        "fully_qualified_name": obj._stored_name,
-        "stored_name": obj._stored_name,
-        "artifact_data": obj._artifact_data,
-        "artifact_hash": obj._artifact_hash,
-        "class_part": obj._class_part,
-    }
+    assert loaded._class_dir == obj._class_dir
 
 
-def _dependency_object_ids(obj: furu.Spec) -> list[str]:
-    trace = json.loads(trace_path_in(version_dir_in(obj._base_dir)).read_text())
-    return sorted(trace["dependencies"])
-
-
-def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() -> None:
+def test_specs_held_in_fields_are_built_before_the_create_hook() -> None:
     first = Node(name="nested")
     second = WeightedNode(name="weighted", weight=2)
     parent = NestedDependencyParent(bundle=DependencyBundle(first=first, second=second))
 
     assert collect_declared_refs(parent) == (first, second)
     assert parent.create() == "Node(nested)"
-    assert second.status == "done"
-    assert _dependency_object_ids(parent) == [first.object_id]
+    assert second.done
 
 
 def test_declared_dependencies_are_created_before_the_create_hook(
@@ -962,7 +908,7 @@ def test_declared_dependencies_are_created_before_the_create_hook(
     parent = LoadsDeclaredDependencyParent(child=Node(name="declared"))
 
     log_path = tmp_path / "create.log"
-    with _run_log_scope(log_path):
+    with _execution_log(log_path):
         assert parent.create() == "Node(declared)"
 
     log_text = log_path.read_text(encoding="utf-8")
@@ -972,13 +918,11 @@ def test_declared_dependencies_are_created_before_the_create_hook(
         assert f" I finished {obj._log_label} ok · " in log_text
 
 
-def test_a_dependency_is_planned_and_recorded_when_loaded() -> None:
+def test_a_dependency_is_planned() -> None:
     parent = ComputedDependencyParent(name="computed")
 
     assert collect_declared_refs(parent) == (parent.child,)
     assert parent.create() == "Node(computed)"
-
-    assert _dependency_object_ids(parent) == [parent.child.object_id]
 
 
 def test_a_dependency_is_computed_once_when_first_read() -> None:
@@ -1042,35 +986,6 @@ def test_a_dependency_without_a_return_annotation_is_rejected() -> None:
 
             def create(self) -> str:
                 return ""
-
-
-def test_create_inside_create_is_recorded_and_deduped() -> None:
-    parent = LazyDependencyParent(name="lazy")
-
-    assert parent.create() == "Node(lazy)"
-
-    assert _dependency_object_ids(parent) == [Node(name="lazy").object_id]
-
-
-def test_load_existing_inside_create_records_only_loaded_versions() -> None:
-    parent = LoadExistingDependencyParent(name="optional")
-
-    assert parent.create() == "missing"
-
-    assert _dependency_object_ids(parent) == []
-
-
-def test_provenance_inside_create_is_recorded_even_on_missing_result() -> None:
-    dep = Node(name="prov-present")
-    dep.create()
-
-    present = ProvenanceDependencyParent(name="prov-present")
-    assert present.create() == "recorded"
-    assert _dependency_object_ids(present) == [dep.object_id]
-
-    absent = ProvenanceDependencyParent(name="prov-absent")
-    assert absent.create() == "missing"
-    assert _dependency_object_ids(absent) == []
 
 
 def test_load_existing_missing_result_explains_how_to_compute() -> None:
@@ -1139,7 +1054,7 @@ def test_build_stores_results_without_loading_them(
 
     furu.build({"cached": cached, "fresh": [fresh]})
 
-    assert fresh.status == "done"
+    assert fresh.done
 
 
 def test_create_does_not_load_cached_declared_dependencies(
@@ -1158,7 +1073,7 @@ def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> N
     assert [node.create() for node in nodes] == ["Node(load-a)", "Node(load-b)"]
 
     log_path = tmp_path / "load-existing.log"
-    with _run_log_scope(log_path):
+    with _execution_log(log_path):
         assert furu.load_existing(nodes) == ["Node(load-a)", "Node(load-b)"]
 
     info_lines = [
@@ -1172,9 +1087,7 @@ def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> N
     )
 
 
-def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_recorded() -> (
-    None
-):
+def test_furu_objects_block_nested_eager_traversal() -> None:
     node1 = Node(name="inner")
     node2 = WeightedNode(name="other", weight=3)
     child = NodePair(node1=node1, node2=node2, name="pair")
@@ -1183,10 +1096,9 @@ def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_
     assert parent.create() == "Node(inner)"
 
     assert collect_declared_refs(parent) == (child,)
-    assert _dependency_object_ids(parent) == [node1.object_id]
 
 
-def test_batched_dependencies_record_all_observed_loads() -> None:
+def test_a_batched_create_loads_specs_from_fields_and_ones_it_asks_for() -> None:
     objs = [
         BatchDependencyParent(key=1, eager=Node(name="eager-1")),
         BatchDependencyParent(key=2, eager=Node(name="eager-2")),
@@ -1199,13 +1111,6 @@ def test_batched_dependencies_record_all_observed_loads() -> None:
 
     for obj in objs:
         assert collect_declared_refs(obj) == (obj.eager,)
-        assert _dependency_object_ids(obj) == sorted(
-            [
-                objs[0].eager.object_id,
-                objs[1].eager.object_id,
-                Node(name="shared-lazy").object_id,
-            ]
-        )
 
 
 def test_furu_from_artifact_infers_furu_object_type():
@@ -1228,18 +1133,6 @@ def test_furu_from_artifact_infers_furu_object_type():
     assert artifact.object_id == obj.object_id
     assert loaded == obj
     assert isinstance(loaded, NodePair)
-
-
-def test_furu_from_artifact_accepts_the_stored_spec_json():
-    obj = Node(name="x")
-    obj.create()
-    artifact = ArtifactSpec(**json.loads(spec_path_in(obj._base_dir).read_text()))
-
-    loaded = Node.from_artifact(artifact)
-
-    assert artifact.object_id == obj.object_id
-    assert loaded == obj
-    assert isinstance(loaded, Node)
 
 
 def test_furu_from_artifact_accepts_artifact_spec():
@@ -1326,19 +1219,15 @@ def test_data_dir():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert node_pair._base_dir == (
+    class_dir = (
         get_config().directories.anchored().objects
         / "test_core.NodePair"
         / "06b20558c682cb23a593"
-        / "0213f99a818a40d63cf9"
     )
-    assert data_dir_in(node_pair._base_dir) == node_pair._base_dir / "data"
-    assert data_dir_in(node_pair._base_dir) == Path(
-        get_config().directories.anchored().objects
-        / "test_core.NodePair"
-        / node_pair._class_part
-        / node_pair._artifact_hash
-        / "data"
+    assert node_pair._class_dir == class_dir
+    assert node_pair._attempt_dir == class_dir / "attempts" / "0213f99a818a40d63cf9"
+    assert fixed_run(node_pair) == (
+        class_dir / "fixed" / "runs" / "0213f99a818a40d63cf9"
     )
 
 
@@ -1410,19 +1299,15 @@ def test_runs_on_can_depend_on_fields():
     assert small.runs_on(Worker()) and not small.runs_on(Worker(gpus=1))
 
 
-def test_metadata_storage_overrides_base_dir(
+def test_metadata_storage_overrides_the_storage_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
     node = CustomStorageNode(name="x")
 
-    assert node._base_dir == (
-        Path("custom/data/location")
-        / "test_core.CustomStorageNode"
-        / node._class_part
-        / node._artifact_hash
+    assert node._class_dir == (
+        Path("custom/data/location") / "test_core.CustomStorageNode" / node._class_part
     )
-    assert data_dir_in(node._base_dir) == node._base_dir / "data"
 
 
 def test_in_process_create_ignores_runs_on(
@@ -1431,10 +1316,9 @@ def test_in_process_create_ignores_runs_on(
     NoWorkerNode.storage_override = tmp_path / "store"
     node = NoWorkerNode(name="x")
 
-    assert node.status == "missing"
+    assert not node.done
     node.create()
-    assert node._base_dir.is_relative_to(tmp_path / "store")
-    assert node.status == "done"
+    assert run_of(node).is_relative_to(tmp_path / "store")
     assert NoWorkerNode(name="x").load_existing() == "x"
 
 
@@ -1442,15 +1326,15 @@ def test_create_object_and_exists():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert node_pair.status == "missing"
+    assert not node_pair.done
     for _i in range(3):
         assert node_pair.create() == {
             "node1": "Node(y)",
             "node2": "WNode(z:1)",
             "name": "x",
         }
-    assert node_pair.status == "done"
-    assert replace(node_pair, name="y").status == "missing"
+    assert node_pair.done
+    assert not replace(node_pair, name="y").done
 
 
 def test_data_dir_is_user_data_subdirectory() -> None:
@@ -1458,22 +1342,24 @@ def test_data_dir_is_user_data_subdirectory() -> None:
 
     assert obj.create() == "payload"
 
-    version = version_dir_in(obj._base_dir)
-    assert (data_dir_in(version) / "payload.txt").read_text(
-        encoding="utf-8"
-    ) == "payload"
-    assert result_manifest_path_in(version).exists()
-    assert spec_path_in(obj._base_dir).exists()
-    assert not attempt_dir_in(obj._base_dir).exists()
+    run = run_of(obj)
+    assert (data_dir_in(run) / "payload.txt").read_text(encoding="utf-8") == "payload"
+    assert sorted(path.name for path in run.iterdir()) == [
+        "data",
+        "events.jsonl",
+        "log",
+        "provenance.json",
+        "result",
+    ]
+    assert not obj._attempt_dir.exists()
 
 
 def test_unused_data_dir_is_not_created_by_create() -> None:
     node = Node(name="unused-data")
-    user_data_path = version_dir_in(node._base_dir) / "data"
 
     assert node.create() == "Node(unused-data)"
 
-    assert not user_data_path.exists()
+    assert not data_dir_in(run_of(node)).exists()
 
 
 def test_directory_is_only_available_inside_own_create() -> None:
@@ -1482,10 +1368,8 @@ def test_directory_is_only_available_inside_own_create() -> None:
     with pytest.raises(RuntimeError, match=r"only available inside"):
         _ = node.directory
 
-    # Outside access must not fabricate storage (it would flip status to
-    # "incomplete" for a spec that never ran).
-    assert not node._base_dir.exists()
-    assert node.status == "missing"
+    # Outside access must not fabricate a working folder.
+    assert not node._attempt_dir.exists()
 
     node.create()
 
@@ -1505,51 +1389,26 @@ def test_batched_create_can_access_every_group_members_directory() -> None:
 
 def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
     obj = ScratchWritingValue(name="payload")
-    scratch_dir = attempt_dir_in(obj._base_dir) / "scratch"
+    scratch_dir = obj._attempt_dir / "scratch"
     scratch_dir.mkdir(parents=True)
     (scratch_dir / "download.csv").write_text("from-previous-attempt", encoding="utf-8")
 
     assert obj.create() == "from-previous-attempt"
 
     assert not scratch_dir.exists()
-    assert not (version_dir_in(obj._base_dir) / "scratch").exists()
-    assert obj.status == "done"
+    assert not (run_of(obj) / "scratch").exists()
 
 
-def test_status_is_running_while_compute_lock_is_held() -> None:
-    node = Node(name="x")
-    node._base_dir.mkdir(parents=True, exist_ok=True)
+def test_a_spec_is_done_only_once_its_run_is_published() -> None:
+    probe = DoneProbe()
+    failing = FailingSingleValue(key=1)
 
-    with lock([compute_lock_path_in(node._base_dir)]):
-        assert node.status == "running"
-
-
-def test_status_is_incomplete_when_compute_lock_is_not_active() -> None:
-    node = Node(name="inactive-lock")
-    attempt_dir_in(node._base_dir).mkdir(parents=True)
-
-    compute_lock_path_in(node._base_dir).touch()
-
-    assert node.status == "incomplete"
-
-
-def test_status_is_incomplete_when_compute_lock_is_stale() -> None:
-    node = Node(name="stale-lock")
-    attempt_dir_in(node._base_dir).mkdir(parents=True)
-    lock_path = compute_lock_path_in(node._base_dir)
-
-    write_stale_lock(lock_path)
-
-    assert node.status == "incomplete"
-
-
-def test_status_is_incomplete_after_create_error() -> None:
-    obj = FailingSingleValue(key=1)
-
+    assert probe.create() is False  # while it is being computed
+    assert probe.done
     with pytest.raises(RuntimeError, match="failed single for 1"):
-        obj.create()
-
-    assert obj.status == "incomplete"
+        failing.create()
+    assert failing._attempt_dir.exists()
+    assert not failing.done
 
 
 def test_creating_and_loading_random_result_furu_obj():
@@ -1566,9 +1425,10 @@ def test_delete_force() -> None:
     node = Node(name="x")
 
     assert node.create() == "Node(x)"
-    assert node._base_dir.exists()
+    run = run_of(node)
     assert node.delete(mode="force")
-    assert not node._base_dir.exists()
+    assert not run.exists()
+    assert not node.done
     assert node.create() == "Node(x)"
 
 
@@ -1578,30 +1438,40 @@ def test_delete_prompt_cancel() -> None:
     assert node.create() == "Node(x)"
     with patch("builtins.input", return_value="n"):
         assert not node.delete()
-    assert node._base_dir.exists()
+    assert node.done
+
+
+def test_delete_removes_the_working_folder_of_a_stopped_attempt() -> None:
+    failing = FailingSingleValue(key=1)
+    with pytest.raises(RuntimeError, match="failed single for 1"):
+        failing.create()
+
+    assert failing.delete(mode="force")
+
+    assert not failing._attempt_dir.exists()
+    assert not failing.delete(mode="force")
 
 
 def test_delete_returns_false_when_missing() -> None:
     assert not Node(name="x").delete(mode="force")
 
 
-def test_log_file_is_written_to_the_identity_directory() -> None:
+def test_the_log_is_published_with_the_run_and_holds_only_what_create_wrote() -> None:
     node = LoggedLeaf(name="x")
 
     assert node.create() == "leaf:x"
 
-    log_text = run_log_path_in(node._base_dir).read_text(encoding="utf-8")
-    assert "leaf detail for x" in log_text
+    (line,) = log_path_in(run_of(node)).read_text(encoding="utf-8").splitlines()
+    assert line.endswith(" I leaf detail for x  [tests/test_core.py:" + line[-4:])
 
 
-def test_in_process_run_log_captures_stdlib_logging_without_touching_root() -> None:
+def test_in_process_log_captures_stdlib_logging_without_touching_root() -> None:
     node = StdlibLoggingLeaf(name="x")
     root_level = logging.getLogger().level
 
     assert node.create() == "stdlib:x"
 
-    log_text = run_log_path_in(node._base_dir).read_text(encoding="utf-8")
-    assert " W some_library stdlib warning for x  [" in log_text
+    assert " W some_library stdlib warning for x  [" in log_of(node)
     assert logging.getLogger().level == root_level
 
 
@@ -1612,21 +1482,26 @@ def test_nested_create_blocks_the_parent_and_logs_the_child_on_its_own(
     parent = LoggedParent(child_name="child")
 
     log_path = tmp_path / "create.log"
-    with _run_log_scope(log_path):
+    with _execution_log(log_path):
         assert parent.create() == {"child": "leaf:child"}
 
-    parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
-    child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
+    parent_log = log_of(parent)
+    child_log = log_of(child)
     top_log = log_path.read_text(encoding="utf-8")
 
     # The first attempt blocks, the second reruns from scratch and finishes.
     assert parent_log.count("parent before child") == 2
     assert parent_log.count("parent after child") == 1
-    assert " · 1 missing dependency\n" in parent_log
-    assert "failed" not in parent_log
+    assert ends_of(parent) == [
+        {"outcome": "blocked", "waiting_on": [child.object_id]},
+        {"outcome": "ok"},
+    ]
     assert f"creating {child._log_label}" not in parent_log
     assert "leaf detail for child" not in parent_log
     assert "leaf detail for child" in child_log
+    # What furu has to say goes to the terminal, not into a run's log.
+    assert f"cached {child._log_label}" not in parent_log
+    assert f"cached {child._log_label}" in top_log
     assert f"blocked {parent._log_label} · 1 missing dependency" in top_log
     assert f"finished {child._log_label} ok" in top_log
 
@@ -1640,14 +1515,14 @@ def test_cached_create_logs_only_cache_hit_info(
     assert obj.create() == "object-id:1"
 
     log_path = tmp_path / "cached-create.log"
-    with _run_log_scope(log_path):
+    with _execution_log(log_path):
         assert obj.create() == "object-id:1"
 
     log_text = log_path.read_text(encoding="utf-8")
     assert "building" not in log_text
     assert "creating " not in log_text
     assert "finished " not in log_text
-    (line,) = log_text.splitlines()
+    (line,) = [line for line in log_text.splitlines() if " I " in line]
     assert line.endswith(f" I cached {obj._log_label}")
 
 
@@ -1661,7 +1536,7 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
     assert cached.create() == "object-id:1"
 
     log_path = tmp_path / "mixed-create.log"
-    with _run_log_scope(log_path):
+    with _execution_log(log_path):
         assert _load_or_create([cached, missing]) == ["object-id:1", "object-id:2"]
 
     assert (
@@ -1699,10 +1574,10 @@ def test_no_create_hook_loads_cached_result() -> None:
     obj = NoCreateHookValue(key=1)
     _save_result_bundle(
         ["cached:1"],
-        result_dir_in(version_dir_in(obj._base_dir)),
+        result_dir_in(fixed_run(obj)),
         declared_type=str,
         result_codecs=(),
-        data_dir=data_dir_in(version_dir_in(obj._base_dir)),
+        data_dir=data_dir_in(fixed_run(obj)),
         label="NoCreateHookValue",
     )
 
@@ -1727,13 +1602,13 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
 
     @contextmanager
     def fake_lock(lock_paths: list[Path], **_: object):
-        assert lock_paths == [compute_lock_path_in(obj._base_dir)]
+        assert lock_paths == [lock_path_in(obj._class_dir, obj._run_name)]
         _save_result_bundle(
             ["cached-after-lock:1"],
-            result_dir_in(version_dir_in(obj._base_dir)),
+            result_dir_in(fixed_run(obj)),
             declared_type=str,
             result_codecs=(),
-            data_dir=data_dir_in(version_dir_in(obj._base_dir)),
+            data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
         )
         yield lambda: True
@@ -1859,11 +1734,11 @@ def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> N
 def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "first"
     first = ObjectIdStorageValue(key=1)
-    first_data_dir = data_dir_in(first._base_dir)
+    first_data_dir = data_dir_in(first._attempt_dir)
 
     ObjectIdStorageValue.storage_override = tmp_path / "second"
     second = ObjectIdStorageValue(key=1)
-    second_data_dir = data_dir_in(second._base_dir)
+    second_data_dir = data_dir_in(second._attempt_dir)
 
     assert first.object_id == second.object_id
     assert first_data_dir != second_data_dir
@@ -1890,23 +1765,23 @@ def test_existing_items_are_skipped_before_locking(
     monkeypatch.setattr(execution_module, "lock", fake_lock)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [[compute_lock_path_in(missing._base_dir)]]
+    assert lock_calls == [[lock_path_in(missing._class_dir, missing._run_name)]]
 
 
-def test_pending_items_are_rechecked_after_lock_acquisition(
+def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pending = CountedSingleValue(key=5)
 
     @contextmanager
     def fake_lock(lock_paths: list[Path], **_: object):
-        assert lock_paths == [compute_lock_path_in(pending._base_dir)]
+        assert lock_paths == [lock_path_in(pending._class_dir, pending._run_name)]
         _save_result_bundle(
             ["single:5"],
-            result_dir_in(version_dir_in(pending._base_dir)),
+            result_dir_in(fixed_run(pending)),
             declared_type=str,
             result_codecs=(),
-            data_dir=data_dir_in(version_dir_in(pending._base_dir)),
+            data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",
         )
         yield lambda: True
@@ -1915,6 +1790,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
     assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []
+    assert not pending._attempt_dir.exists()
 
 
 def test_empty_list_returns_empty_list() -> None:
@@ -1950,8 +1826,8 @@ def test_nested_create_reports_all_missing_dependencies(
 
     assert exc_info.value.dependencies == (first, second)
     assert ObjectIdStorageValue.create_calls == []
-    assert not result_manifest_path_in(version_dir_in(first._base_dir)).exists()
-    assert not result_manifest_path_in(version_dir_in(second._base_dir)).exists()
+    assert not first.done
+    assert not second.done
 
 
 def test_nested_load_existing_and_provenance_raise_missing(tmp_path: Path) -> None:
@@ -2015,48 +1891,35 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
     assert _load_or_create(objs) == ["batch:1", "batch:2"]
 
     for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
-        assert result_manifest_path_in(version_dir_in(obj._base_dir)).exists()
-        assert spec_path_in(obj._base_dir).exists()
-        assert run_log_path_in(obj._base_dir).exists()
+        run = run_of(obj)
+        assert result_manifest_path_in(run).exists()
+        assert ends_of(obj) == [{"outcome": "ok"}]
         assert load_result_bundle(
-            result_dir_in(version_dir_in(obj._base_dir)),
-            [0],
-            data_dir=data_dir_in(version_dir_in(obj._base_dir)),
-            declared_type=str,
+            result_dir_in(run), [0], data_dir=data_dir_in(run), declared_type=str
         ) == [expected]
 
 
-def test_batched_compute_logs_to_the_lead_and_points_the_others_at_it() -> None:
+def test_a_batched_create_logs_to_its_leads_run() -> None:
     objs = [LoggedBatchValue(key=1), LoggedBatchValue(key=2)]
 
     assert _load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
 
-    lead_log, other_log = (
-        run_log_path_in(obj._base_dir).read_text(encoding="utf-8") for obj in objs
-    )
-    assert lead_log.startswith(f"── {objs[0]._log_label} · in-process · host ")
-    assert "batched detail for 1,2" in lead_log
-    assert lead_log.rstrip("\n").splitlines()[-1].startswith("── ok · ")
-    assert other_log.startswith(f"── {objs[1]._log_label} · in-process · host ")
-    assert f"   batched with {objs[0]._log_label} → " in other_log
-    assert "batched detail" not in other_log
+    assert "batched detail for 1,2" in log_of(objs[0])
+    assert not log_path_in(run_of(objs[1])).exists()
 
 
-def test_unbatched_specs_log_to_their_own_run_log() -> None:
+def test_unbatched_specs_log_to_their_own_runs() -> None:
     objs = [LoggedSingleValue(key=1), LoggedSingleValue(key=2)]
 
     assert _load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
-    first_log, second_log = (
-        run_log_path_in(obj._base_dir).read_text(encoding="utf-8") for obj in objs
-    )
+    first_log, second_log = map(log_of, objs)
     assert "single detail for 1" in first_log
     assert "single detail for 2" not in first_log
     assert "single detail for 2" in second_log
-    assert "batched with" not in second_log
 
 
-def test_batched_failure_writes_error_details_to_run_log_for_every_participant() -> (
+def test_a_failed_batch_logs_the_traceback_once_and_ends_every_members_attempt() -> (
     None
 ):
     objs = [FailingBatchValue(key=1), FailingBatchValue(key=2)]
@@ -2064,38 +1927,27 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
     with pytest.raises(RuntimeError, match="failed batch"):
         _load_or_create(objs)
 
-    lead_log, other_log = (
-        run_log_path_in(obj._base_dir).read_text(encoding="utf-8") for obj in objs
-    )
+    lead_log = log_of(objs[0])
     assert "create failed" in lead_log
     assert "Traceback (most recent call last):" in lead_log
-    assert "create failed" not in other_log
-    for log_text in (lead_log, other_log):
-        assert (
-            log_text.rstrip("\n")
-            .splitlines()[-1]
-            .endswith(" · RuntimeError: failed batch for [1, 2]")
-        )
-        assert "furu-local-debug-value-should-not-leak" not in log_text
+    assert "furu-local-debug-value-should-not-leak" not in lead_log
     for obj in objs:
-        assert list(obj._base_dir.glob("error-*.log")) == []
+        assert ends_of(obj) == [
+            {"outcome": "failed", "error": "RuntimeError: failed batch for [1, 2]"}
+        ]
 
 
-def test_create_failure_run_log_has_the_traceback_once_inside_its_section() -> None:
+def test_a_failed_create_logs_the_traceback_once() -> None:
     obj = FailingSingleValue(key=1)
 
     with pytest.raises(RuntimeError, match="failed single"):
         obj.create()
 
-    lines = run_log_path_in(obj._base_dir).read_text(encoding="utf-8").splitlines()
-    assert lines[0].startswith(f"── {obj._log_label} · in-process · ")
-    assert re.match(rf"^\S+ E create failed for {re.escape(obj._log_label)}$", lines[1])
-    assert lines[2] == "    Traceback (most recent call last):"
+    lines = log_of(obj).splitlines()
+    assert re.match(rf"^\S+ E create failed for {re.escape(obj._log_label)}$", lines[0])
+    assert lines[1] == "    Traceback (most recent call last):"
     assert lines.count("    RuntimeError: failed single for 1") == 1
     assert "Stack (most recent call last):" not in "\n".join(lines)
-    assert re.fullmatch(
-        r"── failed · \S+ · RuntimeError: failed single for 1", lines[-2]
-    )
 
 
 def test_base_exception_does_not_log_as_load_failure() -> None:
@@ -2104,8 +1956,8 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
     with pytest.raises(KeyboardInterrupt):
         obj.create()
 
-    log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-    assert "create failed" not in log_text
+    assert "create failed" not in log_of(obj)
+    assert ends_of(obj) == [{"outcome": "failed", "error": "KeyboardInterrupt"}]
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(
@@ -2127,8 +1979,8 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     with pytest.raises(RuntimeError, match="stop after first store"):
         _load_or_create(objs)
 
-    assert result_manifest_path_in(version_dir_in(objs[0]._base_dir)).exists()
-    assert not result_manifest_path_in(version_dir_in(objs[1]._base_dir)).exists()
+    assert objs[0].done
+    assert not objs[1].done
 
 
 def test_create_publicly_loads_or_computes_result() -> None:

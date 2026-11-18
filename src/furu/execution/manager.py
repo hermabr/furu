@@ -80,8 +80,7 @@ class _Lease:
         first, *_ = jobs = [queued.submission.job for queued in self.queued]
         return first.model_copy(
             update={
-                "artifacts": [artifact for job in jobs for artifact in job.artifacts],
-                "run_logs": [run_log for job in jobs for run_log in job.run_logs],
+                "artifacts": [artifact for job in jobs for artifact in job.artifacts]
             }
         )
 
@@ -277,9 +276,7 @@ class Manager:
         logger.debug("worker connected · %s", worker)
         while (lease := self._lease(connection, pool=hello.pool)) is not None:
             job = lease.job
-            logger.info(
-                "leased %s to %s", job.label, worker, extra={"path": job.run_logs[0]}
-            )
+            logger.info("leased %s to %s", job.label, worker, extra={"path": job.log})
             result: JobResult
             try:
                 connection.send(job.model_dump_json())

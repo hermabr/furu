@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -72,58 +71,27 @@ def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
     return tuple(refs_by_id[object_id] for object_id in sorted(refs_by_id))
 
 
-class DependencyRecorder:
-    """Which version of each dependency a create() loaded.
-
-    Versions are stored relative to the creating spec's storage root, so a
-    lookup can re-check them without a Spec object.
-    """
-
-    def __init__(
-        self,
-        storage_root: Path,
-        versions: dict[str, str],
-        log: Callable[[list[str]], None] | None,
-    ) -> None:
-        self._storage_root = storage_root
-        self.versions = versions
-        self._log = log
-
-    def record(self, obj: Spec, version: Path) -> None:
-        relative = os.path.relpath(version, self._storage_root)
-        if self.versions.get(obj.object_id) != relative:
-            self.versions[obj.object_id] = relative
-            if self._log is not None:
-                self._log(["dependency", obj.object_id, relative])
-
-
-# TODO: dependencies loaded in threads a create() starts aren't recorded
-# (ContextVar state doesn't reach them). Workaround: submit the work with
+# What to tell about each published run the create() in this context loads.
+# TODO: results loaded in threads a create() starts aren't recorded (ContextVar
+# state doesn't reach them). Workaround: submit the work with
 # contextvars.copy_context().run. Check with a human before adding such threads.
-_active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
-    "_active_dependency_recorder",
-    default=None,
+_on_load: ContextVar[Callable[[Path], None] | None] = ContextVar(
+    "_on_load", default=None
 )
 
 
-def record_dependency(obj: Spec, version: Path) -> None:
-    recorder = _active_dependency_recorder.get()
-    if recorder is not None:
-        recorder.record(obj, version)
+def record_loaded(run: Path) -> None:
+    if (on_load := _on_load.get()) is not None:
+        on_load(run)
 
 
 @contextmanager
-def dependency_recorder(
-    storage_root: Path,
-    versions: dict[str, str],
-    log: Callable[[list[str]], None] | None,
-) -> Generator[DependencyRecorder]:
-    recorder = DependencyRecorder(storage_root, versions, log)
-    token = _active_dependency_recorder.set(recorder)
+def recording_loads(on_load: Callable[[Path], None]) -> Generator[None]:
+    token = _on_load.set(on_load)
     try:
-        yield recorder
+        yield
     finally:
-        _active_dependency_recorder.reset(token)
+        _on_load.reset(token)
 
 
 _specs_under_creation: ContextVar[frozenset[str]] = ContextVar(
