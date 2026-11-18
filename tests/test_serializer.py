@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, ClassVar
+from enum import Enum, IntEnum, StrEnum
+from typing import Annotated, Any, ClassVar, Literal
 
+import numpy as np
 import pytest
 
 from furu import Serializer, Spec
@@ -396,6 +398,55 @@ def test_a_dict_key_must_be_a_string_that_furu_does_not_reserve() -> None:
         to_json({KINDMARKER: 1}, Any, ())
     with pytest.raises(TypeError, match="must be strings"):
         to_json({1: 1}, Any, ())
+
+
+class _Mode(Enum):
+    FAST = "fast"
+
+
+class _Level(IntEnum):
+    LOW = 1
+
+
+class _Name(StrEnum):
+    FAST = "fast"
+
+
+class _HoldsValue(Spec[None]):
+    value: object
+
+    def create(self) -> None:
+        return None
+
+
+class _HoldsMode(Spec[str]):
+    mode: Literal["fast", "slow"]
+
+    def create(self) -> str:
+        return self.mode
+
+
+@pytest.mark.parametrize(
+    ("value", "advice"),
+    [
+        (_Mode.FAST, "Literal"),
+        (_Level.LOW, "Literal"),
+        (_Name.FAST, "Literal"),
+        (np.float64(0.5), r"float\(\)"),
+    ],
+)
+def test_an_enum_or_numpy_scalar_field_is_refused_with_advice(
+    value: object, advice: str
+) -> None:
+    # A worker would build these as plain numbers and strings.
+    with pytest.raises(TypeError, match=advice):
+        _ = _HoldsValue(value=value).object_id
+
+
+def test_a_literal_field_is_the_same_value_when_built_from_its_artifact() -> None:
+    spec = _HoldsMode(mode="fast")
+
+    assert Spec.from_artifact(ArtifactSpec.from_furu(spec)) == spec
 
 
 def test_a_declared_serializer_writes_a_plain_value(
