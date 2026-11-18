@@ -5,11 +5,12 @@ import shutil
 import time
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
 from furu import plan, record
-from furu._batched import _BatchedHook
+from furu._batched import _BatchedHook, batch_of
 from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
 from furu.code_trace import (
@@ -22,7 +23,7 @@ from furu.code_trace import (
 )
 from furu.config import get_config
 from furu.core import Missing, Spec, working_folder
-from furu.dag import Dag
+from furu.dag import Dag, why_stuck
 from furu.dependencies import (
     _DependencyNotReady,
     any_under_creation,
@@ -32,6 +33,7 @@ from furu.dependencies import (
     under_creation,
 )
 from furu.execution.launch import ask, asked, held_in
+from furu.execution.launch import missing as missing_under
 from furu.locking import lock
 from furu.logging import _group_label, _log_scope, get_logger
 from furu.migration.schema import check_defaults, record_nested_names
@@ -410,9 +412,7 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     if missing:
         # What a launch would list for them: the classes under them can have
         # changed too.
-        dag = Dag()
-        dag.add(missing, plan.listing())
-        running = [node.obj for node in dag.nodes_by_id.values()]
+        running = missing_under(missing)
         ask(running, found=True)
         # Saved before anyone is told, so a found spec that fails or never
         # starts is still described.
@@ -433,21 +433,20 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     is aborted with its locks released, they are built, and it reruns.
     """
     dag = Dag()
-    launch_plan = (
-        get_config().directories.anchored().plans / f"{secrets.token_hex(16)}.plan"
-    )
-    dag.add(objs, launch_plan)
-    cached = [obj for obj in objs if obj.object_id not in dag.nodes_by_id]
+    running = missing_under(objs, dag)
+    cached = [obj for obj in objs if obj.object_id not in dag.nodes]
     if cached:
-        to_build = [obj for obj in objs if obj.object_id in dag.nodes_by_id]
+        to_build = [obj for obj in objs if obj.object_id in dag.nodes]
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
-    if dag.ready:
-        running = [node.obj for node in dag.nodes_by_id.values()]
+    if running:
+        launch_plan = (
+            get_config().directories.anchored().plans / f"{secrets.token_hex(16)}.plan"
+        )
         stages = ask(running)
         record.launch(launch_plan, objs, running, capture_submit_provenance())
         with asked(stages):
-            _run_in_process(dag)
+            _run_in_process(dag, running, launch_plan)
     if not load:
         return []
     # Load the way a cache hit does, so the first run returns what every later
@@ -456,47 +455,75 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     return [loaded[obj.object_id] for obj in objs]
 
 
-def _run_in_process(dag: Dag) -> None:
-    """Create every ready spec in ``dag``."""
+def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> None:
+    """Create ``running``, the specs of ``dag``, which ``launch_plan`` lists."""
     here = Worker.here()
-    for node in dag.nodes_by_id.values():
-        dag.batch_group(node, here)  # a batch with two Metadata stops the launch here
+    firsts: dict[tuple[Worker, str], Spec] = {}
+    specs: dict[str, Spec] = {}
+    # The plan file that lists each spec, and the batch it joins here.
+    plans: dict[str, Path] = {}
+    batches: dict[str, tuple[str, int]] = {}
+    completed: set[str] = set()
+    unseen: dict[str, dict[str, float]] = {}
+
+    def add(new: Sequence[Spec], listed: Path) -> None:
+        for obj in new:
+            specs[obj.object_id], plans[obj.object_id] = obj, listed
+            # A batch with two Metadata stops the launch here.
+            batches[obj.object_id] = batch_of(obj, here, firsts)
+
+    add(running, launch_plan)
     while dag.ready:
-        lead = next(iter(dag.ready.values()))
-        group = [lead]
-        if (batch := dag.batch_group(lead, here)) is not None:
-            # A batch holds specs from one plan, which its run names.
-            group = [
-                node
-                for node in dag.ready.values()
-                if dag.batch_group(node, here) == batch and node.plan == lead.plan
-            ]
-            group = group[: batch[1]]
-        for node in group:
-            del dag.ready[node.obj.object_id]
+        lead = next(iter(dag.ready))
+        # A batch holds specs from one plan, which its run names.
+        group = list(
+            islice(
+                (
+                    spec
+                    for spec in dag.ready
+                    if batches[spec] == batches[lead] and plans[spec] == plans[lead]
+                ),
+                batches[lead][1],
+            )
+        )
+        for spec in group:
+            del dag.ready[spec]
+        objs = [specs[spec] for spec in group]
 
         try:
-            with plan.listed_in(lead.plan):
-                _create_in_process([node.obj for node in group])
+            with plan.listed_in(plans[lead]):
+                _create_in_process(objs)
         except _DependencyNotReady as exc:
-            lead.obj.logger.info(
-                "blocked %s · %s",
-                _group_label(lead.obj._log_label, len(group)),
-                missing_dependencies(len(exc.dependencies)),
+            label = _group_label(objs[0]._log_label, len(objs))
+            objs[0].logger.info(
+                "blocked %s · %s", label, missing_dependencies(len(exc.dependencies))
             )
-            for node in group:
-                if (why := dag.block(node, exc.dependencies, exc.plan)) is not None:
-                    raise RuntimeError(f"{node.obj._log_label} {why}") from None
+            unbuilt = [
+                dep
+                for dep in exc.dependencies
+                if dep.object_id not in completed and not dep.done
+            ]
+            if unbuilt:
+                add(missing_under(unbuilt, dag), exc.plan)
+            found = [dep.object_id for dep in exc.dependencies]
+            for spec in group:
+                # In one process a built spec that create() found missing can
+                # only be a race with another run publishing it, which one
+                # rerun settles.
+                why = why_stuck(unseen.setdefault(spec, {}), found, bool(unbuilt), 0.0)
+                if why is not None:
+                    raise RuntimeError(f"{specs[spec]._log_label} {why}") from None
+                dag.block(spec, [dep.object_id for dep in unbuilt])
             continue
         except Exception as exc:
-            if lead.dependents:
+            if dependents := dag.waiting_for([lead])[:1]:
                 exc.add_note(
-                    "while building dependencies of "
-                    + lead.dependents[0].obj._log_label
+                    "while building dependencies of " + specs[dependents[0]]._log_label
                 )
             raise
-        for node in group:
-            dag.complete(node)
+        for spec in group:
+            dag.complete(spec)
+        completed.update(group)
 
 
 def _create_in_process[T](group: list[Spec[T]]) -> None:

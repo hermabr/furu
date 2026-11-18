@@ -30,7 +30,9 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from furu._batched import is_batched
+from furu._tree import specs_in
 from furu.core import Spec
+from furu.dag import Dag
 from furu.logging import get_logger
 from furu.migration import schema
 from furu.migration.steps import (
@@ -40,6 +42,7 @@ from furu.migration.steps import (
     naming,
     stored_name,
 )
+from furu.serializer.artifact import remembered
 from furu.storage.stored import Stored
 
 logger = get_logger("run")
@@ -50,6 +53,50 @@ IGNORE_STORED = "FURU_IGNORE_STORED"
 _asked: ContextVar[frozenset[str]] = ContextVar(
     "furu_launch_asked", default=frozenset()
 )
+
+
+def missing(objs: Sequence[Spec], dag: Dag | None = None) -> list[Spec]:
+    """Add to ``dag`` the specs under ``objs`` that are not stored, and return them.
+
+    The walk goes down through the fields and stops at a stored spec: nothing
+    is looked at below one. Each new spec waits for the ones it holds that
+    are not stored either, among them the ones ``dag`` had already. A large
+    value that the launch has named is walked once, however many specs hold
+    it: they wait for the value, and the value for the specs in it.
+    """
+    dag = Dag() if dag is None else dag
+    look = Stored()  # one listing per class, however many specs it has
+    new: list[Spec] = []
+    seen: set[str] = set()
+    holds: dict[str, list[str]] = {}
+    values: set[str] = set()
+    pending = list(reversed(objs))
+    while pending:
+        obj = pending.pop()
+        if (spec_id := obj.object_id) in seen:
+            continue
+        seen.add(spec_id)
+        if spec_id in dag.nodes:
+            holds[spec_id] = []
+        elif look.row(obj) is None:
+            new.append(obj)
+            held = holds[spec_id] = []
+            for field in fields(obj):
+                value = getattr(obj, field.name)
+                fingerprint = remembered(value, type(obj), field.name)
+                if fingerprint is None:
+                    inside = specs_in(value)
+                    held += [ref.object_id for ref in inside]
+                else:
+                    held.append(fingerprint)
+                    if fingerprint in holds:
+                        continue
+                    values.add(fingerprint)
+                    inside = specs_in(value) if fingerprint not in dag.nodes else []
+                    holds[fingerprint] = [ref.object_id for ref in inside]
+                pending.extend(reversed(inside))
+    dag.add(holds, values)
+    return new
 
 
 def _stage(cls: type) -> str:

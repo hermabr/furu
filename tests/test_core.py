@@ -1,5 +1,6 @@
 import logging
 import re
+import sys
 import types
 from contextlib import contextmanager
 from dataclasses import (
@@ -23,11 +24,12 @@ import furu.execution.load_or_create as execution_module
 from furu import Metadata, Spec, Throttle, Worker, plan
 from furu.config import get_config
 from furu.core import working_folder
+from furu.dag import Dag
 from furu.dependencies import (
     _DependencyNotReady,
-    collect_declared_refs,
     under_creation,
 )
+from furu.execution.launch import missing
 from furu.execution.load_or_create import _load_or_create
 from furu.logging import _execution_log
 from furu.result.bundle import _save_result_bundle
@@ -418,6 +420,18 @@ class MixedMetadataValue(furu.Spec[int]):
         return [obj.key for obj in objs]
 
 
+# The batch key of each KeyedValue, by n.
+BATCH_KEYS: dict[int, object] = {}
+
+
+class KeyedValue(furu.Spec[int]):
+    n: int
+
+    @furu.batched(lambda spec, worker: (BATCH_KEYS[spec.n], 1024))
+    def create(objs: list["KeyedValue"], directory: furu.SpecDirectory) -> list[int]:
+        return [obj.n for obj in objs]
+
+
 class LoggedSingleValue(Spec[str]):
     key: int
 
@@ -527,13 +541,6 @@ class LoadsDeclaredDependencyParent(Spec[str]):
 
     def create(self) -> str:
         return self.child.load_existing()
-
-
-class FuruBoundaryParent(Spec[str]):
-    child: NodePair
-
-    def create(self) -> str:
-        return self.child.node1.create()
 
 
 class BatchDependencyParent(furu.Spec[str]):
@@ -854,7 +861,7 @@ def test_specs_held_in_fields_are_built_before_the_create_hook() -> None:
     second = WeightedNode(name="weighted", weight=2)
     parent = NestedDependencyParent(bundle=DependencyBundle(first=first, second=second))
 
-    assert collect_declared_refs(parent) == (first, second)
+    assert missing([parent], Dag()) == [parent, first, second]
     assert parent.create() == "Node(nested)"
     assert second.done
 
@@ -878,7 +885,7 @@ def test_declared_dependencies_are_created_before_the_create_hook(
 def test_a_dependency_is_planned() -> None:
     parent = ComputedDependencyParent(name="computed")
 
-    assert collect_declared_refs(parent) == (parent.child,)
+    assert missing([parent], Dag()) == [parent, parent.child]
     assert parent.create() == "Node(computed)"
 
 
@@ -894,7 +901,7 @@ def test_a_dependency_is_computed_once_when_first_read() -> None:
     assert CountingDependencyParent.calls == 1
 
     assert parent.child is parent.child
-    assert collect_declared_refs(parent) == (parent.child,)
+    assert missing([parent], Dag()) == [parent, parent.child]
     assert CountingDependencyParent.calls == 1
 
 
@@ -904,7 +911,7 @@ def test_a_dependency_is_stored_and_hashed_as_a_field() -> None:
     assert Node(name="y").object_id not in parent.object_id
     assert _fields(parent) == {
         "name": "x",
-        "child": {"|kind": "value", "|value": parent._returned["child"]},
+        "child": {"|kind": "returned", "|value": parent._returned["child"]},
     }
     with pytest.raises(TypeError, match="unexpected keyword argument 'child'"):
         ComputedDependencyParent(name="x", child=Node(name="y"))  # ty: ignore[unknown-argument]
@@ -913,7 +920,7 @@ def test_a_dependency_is_stored_and_hashed_as_a_field() -> None:
 def test_a_dependency_returning_a_tree_plans_every_spec_in_it() -> None:
     parent = TreeDependencyParent(names=("b", "a"))
 
-    refs = cast(tuple[Node, ...], collect_declared_refs(parent))
+    refs = cast(list[Node], missing([parent], Dag())[1:])
     assert {ref.name for ref in refs} == {"a", "b", "shared"}
 
 
@@ -1050,17 +1057,6 @@ def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> N
     )
 
 
-def test_furu_objects_block_nested_eager_traversal() -> None:
-    node1 = Node(name="inner")
-    node2 = WeightedNode(name="other", weight=3)
-    child = NodePair(node1=node1, node2=node2, name="pair")
-    parent = FuruBoundaryParent(child=child)
-
-    assert parent.create() == "Node(inner)"
-
-    assert collect_declared_refs(parent) == (child,)
-
-
 def test_a_batched_create_loads_specs_from_fields_and_ones_it_asks_for() -> None:
     objs = [
         BatchDependencyParent(key=1, eager=Node(name="eager-1")),
@@ -1071,9 +1067,6 @@ def test_a_batched_create_loads_specs_from_fields_and_ones_it_asks_for() -> None
         "Node(eager-1):Node(shared-lazy)",
         "Node(eager-2):Node(shared-lazy)",
     ]
-
-    for obj in objs:
-        assert collect_declared_refs(obj) == (obj.eager,)
 
 
 def test_data_dir():
@@ -1776,6 +1769,21 @@ def test_two_metadata_under_one_batch_key_stop_the_launch() -> None:
         "differ in Metadata reuse ('same_environment' and 'never')."
     )
     assert not first.done
+
+
+def test_a_batch_key_is_written_as_a_field_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = {1: ("gpt2", Path("/x")), 2: ("gpt2", Path("/x")), 3: object()}
+    monkeypatch.setattr(sys.modules[__name__], "BATCH_KEYS", keys)
+    first, second = KeyedValue(n=1), KeyedValue(n=2)
+
+    assert furu.create([first, second]) == [1, 2]
+    assert run_of(first) == run_of(second)
+
+    # A key without its own repr was one batch per spec; now it is refused.
+    with pytest.raises(TypeError, match="Cannot serialize value <object object"):
+        furu.create(KeyedValue(n=3))
 
 
 def test_a_batch_has_one_log() -> None:

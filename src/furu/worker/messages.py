@@ -37,21 +37,13 @@ class ProcessSettings(_Message):
         )
 
 
-class Job(_Message):
-    kind: Literal["job"] = "job"
-    # One create() call: the ids of the specs of one batch in row order, or of
-    # one spec.
-    specs: list[str]
-    # Their plan lines and the lines their fields reach, so the worker builds
-    # them without reading a plan file or hashing anything.
-    lines: list[str]
-    # The plan file that lists them.
+class Launch(_Message):
+    """What every job of a launch has in common, so it is sent once."""
+
+    # The plan file that lists the specs: the launch's, or the one of the
+    # process whose create() asked for them.
     plan: Path
-    # Their class folder, which the worker cannot compute without importing
-    # the spec class.
-    class_dir: Path
     execution_log: Path
-    process: ProcessSettings
     # The submitting repo's settings (absolute data directories) and code, so
     # a worker serving many repos stores each result in the repo it came from.
     config: _Config
@@ -59,6 +51,20 @@ class Job(_Message):
     # The stored names of the classes the launch asked about. A spec of
     # another class that a create() builds is checked where it is built.
     asked: frozenset[str] = frozenset()
+
+
+class Job(Launch):
+    kind: Literal["job"] = "job"
+    # One create() call: the ids of the specs of one batch in row order, or of
+    # one spec.
+    specs: list[str]
+    # Their plan lines and the lines their fields reach, so the worker builds
+    # them without reading a plan file or hashing anything.
+    lines: list[str]
+    # Their class folder, which the worker cannot compute without importing
+    # the spec class.
+    class_dir: Path
+    process: ProcessSettings
 
     @property
     def label(self) -> str:
@@ -145,7 +151,8 @@ type Pool = Annotated[SlurmPool | LocalPool, Field(discriminator="kind")]
 
 
 class Batch(_Message):
-    batch: str  # jobs of one script with the same id may share a worker call
+    # Specs of one plan with the same name may share a create() call.
+    batch: str
     cap: int
 
 
@@ -154,30 +161,80 @@ class JobThrottle(_Message):
     max_running: int
 
 
-class Submission(_Message):
-    job: Job
-    # The pools that can run this job; None runs it alone.
-    pools: dict[str, Batch | None]
+class Group(_Message):
+    """Specs that run the same way, which is said once for all of them."""
+
+    specs: list[str]
+    class_dir: Path
+    process: ProcessSettings
+    # The pools that can run them, and the batch each joins there. A spec
+    # that runs alone is a batch of one.
+    pools: dict[str, Batch]
     throttle: JobThrottle | None
 
 
 class SubmitMessage(_Message):
+    """A plan's lines, each once, and how the specs that run are to be run.
+
+    The manager queues the specs in ``groups``. Every other spec that has a
+    line, or none, is finished.
+    """
+
     kind: Literal["submit"] = "submit"
     pools: dict[str, Pool]
-    jobs: list[Submission]
+    launch: Launch
+    lines: list[str]
+    groups: list[Group]
+
+
+class RerunMessage(_Message):
+    """Hand out again the specs of an attempt that ended without a result.
+
+    They go out once ``after`` are finished: the specs their create() asked
+    for and did not find.
+    """
+
+    kind: Literal["rerun"] = "rerun"
+    specs: list[str]
+    after: list[str] = []
+
+
+class GaveUpMessage(_Message):
+    """A script will not run ``specs`` again.
+
+    The manager passes it on to every script that asked for them, with the
+    specs of that script that wait for them in ``blocked``: those no longer
+    run for it either.
+    """
+
+    kind: Literal["gave_up"] = "gave_up"
+    specs: list[str]
+    error: str
+    # The log of their last attempt, and how many attempts each had.
+    log: Path
+    attempts: dict[str, int]
+    blocked: list[str] = []
 
 
 type ScriptMessage = Annotated[
-    SubmitMessage | CancelMessage, Field(discriminator="kind")
+    SubmitMessage | RerunMessage | GaveUpMessage | CancelMessage,
+    Field(discriminator="kind"),
 ]
 
 script_message_adapter: TypeAdapter[ScriptMessage] = TypeAdapter(ScriptMessage)
 
 
 class ResultMessage(_Message):
+    """How one create() call ended, and how long it ran.
+
+    One that did not complete goes to the script that answers for the specs,
+    which says whether they run again.
+    """
+
     kind: Literal["result"] = "result"
     object_ids: list[str]
     result: JobResult
+    seconds: float
 
 
 class WarningMessage(_Message):
@@ -191,7 +248,8 @@ class ErrorMessage(_Message):
 
 
 type ManagerMessage = Annotated[
-    ResultMessage | WarningMessage | ErrorMessage, Field(discriminator="kind")
+    ResultMessage | GaveUpMessage | WarningMessage | ErrorMessage,
+    Field(discriminator="kind"),
 ]
 
 manager_message_adapter: TypeAdapter[ManagerMessage] = TypeAdapter(ManagerMessage)

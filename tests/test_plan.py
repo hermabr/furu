@@ -255,7 +255,7 @@ def test_a_launch_writes_what_it_runs_and_what_that_reaches_before_it_runs(
             "spec": table.object_id,
             "fields": {
                 "data": _ref(data),
-                "runs": {"|kind": "value", "|value": table._returned["runs"]},
+                "runs": {"|kind": "returned", "|value": table._returned["runs"]},
                 "seeds": 2,
             },
         },

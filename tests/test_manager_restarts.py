@@ -19,7 +19,7 @@ import pytest
 from runs import events_of
 
 import furu
-import furu.execution.run as run_module
+import furu.execution.manager as manager_module
 import furu.execution.run_on_workers as run_on_workers_module
 from furu import Spec
 from furu.config import get_config
@@ -71,7 +71,7 @@ def _manager(manager_dir: Path) -> Generator[Manager]:
 def manager_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Scripts with local backends use the shared manager, not their own."""
     monkeypatch.setattr(Manager, "serve", lambda **_: nullcontext(None))
-    monkeypatch.setattr(run_module, "_POLL_INTERVAL_S", 0.1)
+    monkeypatch.setattr(manager_module, "_IDLE_CHECK_INTERVAL_S", 0.1)
     monkeypatch.setattr(run_on_workers_module, "_MANAGER_RETRY_INTERVAL_S", 0.1)
     directory = tmp_path / "manager"
     directory.mkdir()
@@ -107,7 +107,8 @@ def test_script_that_loses_the_manager_waits_on_its_running_job(
         with manager.lock:
             (first,) = manager.scripts
         first.connection.close()
-        # The script plans again from disk and finds its job's lock.
+        # The script plans again from disk and sends the spec again, which
+        # still runs for the connection it lost.
         _wait_until(lambda: [s for s in manager.scripts if s is not first] != [])
         (tmp_path / "open").touch()
     assert outcome == [1]

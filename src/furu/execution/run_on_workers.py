@@ -12,18 +12,17 @@ from importlib.metadata import version
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import ClientConnection, connect
 
-from furu import record
+from furu import plan, record
 from furu.config import get_config
 from furu.core import Spec
-from furu.execution.launch import ask, stage_table
+from furu.execution.launch import ask, missing, stage_table
 from furu.execution.run import Run
 from furu.logging import _execution_log, get_logger
 from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.snapshot import CodeLocation
 from furu.storage._layout import execution_log_path_in
-from furu.storage.stored import Stored
 from furu.worker.backends.protocol import WorkerBackend
-from furu.worker.messages import CancelMessage, LocalPool
+from furu.worker.messages import CancelMessage, Launch, LocalPool
 
 logger = get_logger("run")
 
@@ -50,8 +49,8 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
             "cannot mix local and Slurm worker backends: local threads run your "
             "live worktree, Slurm workers run the pushed commit"
         )
-    look = Stored()
-    if all(look.row(obj) is not None for obj in objs):
+    running = missing(objs)
+    if not running:
         logger.info("all objects already exist; nothing to run")
         return
 
@@ -73,38 +72,45 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
     # Asked and written once: planning again after losing the manager is the
     # same launch.
     asked: frozenset[str] = frozenset()
+    first = True
     with _execution_log(execution_log), in_process as manager:
-        while True:
-            run = Run(
-                backends=by_key,
-                code=code,
-                config=get_config().anchored(),
-                execution_log=execution_log,
-            )
-            run.add(objs, launch_plan)
-            if not run.nodes_by_id:
-                logger.info("run finished ok")
-                return
-            missing = [node.obj for node in run.nodes_by_id.values()]
+        while running:
             logger.info(
-                "planned exec %s · %d ready · %d blocked\n%s",
+                "planned exec %s · %d missing\n%s",
                 execution_log.parent.name[:5],
-                len(run.ready),
-                len(run.blocked),
-                stage_table(missing),
+                len(running),
+                stage_table(running),
                 extra={"path": execution_log},
             )
-            if not asked:
-                asked = ask(missing)
-                record.launch(launch_plan, objs, missing, provenance)
-            run.asked = asked
+            if first:
+                asked = ask(running)
+            run = Run(
+                backends=by_key,
+                launch=Launch(
+                    plan=launch_plan,
+                    execution_log=execution_log,
+                    config=get_config().anchored(),
+                    code=code,
+                    asked=asked,
+                ),
+            )
+            # Placed before the plan is written: a launch that no pool can
+            # run leaves no files.
+            groups = run.place(running)
+            if first:
+                lines = record.launch(launch_plan, objs, running, provenance)
+            else:
+                ids = {obj.object_id for obj in running}
+                lines = list(map(plan.dump, plan.lines(running, ids)))
+            first = False
+            submit = run.submit(groups, lines, launch_plan)
             with (
                 connect(manager.url, max_size=None)
                 if manager is not None
                 else _connect_to_manager()
             ) as connection:
                 try:
-                    run.drive(connection)
+                    run.drive(connection, submit)
                     return
                 except ConnectionClosed:
                     logger.warning("lost the manager; planning again from disk")
@@ -112,6 +118,8 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
                     with suppress(ConnectionClosed):
                         connection.send(CancelMessage().model_dump_json())
                     raise
+            running = missing(objs)
+        logger.info("run finished ok")
 
 
 def _prepare_snapshot(provenance: SubmitProvenance) -> CodeLocation:

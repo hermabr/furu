@@ -1,5 +1,5 @@
+import json
 import logging
-import re
 import threading
 import time
 from collections.abc import Callable, Generator, Sequence
@@ -18,21 +18,26 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.dag as dag_module
+import furu.execution.manager as manager_module
 import furu.worker.loop as worker_loop_module
 from furu import Spec, Throttle, Worker, plan
 from furu.config import get_config
 from furu.core import working_folder
-from furu.execution.manager import Manager, _Lease, _Queued, _Script
+from furu.dag import Dag
+from furu.execution.launch import missing
+from furu.execution.manager import Manager, _Lease, _Script
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
 from furu.logging import _display_path
 from furu.snapshot import CodeLocation
+from furu.storage import events
 from furu.storage._layout import (
-    attempts_dir_in,
+    attempt_dir_in,
     execution_log_path_in,
     lock_path_in,
     log_path_in,
+    run_name,
 )
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
@@ -40,17 +45,24 @@ from furu.worker.backends.slurm.resources import SlurmResources
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
 from furu.worker.messages import (
+    Batch,
     CancelMessage,
+    ErrorMessage,
+    GaveUpMessage,
     HelloMessage,
     Job,
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
     JobResult,
+    JobThrottle,
+    Launch,
     LocalPool,
     ProcessSettings,
+    RerunMessage,
     ResultMessage,
     SubmitMessage,
+    WarningMessage,
     job_result_adapter,
     manager_message_adapter,
     server_message_adapter,
@@ -64,23 +76,37 @@ def _pool(worker: Worker) -> LocalThreadWorkerBackend:
     return LocalThreadWorkerBackend(worker=worker)
 
 
-def _plan() -> Path:
-    return get_config().directories.anchored().plans / "e1.plan"
+def _plan(name: str = "e1") -> Path:
+    return get_config().directories.anchored().plans / f"{name}.plan"
+
+
+def _launch() -> Launch:
+    return Launch(
+        plan=_plan(),
+        execution_log=get_config().directories.anchored().executions
+        / "e1"
+        / "execution.log",
+        config=get_config().anchored(),
+        code=CodeLocation.here(),
+    )
 
 
 def _job(*objs: Spec) -> Job:
     return Job(
         specs=[obj.object_id for obj in objs],
         lines=list(map(plan.dump, plan.lines(objs))),
-        plan=_plan(),
         class_dir=objs[0]._class_dir,
-        execution_log=get_config().directories.anchored().executions
-        / "e1"
-        / "execution.log",
         process=ProcessSettings.from_metadata(objs[0]._metadata),
-        config=get_config().anchored(),
-        code=CodeLocation.here(),
+        **dict(_launch()),
     )
+
+
+def _ids(objs: Sequence[Spec]) -> list[str]:
+    return [obj.object_id for obj in objs]
+
+
+def _lines(objs: Sequence[Spec], runs: Sequence[Spec]) -> list[str]:
+    return list(map(plan.dump, plan.lines(objs, set(_ids(runs)))))
 
 
 @contextmanager
@@ -99,41 +125,46 @@ def _new_run(
     *,
     backends: Sequence[LocalThreadWorkerBackend] = (CPU_POOL, GPU_POOL),
     max_retries_per_object: int | None = None,
-) -> Run:
+    plan_path: Path | None = None,
+) -> tuple[Run, SubmitMessage]:
+    """A script's run of ``objs``, and the message that asks the manager for them."""
     run = Run(
         backends={backend.pool_key: backend for backend in backends},
-        code=CodeLocation.here(),
-        config=get_config().anchored(),
-        execution_log=get_config().directories.anchored().executions
-        / "e1"
-        / "execution.log",
+        launch=_launch(),
         max_retries_per_object=get_config().worker.max_retries_per_object
         if max_retries_per_object is None
         else max_retries_per_object,
     )
-    run.add(objs, _plan())
-    return run
+    running = missing(objs, Dag())
+    lines = _lines(running, running)
+    return run, run.submit(run.place(running), lines, plan_path or _plan())
 
 
-def _assert_one_state(run: Run) -> None:
-    """Every node is in exactly one state dict."""
-    states = (
-        run.ready,
-        run.blocked,
-        run.completed,
-        run.running,
-        run.waiting,
-        run.failed,
+def _result(objs: Sequence[Spec], result: JobResult) -> ResultMessage:
+    return ResultMessage(object_ids=_ids(objs), result=result, seconds=1.5)
+
+
+def _gave_up(objs: Sequence[Spec], error: str, attempts: int = 1) -> GaveUpMessage:
+    """What a run sends that gives up on one call's ``objs`` after ``attempts`` each."""
+    return GaveUpMessage(
+        specs=_ids(objs),
+        error=error,
+        log=log_path_in(working_folder(objs)),
+        attempts=dict.fromkeys(_ids(objs), attempts),
     )
-    ids = [object_id for state in states for object_id in state]
-    assert sorted(ids) == sorted(run.nodes_by_id)
 
 
-def _submitted_ids(run: Run) -> list[str]:
-    return [submission.job.specs[0] for submission in run.take_submissions()]
+def _blocked(*dependencies: Spec) -> JobBlockedResult:
+    """What a worker reports whose create() asked for ``dependencies``."""
+    under = [*dependencies, *missing(dependencies, Dag())]
+    return JobBlockedResult(
+        dependencies=_ids(dependencies),
+        lines=_lines(dependencies, under),
+        plan=_plan().with_suffix("") / "w0.plan",
+    )
 
 
-# --- manager-side leasing, without sockets -------------------------------------
+# --- the manager, without sockets ----------------------------------------------
 
 
 def _submit(
@@ -142,16 +173,17 @@ def _submit(
     *,
     backends: Sequence[LocalThreadWorkerBackend] = (CPU_POOL, GPU_POOL),
     max_workers: int = 10,
-) -> _Script:
-    """Queue ``objs`` as one more script would, planned by its own Run."""
-    run = _new_run(objs, backends=backends)
+    plan_path: Path | None = None,
+) -> tuple[_Script, Run]:
+    """Send ``objs`` as one more script would, placed by its own Run."""
+    run, message = _new_run(objs, backends=backends, plan_path=plan_path)
     script = _Script(
         connection=cast(ServerConnection, None),
         pools={key: LocalPool(max_workers=max_workers) for key in run.backends},
     )
     manager.scripts.append(script)
-    manager.queue += [_Queued(script, job) for job in run.take_submissions()]
-    return script
+    manager._add(script, message)
+    return script, run
 
 
 def _manager(
@@ -167,37 +199,53 @@ def _manager(
 
 def _lease(
     manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL
-) -> Job | None:
-    queued = next(manager._leasable_locked(backend.pool_key), None)
-    if queued is None:
-        return None
-    manager.queue = [q for q in manager.queue if q not in queued]
-    worker = cast(ServerConnection, object())
-    lease = manager.leases[worker] = _Lease(
-        script=queued[0].script, queued=queued, pool=backend.pool_key
-    )
-    return lease.job
+) -> _Lease | None:
+    return manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
 
 
-def _release(manager: Manager, job: Job) -> None:
-    (worker,) = [
-        worker
-        for worker, lease in manager.leases.items()
-        if lease.job.specs == job.specs
-    ]
+def _leased(manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL) -> _Lease:
+    lease = _lease(manager, backend)
+    assert lease is not None
+    return lease
+
+
+def _end(manager: Manager, lease: _Lease, result: JobResult | None = None) -> None:
+    (worker,) = [w for w, held in manager.leases.items() if held is lease]
     del manager.leases[worker]
+    manager._finish(lease, result or JobCompletedResult())
 
 
-def _ids(job: Job | None) -> list[str]:
-    assert isinstance(job, Job)
-    return job.specs
+def _sent(manager: Manager) -> list[object]:
+    """What the manager has to send, with every job taking no time."""
+    outbox, manager.outbox = manager.outbox, []
+    return [
+        message.model_copy(update={"seconds": 0.0})
+        if isinstance(message, ResultMessage)
+        else message
+        for _, message in outbox
+    ]
 
 
-@contextmanager
-def _mark_running(obj: Spec) -> Generator[None]:
-    attempts_dir_in(obj._class_dir).mkdir(parents=True, exist_ok=True)
-    with lock(lock_path_in(obj._class_dir, obj._artifact_hash)):
-        yield
+def _answer(manager: Manager, script: _Script, run: Run) -> None:
+    """Pass what the manager sent on to the script's run, and its replies back."""
+    outbox, manager.outbox = manager.outbox, []
+    for _, message in outbox:
+        match message:
+            case ResultMessage():
+                replies = run.result(message)
+            case GaveUpMessage():
+                run.gave_up(message)
+                replies = []
+            case _:
+                raise AssertionError(message)
+        for reply in replies:
+            match reply:
+                case SubmitMessage():
+                    manager._add(script, reply)
+                case RerunMessage():
+                    manager._rerun(script, reply)
+                case GaveUpMessage():
+                    manager._gave_up(script, reply)
 
 
 @dataclass(slots=True)
@@ -459,213 +507,241 @@ class DynamicGpuAfterCpu(Spec[int]):
         return self.parent.create() + self.value
 
 
+class SharesLeaves(Spec[int]):
+    name: str
+    leaves: tuple[RunLeaf, ...]
+
+    def create(self) -> int:
+        return len(self.leaves)
+
+
+class ReturnsLeaves(Spec[int]):
+    count: int
+
+    @furu.dependency
+    def leaves(self) -> tuple[RunLeaf, ...]:
+        return tuple(RunLeaf(value=1000 + n) for n in range(self.count))
+
+    def create(self) -> int:
+        return len(self.leaves)
+
+
+class SweepLeaf(furu.Spec[int]):
+    """A batch of these is as large as its worker has CPUs."""
+
+    value: int
+
+    @furu.batched(lambda _, worker: ("sweep", worker.cpus))
+    def create(objs: list["SweepLeaf"], directory: furu.SpecDirectory) -> list[int]:
+        return [obj.value for obj in objs]
+
+
+TINY, SMALL, LARGE = (_pool(Worker(cpus=cpus)) for cpus in (2, 5, 20))
+
+
 # --- the script's run ----------------------------------------------------------
 
 
-def test_run_partitions_ready_and_blocked() -> None:
-    leaf = RunLeaf(value=1)
-    parent = RunParent(child=leaf)
+def test_a_submit_holds_each_line_once_and_what_each_group_shares() -> None:
+    leaves = tuple(RunLeaf(value=value) for value in range(30))
+    sharing = [SharesLeaves(name=name, leaves=leaves) for name in "ab"]
+    returning = ReturnsLeaves(count=2)
+    limited = LimitedRunLeaf(value=1)
+    batched = [BatchedRunLeaf(value=value) for value in range(2)]
+    cpu = CPU_POOL.pool_key
 
-    run = _new_run([parent])
-
-    assert set(run.ready) == {leaf.object_id}
-    assert set(run.blocked) == {parent.object_id}
-    assert run.running == {}
-
-
-def test_run_max_retries_per_object_defaults_to_config() -> None:
-    run = Run(
-        backends={},
-        code=CodeLocation.here(),
-        config=get_config(),
-        execution_log=Path("execution.log"),
+    run, submit = _new_run(
+        [*sharing, returning, limited, *batched], backends=[CPU_POOL]
     )
 
-    assert run.max_retries_per_object == get_config().worker.max_retries_per_object
+    assert submit.launch == _launch()
+    # The shared tuple and what the method returned are a line each.
+    assert len(submit.lines) == len(set(submit.lines)) == 32 + 6 + 2
+    groups = {group.class_dir: group for group in submit.groups}
+    assert len(groups) == len(submit.groups) == 5
+    assert groups[sharing[0]._class_dir].specs == _ids(sharing)
+    alone = groups[limited._class_dir]
+    assert alone.pools == {cpu: Batch(batch=limited._stored_name, cap=1)}
+    assert alone.throttle == JobThrottle(key=limited._stored_name, max_running=2)
+    together = groups[batched[0]._class_dir]
+    assert together.specs == _ids(batched)
+    assert together.pools[cpu].cap == 10 and together.throttle is None
+    assert run.left == {spec for group in submit.groups for spec in group.specs}
 
 
-def test_run_completed_result_moves_dependents_to_ready() -> None:
-    leaf = RunLeaf(value=1)
-    parent = RunParent(child=leaf)
-    run = _new_run([parent])
-
-    assert _submitted_ids(run) == [leaf.object_id]
-    assert set(run.running) == {leaf.object_id}
-    # Nothing else can go until the running job finishes.
-    assert run.take_submissions() == []
-
-    run.job_result(leaf.object_id, JobCompletedResult())
-
-    assert run.running == {}
-    assert set(run.completed) == {leaf.object_id}
-    assert set(run.ready) == {parent.object_id}
-    assert run.blocked == {}
+def test_two_metadata_under_one_batch_key_stop_the_run_before_anything_is_sent() -> (
+    None
+):
+    with pytest.raises(ValueError, match="differ in Metadata reuse"):
+        _new_run([MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)])
 
 
-def test_run_submission_carries_the_runs_settings_and_code() -> None:
-    leaf = RunLeaf(value=1)
-    run = _new_run([leaf], backends=(CPU_POOL,))
-
-    (submission,) = run.take_submissions()
-
-    assert submission.job.config == get_config().anchored()
-    assert submission.job.code == CodeLocation.here()
-    assert submission.job.log == log_path_in(leaf._attempt_dir)
-    assert submission.pools == {CPU_POOL.pool_key: None}
-    assert submission.throttle is None
-
-
-def test_run_blocked_result_discovers_lazy_dependency_and_reruns_parent() -> None:
-    parent = RunLazyParent(value=2)
-    dependency = RunLeaf(value=2)
-    run = _new_run([parent])
-
-    assert _submitted_ids(run) == [parent.object_id]
-    run.job_result(
-        parent.object_id,
-        _blocked(dependency),
-    )
-
-    assert set(run.ready) == {dependency.object_id}
-    assert set(run.blocked) == {parent.object_id}
-
-    assert _submitted_ids(run) == [dependency.object_id]
-    run.job_result(dependency.object_id, JobCompletedResult())
-
-    assert _submitted_ids(run) == [parent.object_id]
-    assert set(run.running) == {parent.object_id}
-    assert set(run.completed) == {dependency.object_id}
-
-
-def _blocked(*dependencies: Spec) -> JobBlockedResult:
-    return JobBlockedResult(
-        dependencies=[dependency.object_id for dependency in dependencies],
-        lines=list(map(plan.dump, plan.lines(dependencies))),
-        plan=_plan().with_suffix("") / "w0.plan",
-    )
-
-
-def _answer_until_idle(
-    run: Run, answer: Callable[[str, int], JobResult], *, max_rounds: int = 50
+def test_a_failed_attempt_reruns_until_its_retries_run_out(
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Answer each round of submissions, polling in between, until none come."""
-    for round_ in range(max_rounds):
-        run.poll_waiting()
-        object_ids = _submitted_ids(run)
-        if not object_ids:
-            return
-        for object_id in object_ids:
-            run.job_result(object_id, answer(object_id, round_))
-            _assert_one_state(run)
-    raise AssertionError(f"still submitting after {max_rounds} rounds")
+    leaf = RunLeaf(value=1)
+    ids, label = [leaf.object_id], leaf._log_label
+    run, _ = _new_run([leaf], max_retries_per_object=3)
+    errors = [
+        "Traceback (most recent call last):\n  File a\nValueError: bad shape\n",
+        "Traceback (most recent call last):\n  File b\nValueError: bad shape\n",
+        "Traceback (most recent call last):\nOSError: disk full\n\n",
+        "subprocess died: killed by signal 9 (SIGKILL)",
+    ]
+
+    with _captured_furu_logs(caplog):
+        for error in errors[:3]:
+            assert run.result(_result([leaf], JobFailedResult(error=error))) == [
+                RerunMessage(specs=ids)
+            ]
+        gave_up = _gave_up([leaf], errors[3], attempts=4)
+        assert run.result(_result([leaf], JobFailedResult(error=errors[3]))) == [
+            gave_up
+        ]
+        assert run.left == set(ids)
+        run.gave_up(gave_up)
+        assert not run.left
+        with pytest.raises(RuntimeError, match="1 spec failed, 0 blocked"):
+            run.finish()
+
+    failed = [record for record in caplog.records if record.message.startswith("fail")]
+    assert [record.message for record in failed] == [
+        f"failed {label} · attempt 1/4 · ValueError: bad shape",
+        f"failed {label} · attempt 2/4 · same error",
+        f"failed {label} · attempt 3/4 · OSError: disk full",
+        f"failed {label} · attempt 4/4 · subprocess died: killed by signal 9 (SIGKILL)",
+    ]
+    assert [record.levelno for record in failed] == [logging.WARNING] * 3 + [
+        logging.ERROR
+    ]
+    assert failed[0].__dict__["path"] == log_path_in(leaf._attempt_dir)
+    # The last attempt is never one that retries.
+    assert [message for message in caplog.messages if "progress" in message] == [
+        *["progress 0/1 · 1 retrying"] * 3,
+        "progress 0/1 · 1 failed",
+    ]
+    assert all("Traceback" not in message for message in caplog.messages)
+    assert caplog.messages[-1] == f"run failed · 1 spec failed · {label} · {errors[3]}"
 
 
-def test_run_reruns_a_spec_blocked_on_a_built_dependency_after_a_poll() -> None:
-    parent = RunLazyParent(value=2)
-    dependency = RunLeaf(value=2)
-    dependency.create()
-    run = _new_run([parent])
+def test_a_retry_that_completes_is_no_failure() -> None:
+    leaf = RunLeaf(value=1)
+    run, _ = _new_run([leaf], max_retries_per_object=1)
 
-    run.take_submissions()
-    run.job_result(parent.object_id, _blocked(dependency))
+    run.result(_result([leaf], JobFailedResult(error="boom")))
+    assert run.result(_result([leaf], JobCompletedResult())) == []
+    # A result for a spec that has ended is ignored.
+    assert run.result(_result([leaf], JobFailedResult(error="late"))) == []
 
-    assert dependency.object_id not in run.nodes_by_id
-    assert set(run.waiting) == {parent.object_id}
-    assert run.take_submissions() == []
-    _assert_one_state(run)
-    run.poll_waiting()
-    assert _submitted_ids(run) == [parent.object_id]
-
-
-def test_run_keeps_rerunning_specs_whose_worker_lags_within_the_grace() -> None:
-    dependency = RunLeaf(value=uuid4().int)
-    parents = [BatchedRunLeaf(value=value) for value in range(2)]
-    run = _new_run([dependency, *parents])
-
-    def answer(object_id: str, round_: int) -> JobResult:
-        if object_id == dependency.object_id:
-            dependency.create()
-            return JobCompletedResult()
-        # Its worker misses the dependency for a few reruns, then sees it.
-        return _blocked(dependency) if round_ < 4 else JobCompletedResult()
-
-    _answer_until_idle(run, answer)
-
-    assert set(run.completed) == {dependency.object_id} | {
-        parent.object_id for parent in parents
-    }
+    assert run.failures == {} and not run.left
     run.finish()
 
 
-def test_run_reruns_a_spec_once_per_dependency_published_meanwhile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(Run, "unseen_grace_s", 0.0)
-    parent = RunLazyParent(value=uuid4().int)
-    dependencies = [RunLeaf(value=uuid4().int) for _ in range(3)]
-    for dependency in dependencies:
-        dependency.create()
-    run = _new_run([parent])
+def test_the_runs_error_lists_each_spec_it_gave_up_on_and_each_that_waits_for_one() -> (
+    None
+):
+    first, second = RunLeaf(value=1), RunLeaf(value=2)
+    parent = RunParent(child=first)
+    run, _ = _new_run([parent, second], max_retries_per_object=0)
 
-    def answer(object_id: str, round_: int) -> JobResult:
-        # Each lookup races another run publishing the next dependency.
-        if round_ < len(dependencies):
-            return _blocked(dependencies[round_])
-        return JobCompletedResult()
+    for obj in (first, second):
+        error = f"Traceback\n  File x\nValueError: {obj.value}"
+        (gave_up,) = run.result(_result([obj], JobFailedResult(error=error)))
+        assert isinstance(gave_up, GaveUpMessage)
+        # The manager passes it on with the specs that wait for these.
+        blocked = [parent.object_id] if obj is first else []
+        run.gave_up(gave_up.model_copy(update={"blocked": blocked}))
 
-    _answer_until_idle(run, answer)
-
-    assert set(run.completed) == {parent.object_id}
-
-
-@pytest.mark.parametrize(
-    "missing",
-    [
-        pytest.param(lambda a, b, c, round_: [a], id="same"),
-        pytest.param(lambda a, b, c, round_: [(a, b)[round_ % 2]], id="alternating"),
-        pytest.param(
-            lambda a, b, c, round_: [(a, b), (b, c), (c, a)][round_ % 3],
-            id="overlapping",
-        ),
-        pytest.param(lambda a, b, c, round_: [a, b, c][: round_ + 1], id="growing"),
-    ],
-)
-def test_run_fails_a_spec_that_keeps_missing_built_dependencies(
-    monkeypatch: pytest.MonkeyPatch,
-    missing: Callable[[Spec, Spec, Spec, int], Sequence[Spec]],
-) -> None:
-    monkeypatch.setattr(Run, "unseen_grace_s", 0.0)
-    parents = [BatchedRunLeaf(value=value) for value in range(2)]
-    built_here = RunLeaf(value=uuid4().int)
-    built_elsewhere = [RunLeaf(value=uuid4().int) for _ in range(2)]
-    for dependency in built_elsewhere:
-        dependency.create()
-    other = RunLeaf(value=uuid4().int)
-    run = _new_run([built_here, *parents, other], max_retries_per_object=1)
-
-    def answer(object_id: str, round_: int) -> JobResult:
-        if object_id == built_here.object_id:
-            built_here.create()
-            return JobCompletedResult()
-        if object_id == other.object_id:
-            return (
-                JobFailedResult(error="boom") if round_ == 0 else JobCompletedResult()
-            )
-        return _blocked(*missing(built_here, *built_elsewhere, round_))
-
-    _answer_until_idle(run, answer)
-
-    assert set(run.failed) == {parent.object_id for parent in parents}
     with pytest.raises(RuntimeError) as excinfo:
         run.finish()
-    assert str(excinfo.value).splitlines()[0] == "2 specs failed, 0 blocked"
-    for parent in parents:
-        assert re.fullmatch(
-            r"still finds \S+ missing after a rerun, though this run sees it built; its "
-            r"worker may not see the storage it was written to, or may be running "
-            r"different code than this run",
-            run.failures[parent.object_id][-1],
-        )
+    assert str(excinfo.value).splitlines() == [
+        "2 specs failed, 1 blocked",
+        *(
+            f"  {obj._log_label} · 1 attempt · ValueError: {obj.value} → "
+            f"{_display_path(log_path_in(obj._attempt_dir))}"
+            for obj in (first, second)
+        ),
+        f"  {parent._log_label} · blocked",
+    ]
+
+
+def test_a_failed_batch_counts_for_each_spec_and_points_at_the_batchs_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    objs = [BatchedRunLeaf(value=value) for value in range(2)]
+    run, _ = _new_run(objs, max_retries_per_object=1)
+    log = log_path_in(working_folder(objs))
+
+    assert run.result(_result(objs, JobFailedResult(error="boom"))) == [
+        RerunMessage(specs=_ids(objs))
+    ]
+    (gave_up,) = run.result(_result(objs, JobFailedResult(error="boom")))
+    run.gave_up(cast(GaveUpMessage, gave_up))
+    with pytest.raises(RuntimeError) as excinfo:
+        run.finish()
+    # Another launch that asked for them hears the same from the manager.
+    other, _ = _new_run(objs)
+    other.gave_up(cast(GaveUpMessage, gave_up))
+    with pytest.raises(RuntimeError) as heard:
+        other.finish()
+    assert str(heard.value) == str(excinfo.value)
+
+    assert [
+        record.__dict__["path"]
+        for record in caplog.records
+        if record.message.startswith("failed ")
+    ] == [log] * 6
+    assert all(
+        line.endswith(f"→ {_display_path(log)}")
+        for line in str(excinfo.value).splitlines()[1:]
+    )
+
+
+def test_a_blocked_attempt_asks_for_what_it_found_missing_and_reruns_after_it() -> None:
+    lazy, leaf = RunLazyParent(value=2), RunLeaf(value=uuid4().int)
+    found = RunParent(child=leaf)
+    run, _ = _new_run([lazy, leaf])
+    blocked = _blocked(found)
+
+    asked, rerun = run.result(_result([lazy], blocked))
+
+    assert isinstance(asked, SubmitMessage)
+    assert asked.launch == _launch().model_copy(update={"plan": blocked.plan})
+    assert asked.lines == blocked.lines
+    # The leaf is listed, so that the found spec waits for it, and not new.
+    assert [group.specs for group in asked.groups] == [[found.object_id], _ids([leaf])]
+    assert rerun == RerunMessage(specs=_ids([lazy]), after=_ids([found]))
+    assert run.left == set(_ids([lazy, leaf, found]))
+
+
+@pytest.mark.parametrize("built_here", [True, False])
+def test_a_found_spec_does_not_wait_for_a_built_spec(built_here: bool) -> None:
+    lazy, leaf = RunLazyParent(value=uuid4().int), RunLeaf(value=uuid4().int)
+    found = RunParent(child=leaf)
+    run, _ = _new_run([lazy, leaf])
+    blocked = _blocked(found)
+    if built_here:
+        run.result(_result([leaf], JobCompletedResult()))
+    else:
+        leaf.create()  # another run builds it
+
+    asked, _ = run.result(_result([lazy], blocked))
+
+    assert isinstance(asked, SubmitMessage)
+    assert [group.specs for group in asked.groups] == [[found.object_id]]
+
+
+def test_an_attempt_that_found_only_built_specs_missing_reruns_at_the_next_poll() -> (
+    None
+):
+    lazy, dependency = RunLazyParent(value=2), RunLeaf(value=2)
+    dependency.create()
+    run, _ = _new_run([lazy])
+
+    # Rerunning at once would likely miss the same specs again.
+    assert run.result(_result([lazy], _blocked(dependency))) == []
+    assert run.poll() == [RerunMessage(specs=_ids([lazy]))]
+    assert run.poll() == []
 
 
 @pytest.fixture
@@ -676,503 +752,112 @@ def dag_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return now
 
 
-def _rerun_after_a_poll(run: Run, parent: Spec, result: JobResult) -> None:
-    run.poll_waiting()
-    assert _submitted_ids(run) == [parent.object_id]
-    run.job_result(parent.object_id, result)
-    _assert_one_state(run)
+def _rerun(run: Run, lazy: Spec, result: JobResult) -> list[object]:
+    assert run.poll() == [RerunMessage(specs=_ids([lazy]))]
+    return list(run.result(_result([lazy], result)))
 
 
-def test_run_fails_a_spec_once_its_grace_on_a_built_dependency_runs_out(
+def test_a_spec_that_keeps_missing_a_built_dependency_is_given_up_on_after_the_grace(
     dag_clock: list[float],
 ) -> None:
-    parent, dependency = RunLazyParent(value=2), RunLeaf(value=2)
+    lazy, dependency = RunLazyParent(value=2), RunLeaf(value=2)
     dependency.create()
-    run = _new_run([parent])
-    run.take_submissions()
-    run.job_result(parent.object_id, _blocked(dependency))
+    run, _ = _new_run([lazy])
+    run.result(_result([lazy], _blocked(dependency)))
 
     while dag_clock[0] < Run.unseen_grace_s:
         dag_clock[0] += 5
-        _rerun_after_a_poll(run, parent, _blocked(dependency))
-        assert set(run.waiting) == {parent.object_id}  # 120 s is still within it
+        assert _rerun(run, lazy, _blocked(dependency)) == []  # 120 s is still within it
     dag_clock[0] += 5
-    _rerun_after_a_poll(run, parent, _blocked(dependency))
+    (gave_up,) = _rerun(run, lazy, _blocked(dependency))
 
-    assert set(run.failed) == {parent.object_id}
-    assert run.failures[parent.object_id][-1].startswith(
-        f"still finds {dependency._log_label} missing for 2m05s, though"
+    assert gave_up == _gave_up(
+        [lazy],
+        f"still finds {dependency._log_label} missing for 2m05s, though this "
+        "run sees it built; its worker may not see the storage it was written "
+        "to, or may be running different code than this run",
     )
 
 
-def test_run_does_not_reset_the_grace_for_alternating_dependencies(
-    dag_clock: list[float],
-) -> None:
-    parent = RunLazyParent(value=2)
-    first, second = RunLeaf(value=2), RunLeaf(value=3)
+def test_the_grace_is_per_dependency(dag_clock: list[float]) -> None:
+    lazy = RunLazyParent(value=2)
+    first, second, fresh = (RunLeaf(value=value) for value in (2, 3, 4))
     furu.create([first, second])
-    run = _new_run([parent])
-    run.take_submissions()
+    run, _ = _new_run([lazy])
+    run.result(_result([lazy], _blocked(first)))
 
-    run.job_result(parent.object_id, _blocked(first))
+    # Missing another one in between does not start the first one's over.
     dag_clock[0] = 60
-    _rerun_after_a_poll(run, parent, _blocked(second))
-    dag_clock[0] = Run.unseen_grace_s + 1
-    _rerun_after_a_poll(run, parent, _blocked(first))
-
-    assert set(run.failed) == {parent.object_id}
-    assert first._log_label in run.failures[parent.object_id][-1]
-
-
-def test_run_gives_a_fresh_grace_to_a_dependency_published_after_many_races(
-    dag_clock: list[float],
-) -> None:
-    parent = RunLazyParent(value=2)
-    raced = [RunLeaf(value=value) for value in range(100, 115)]
-    furu.create(raced)
-    fresh = RunLeaf(value=2)
-    run = _new_run([parent])
-    run.take_submissions()
-
-    run.job_result(parent.object_id, _blocked(raced[0]))
-    for dependency in raced[1:]:  # each one published just as it looked
-        dag_clock[0] += 5
-        _rerun_after_a_poll(run, parent, _blocked(dependency))
+    assert _rerun(run, lazy, _blocked(second)) == []
+    # One published only now has the whole grace.
+    dag_clock[0] = Run.unseen_grace_s - 1
     fresh.create()
-    published = dag_clock[0]
-    while dag_clock[0] - published < 70:  # its worker lags behind by 70 s
-        dag_clock[0] += 5
-        _rerun_after_a_poll(run, parent, _blocked(fresh))
-    _rerun_after_a_poll(run, parent, JobCompletedResult())
-
-    assert set(run.completed) == {parent.object_id}
-    run.finish()
+    assert _rerun(run, lazy, _blocked(fresh)) == []
+    dag_clock[0] = Run.unseen_grace_s + 1
+    assert _rerun(run, lazy, _blocked(fresh)) == []
+    (gave_up,) = _rerun(run, lazy, _blocked(first))
+    assert first._log_label in cast(GaveUpMessage, gave_up).error
 
 
-def test_run_starts_the_grace_over_after_building_a_missing_dependency(
-    dag_clock: list[float],
+@pytest.mark.parametrize("progress", ["found a missing spec", "failed"])
+def test_the_grace_starts_over_once_the_spec_got_somewhere(
+    dag_clock: list[float], progress: str
 ) -> None:
-    parent = RunLazyParent(value=2)
-    unseen, missing = RunLeaf(value=2), RunLeaf(value=3)
+    lazy, unseen = RunLazyParent(value=2), RunLeaf(value=2)
     unseen.create()
-    run = _new_run([parent])
-    run.take_submissions()
-    run.job_result(parent.object_id, _blocked(unseen))
-    dag_clock[0] = 5
-    _rerun_after_a_poll(run, parent, _blocked(missing))
-    assert _submitted_ids(run) == [missing.object_id]
-
-    dag_clock[0] = 600  # building it took ten minutes
-    missing.create()
-    run.job_result(missing.object_id, JobCompletedResult())
-    assert _submitted_ids(run) == [parent.object_id]
-    run.job_result(parent.object_id, _blocked(unseen))
-
-    assert set(run.waiting) == {parent.object_id}
-    _assert_one_state(run)
-
-
-def test_run_starts_the_grace_over_after_a_failed_attempt(
-    dag_clock: list[float],
-) -> None:
-    parent, dependency = RunLazyParent(value=2), RunLeaf(value=2)
-    dependency.create()
-    run = _new_run([parent], max_retries_per_object=1)
-    run.take_submissions()
-    run.job_result(parent.object_id, _blocked(dependency))
+    run, _ = _new_run([lazy], max_retries_per_object=1)
+    run.result(_result([lazy], _blocked(unseen)))
     dag_clock[0] = 100
-    _rerun_after_a_poll(run, parent, JobFailedResult(error="boom"))
-
-    dag_clock[0] = 200
-    assert _submitted_ids(run) == [parent.object_id]
-    run.job_result(parent.object_id, _blocked(dependency))
-    assert set(run.waiting) == {parent.object_id}
-    dag_clock[0] = 200 + Run.unseen_grace_s + 1
-    _rerun_after_a_poll(run, parent, _blocked(dependency))
-
-    assert set(run.failed) == {parent.object_id}
-
-
-def test_run_fails_a_spec_blocked_without_naming_a_dependency() -> None:
-    parent = RunLazyParent(value=2)
-    run = _new_run([parent])
-    run.take_submissions()
-
-    run.job_result(parent.object_id, _blocked())
-
-    assert set(run.failed) == {parent.object_id}
-    assert run.failures[parent.object_id] == [
-        "reported itself blocked without naming a missing dependency"
-    ]
-    _assert_one_state(run)
-
-
-@pytest.mark.parametrize("built_here", [True, False])
-def test_run_does_not_wait_on_a_built_dependency_of_a_new_spec(
-    built_here: bool,
-) -> None:
-    leaf = RunLeaf(value=uuid4().int)
-    lazy = RunLazyParent(value=uuid4().int)
-    run = _new_run([leaf, lazy], max_retries_per_object=0)
-
-    run.take_submissions()
-    if built_here:
-        run.job_result(leaf.object_id, JobCompletedResult())
+    if progress == "failed":
+        (rerun,) = _rerun(run, lazy, JobFailedResult(error="boom"))
     else:
-        run.job_result(leaf.object_id, JobFailedResult(error="boom"))
-        leaf.create()  # another run builds it after this one gave up
-    parent = RunParent(child=leaf)
-    run.job_result(lazy.object_id, _blocked(parent))
+        _, rerun = _rerun(run, lazy, _blocked(RunLeaf(value=3)))
+    assert isinstance(rerun, RerunMessage)
 
-    assert set(run.ready) == {parent.object_id}
-    assert run.nodes_by_id[parent.object_id].dependencies == []
-    _assert_one_state(run)
-
-
-def test_run_blocked_result_discovers_multiple_lazy_dependencies_together() -> None:
-    parent = RunLazyParent(value=2)
-    dependencies = [RunLeaf(value=2), RunLeaf(value=3)]
-    run = _new_run([parent])
-
-    run.take_submissions()
-    run.job_result(
-        parent.object_id,
-        _blocked(*dependencies),
-    )
-
-    assert set(run.ready) == {dependency.object_id for dependency in dependencies}
-    assert set(run.blocked) == {parent.object_id}
-    parent_node = run.nodes_by_id[parent.object_id]
-    assert {node.obj.object_id for node in parent_node.dependencies} == {
-        dependency.object_id for dependency in dependencies
-    }
-    for dependency in dependencies:
-        assert parent_node in run.nodes_by_id[dependency.object_id].dependents
+    dag_clock[0] = 600
+    assert run.result(_result([lazy], _blocked(unseen))) == []
+    dag_clock[0] = 600 + Run.unseen_grace_s + 1
+    (gave_up,) = _rerun(run, lazy, _blocked(unseen))
+    assert isinstance(gave_up, GaveUpMessage)
 
 
-def test_run_fails_on_a_dependency_cycle() -> None:
-    parent = RunLazyParent(value=2)
-    dependency = RunLeaf(value=2)
-    run = _new_run([parent])
-
-    run.take_submissions()
-    run.job_result(
-        parent.object_id,
-        _blocked(dependency),
-    )
-    run.take_submissions()
-    with pytest.raises(RuntimeError) as excinfo:
-        run.job_result(
-            dependency.object_id,
-            _blocked(parent),
-        )
-
-    assert str(excinfo.value) == (
-        f"RuntimeError: dependency cycle: {parent._log_label} → "
-        f"{dependency._log_label} → {parent._log_label}"
-    )
-
-
-def test_run_failed_result_finishes_with_error(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    leaf = RunLeaf(value=1)
-    run = _new_run([leaf], max_retries_per_object=0)
-    run.take_submissions()
-
-    with _captured_furu_logs(caplog):
-        run.job_result(leaf.object_id, JobFailedResult(error="boom"))
-        with pytest.raises(RuntimeError, match="1 spec failed, 0 blocked"):
-            run.finish()
-
-    assert run.running == {}
-    assert run.failed[leaf.object_id].obj is leaf
-    assert run.failures[leaf.object_id] == ["boom"]
-    _assert_one_state(run)
-    failed_record = next(
-        record for record in caplog.records if record.message.startswith("failed ")
-    )
-    assert failed_record.levelno == logging.ERROR
-    assert failed_record.message == f"failed {leaf._log_label} · attempt 1/0 · boom"
-    assert failed_record.__dict__["path"] == log_path_in(leaf._attempt_dir)
-    assert (
-        caplog.messages[-1] == f"run failed · 1 spec failed · {leaf._log_label} · boom"
-    )
-
-
-def test_run_failed_result_retries_before_finishing(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    leaf = RunLeaf(value=1)
-    run = _new_run([leaf], max_retries_per_object=2)
-
-    with _captured_furu_logs(caplog):
-        for attempt in (1, 2, 3):
-            run.take_submissions()
-            run.job_result(leaf.object_id, JobFailedResult(error=f"boom {attempt}"))
-            assert run.failures[leaf.object_id] == [
-                f"boom {n}" for n in range(1, attempt + 1)
-            ]
-            assert set(run.ready) == ({leaf.object_id} if attempt < 3 else set())
-            assert set(run.failed) == ({leaf.object_id} if attempt == 3 else set())
-            _assert_one_state(run)
-
-    assert run.running == {}
-    assert f"failed {leaf._log_label} · attempt 1/2 · boom 1" in caplog.messages
-    assert f"failed {leaf._log_label} · attempt 2/2 · boom 2" in caplog.messages
-    assert "progress 0/1 · 0 running · 1 ready · 1 retrying" in caplog.messages
-    assert caplog.messages[-1] == "progress 0/1 · 0 running · 1 failed"
-    with pytest.raises(RuntimeError, match="1 spec failed"):
-        run.finish()
-
-
-def test_run_retries_with_the_same_error_say_so(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    leaf = RunLeaf(value=1)
-    run = _new_run([leaf], max_retries_per_object=3)
-    errors = [
-        "Traceback (most recent call last):\n  File a\nValueError: bad shape\n",
-        "Traceback (most recent call last):\n  File b\nValueError: bad shape\n",
-        "Traceback (most recent call last):\nOSError: disk full\n\n",
-        "subprocess died: killed by signal 9 (SIGKILL)",
-    ]
-
-    with _captured_furu_logs(caplog):
-        for error in errors:
-            assert _submitted_ids(run) == [leaf.object_id]
-            run.job_result(leaf.object_id, JobFailedResult(error=error))
-        with pytest.raises(RuntimeError):
-            run.finish()
-
-    label = leaf._log_label
-    assert [
-        message for message in caplog.messages if message.startswith("failed ")
-    ] == [
-        f"failed {label} · attempt 1/3 · ValueError: bad shape",
-        f"failed {label} · attempt 2/3 · same error",
-        f"failed {label} · attempt 3/3 · OSError: disk full",
-        f"failed {label} · attempt 4/3 · subprocess died: killed by signal 9 (SIGKILL)",
-    ]
-    assert all("Traceback" not in message for message in caplog.messages)
-    assert caplog.messages[-1] == (
-        f"run failed · 1 spec failed · {label} · "
-        "subprocess died: killed by signal 9 (SIGKILL)"
-    )
-
-
-def test_run_error_lists_one_line_per_failed_and_blocked_spec() -> None:
-    leaf = RunLeaf(value=1)
-    other = RunLeaf(value=2)
-    parent = RunParent(child=leaf)
-    run = _new_run([parent, other], max_retries_per_object=1)
-
-    for _ in range(2):
-        run.take_submissions()
-        for obj in (leaf, other):
-            run.job_result(
-                obj.object_id,
-                JobFailedResult(error=f"Traceback\n  File x\nValueError: {obj.value}"),
-            )
-
-    _assert_one_state(run)
-    with pytest.raises(RuntimeError) as excinfo:
-        run.finish()
-    lines = str(excinfo.value).splitlines()
-    assert lines[0] == "2 specs failed, 1 blocked"
-    assert sorted(lines[1:3]) == sorted(
-        f"  {obj._log_label} · 2 attempts · ValueError: {obj.value} → "
-        f"{_display_path(log_path_in(obj._attempt_dir))}"
-        for obj in (leaf, other)
-    )
-    assert lines[3:] == [f"  {parent._log_label} · blocked"]
-
-
-def test_run_failed_retry_can_later_complete() -> None:
-    leaf = RunLeaf(value=1)
-    run = _new_run([leaf], max_retries_per_object=1)
-
-    run.take_submissions()
-    run.job_result(leaf.object_id, JobFailedResult(error="boom"))
-    assert run.failures[leaf.object_id] == ["boom"]
-    assert run.failed == {}
-
-    run.take_submissions()
-    run.job_result(leaf.object_id, JobCompletedResult())
-
-    assert run.failures == {}
-    _assert_one_state(run)
-    assert set(run.completed) == {leaf.object_id}
-    run.finish()
-
-
-def test_run_failed_retry_found_done_elsewhere_stops_retrying(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    leaf = RunLeaf(value=1)
-    other = RunLeaf(value=2)
-    run = _new_run([leaf, other], max_retries_per_object=1)
-
-    run.take_submissions()
-    run.job_result(leaf.object_id, JobFailedResult(error="boom"))
-    leaf.create()  # another run builds it
-    run.take_submissions()
-    assert run.failures == {}
-    _assert_one_state(run)
-
-    caplog.set_level(logging.INFO, logger="furu.run")
-    run.job_result(other.object_id, JobCompletedResult())
-    assert caplog.messages[-1] == "progress 2/2 · 0 running"
-
-
-def test_run_error_lists_failed_specs_in_order_of_first_failure() -> None:
-    first, second = RunLeaf(value=1), RunLeaf(value=2)
-    run = _new_run([first, second], max_retries_per_object=1)
-
-    run.take_submissions()
-    for obj in (first, second):
-        run.job_result(obj.object_id, JobFailedResult(error=f"boom {obj.value}"))
-    run.take_submissions()
-    for obj in (second, first):  # second runs out of retries first
-        run.job_result(obj.object_id, JobFailedResult(error=f"boom {obj.value}"))
-
-    with pytest.raises(RuntimeError) as excinfo:
-        run.finish()
-    lines = str(excinfo.value).splitlines()
-    assert [line.split(" · ")[0].strip() for line in lines[1:]] == [
-        first._log_label,
-        second._log_label,
-    ]
-
-
-def test_run_ignores_a_result_for_a_spec_it_is_not_running() -> None:
-    leaf = RunLeaf(value=1)
-    run = _new_run([leaf])
-
-    run.job_result(leaf.object_id, JobCompletedResult())
-
-    assert set(run.ready) == {leaf.object_id}
-    assert run.completed == {}
-
-
-def test_a_failed_batch_retries_each_spec_and_points_at_the_batchs_log(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    objs = [BatchedRunLeaf(value=value) for value in range(2)]
-    ids = [obj.object_id for obj in objs]
-    run = _new_run(objs, max_retries_per_object=1)
-    log = log_path_in(working_folder(objs))
-
-    run.take_submissions()
-    run.batch_result(ids, JobFailedResult(error="boom"))
-
-    assert run.failures == {object_id: ["boom"] for object_id in ids}
-    assert set(run.ready) == set(ids)
-    _assert_one_state(run)
-
-    run.take_submissions()
-    run.batch_result(ids, JobFailedResult(error="boom"))
-    with pytest.raises(RuntimeError) as excinfo:
-        run.finish()
-
-    assert [
-        record.__dict__["path"]
-        for record in caplog.records
-        if record.message.startswith("failed ")
-    ] == [log] * 4
-    assert all(
-        line.endswith(f"→ {_display_path(log)}")
-        for line in str(excinfo.value).splitlines()[1:]
-    )
-
-
-def test_two_metadata_under_one_batch_key_stop_the_run_before_anything_is_sent() -> (
+def test_a_spec_blocked_on_nothing_or_on_a_spec_the_run_gave_up_on_is_given_up_on() -> (
     None
 ):
-    with pytest.raises(ValueError, match="differ in Metadata reuse"):
-        _new_run([MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)])
+    lazy, leaf = RunLazyParent(value=2), RunLeaf(value=2)
+    run, _ = _new_run([lazy, leaf], max_retries_per_object=0)
 
-
-def test_two_metadata_among_found_specs_stop_the_run() -> None:
-    parent = RunLeaf(value=1)
-    run = _new_run([parent])
-    run.take_submissions()
-
-    with pytest.raises(RuntimeError, match="ValueError: .* differ in Metadata reuse"):
-        run.job_result(
-            parent.object_id,
-            _blocked(MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)),
+    assert run.result(_result([lazy], _blocked())) == [
+        _gave_up([lazy], "reported itself blocked without naming a missing dependency")
+    ]
+    (gave_up,) = run.result(_result([leaf], JobFailedResult(error="boom")))
+    run.gave_up(cast(GaveUpMessage, gave_up))
+    assert run.result(_result([lazy], _blocked(leaf))) == [
+        _gave_up(
+            [lazy], f"needs {leaf._log_label}, which this run gave up on", attempts=2
         )
+    ]
 
 
 @pytest.mark.parametrize(
-    "leaf_factory",
+    ("found", "match"),
     [
-        lambda value: RunLeaf(value=value),
-        lambda value: BatchedRunLeaf(value=value),
+        (lambda: [MemoryLeaf(value=uuid4().int)], "no worker pool can run"),
+        (lambda: [PerGpuBatchedLeaf(value=1)], "cap must be a positive int, got 0"),
+        (
+            lambda: [MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)],
+            "ValueError: .* differ in Metadata reuse",
+        ),
     ],
 )
-def test_run_waits_on_specs_locked_elsewhere_until_their_lock_goes(
-    caplog: pytest.LogCaptureFixture,
-    leaf_factory: Callable[[int], Spec],
+def test_found_specs_that_cannot_be_placed_fail_the_run(
+    found: Callable[[], list[Spec]], match: str
 ) -> None:
-    leaves = [leaf_factory(value) for value in range(2)]
-    run = _new_run(leaves)
+    lazy = RunLazyParent(value=uuid4().int)
+    run, _ = _new_run([lazy], backends=[CPU_POOL])
 
-    with _mark_running(leaves[0]), _mark_running(leaves[1]):
-        with _captured_furu_logs(caplog):
-            assert run.take_submissions() == []
-        assert set(run.waiting) == {leaf.object_id for leaf in leaves}
-        run.poll_waiting()
-        assert run.take_submissions() == []
-
-    run.poll_waiting()
-    assert run.waiting == {}
-    assert sorted(_submitted_ids(run)) == sorted(leaf.object_id for leaf in leaves)
-    assert "waiting on 2 specs running elsewhere" in caplog.messages
-
-
-def test_run_checks_every_batch_member_for_active_locks() -> None:
-    held = BatchedRunLeaf(value=1)
-    free = BatchedRunLeaf(value=2)
-    run = _new_run([held, free])
-
-    with _mark_running(held):
-        assert _submitted_ids(run) == [free.object_id]
-
-
-def test_run_completes_specs_finished_elsewhere_without_submitting() -> None:
-    leaf = RunLeaf(value=1)
-    parent = RunParent(child=leaf)
-    run = _new_run([parent])
-    leaf.create()
-
-    assert _submitted_ids(run) == [parent.object_id]
-    assert set(run.completed) == {leaf.object_id}
-
-
-def test_run_fails_when_no_pool_can_run_a_lazy_dependency() -> None:
-    parent = RunLazyParent(value=uuid4().int)
-    run = _new_run([parent], backends=(CPU_POOL,))
-    run.take_submissions()
-
-    with pytest.raises(RuntimeError, match="no worker pool can run"):
-        run.job_result(
-            parent.object_id,
-            _blocked(MemoryLeaf(value=uuid4().int)),
-        )
-
-
-def test_run_fails_on_a_zero_batch_cap_in_a_lazy_dependency() -> None:
-    parent = RunLazyParent(value=uuid4().int)
-    run = _new_run([parent])
-    run.take_submissions()
-
-    with pytest.raises(RuntimeError, match="cap must be a positive int, got 0"):
-        run.job_result(
-            parent.object_id,
-            _blocked(PerGpuBatchedLeaf(value=1)),
-        )
+    with pytest.raises(RuntimeError, match=match):
+        run.result(_result([lazy], _blocked(*found())))
 
 
 # --- the manager's queue -------------------------------------------------------
@@ -1204,47 +889,30 @@ def test_throttle_limits_leases_and_demand() -> None:
 
     assert manager.demand(CPU_POOL.pool_key) == 3
 
-    first, second, third = (_lease(manager) for _ in range(3))
-    limited_ids = {obj.object_id for obj in limited}
-    leased_limited_ids = {*_ids(first), *_ids(second)}
-    assert leased_limited_ids < limited_ids
-    assert _ids(third) == [uncapped.object_id]
+    first, second, third = (_leased(manager) for _ in range(3))
+    assert first.specs + second.specs == _ids(limited[:2])
+    assert third.specs == [uncapped.object_id]
     # Busy workers still count; none more can start.
     assert manager.demand(CPU_POOL.pool_key) == 3
     assert _lease(manager) is None
 
-    assert isinstance(first, Job)
-    _release(manager, first)
-    assert set(_ids(_lease(manager))) == limited_ids - leased_limited_ids
+    _end(manager, first)
+    assert _leased(manager).specs == [limited[2].object_id]
 
 
-def test_lease_assembles_same_key_batched_group_into_one_job() -> None:
-    objs = [BatchedRunLeaf(value=value) for value in range(3)]
-    manager = _manager(objs)
+def test_specs_with_one_batch_key_are_one_job_up_to_the_cap() -> None:
+    first_x = BatchedRunLeaf(value=1, group="x", cap=2)
+    only_y = BatchedRunLeaf(value=2, group="y", cap=2)
+    more_x = [BatchedRunLeaf(value=value, group="x", cap=2) for value in (3, 4)]
+    manager = _manager([first_x, only_y, *more_x])
 
-    job = _lease(manager)
-
-    assert _ids(job) == [obj.object_id for obj in objs]
-    assert isinstance(job, Job)
-    assert job.log == log_path_in(working_folder(objs))
-    assert manager.queue == []
-
-
-def test_lease_groups_only_matching_batch_keys() -> None:
-    first_x = BatchedRunLeaf(value=1, group="x")
-    only_y = BatchedRunLeaf(value=2, group="y")
-    second_x = BatchedRunLeaf(value=3, group="x")
-    manager = _manager([first_x, only_y, second_x])
-
-    assert _ids(_lease(manager)) == [first_x.object_id, second_x.object_id]
-    assert _ids(_lease(manager)) == [only_y.object_id]
-
-
-def test_lease_chunks_batched_group_to_the_cap() -> None:
-    manager = _manager([BatchedRunLeaf(value=value, cap=2) for value in range(5)])
-
-    assert [len(_ids(_lease(manager))) for _ in range(3)] == [2, 2, 1]
-    assert manager.queue == []
+    assert manager.demand(CPU_POOL.pool_key) == 3
+    lease = _leased(manager)
+    assert lease.specs == _ids([first_x, more_x[0]])
+    assert lease.job.log == log_path_in(working_folder([first_x, more_x[0]]))
+    assert _leased(manager).specs == [more_x[1].object_id]
+    assert _leased(manager).specs == [only_y.object_id]
+    assert _lease(manager) is None
 
 
 def test_batch_cap_follows_the_leasing_worker() -> None:
@@ -1259,83 +927,280 @@ def test_batch_cap_follows_the_leasing_worker() -> None:
     assert manager.demand(eight_gpus.pool_key) == 2
     assert manager.demand(four_gpus.pool_key) == 0
 
-    assert len(_ids(_lease(manager, eight_gpus))) == 8
-    assert len(_ids(_lease(manager, one_gpu))) == 1
+    assert len(_leased(manager, eight_gpus).specs) == 8
+    assert len(_leased(manager, one_gpu).specs) == 1
 
 
-def test_throttle_limits_concurrent_batches_not_members() -> None:
-    manager = _manager([ThrottledBatchedRunLeaf(value=value) for value in range(8)])
-
-    assert manager.demand(CPU_POOL.pool_key) == 2
-    first = _lease(manager)
-    assert len(_ids(first)) == 3
-    assert len(_ids(_lease(manager))) == 3
-    assert _lease(manager) is None
-
-    assert isinstance(first, Job)
-    _release(manager, first)
-    assert len(_ids(_lease(manager))) == 2
-
-
-def test_demand_counts_batched_groups() -> None:
-    manager = _manager([BatchedRunLeaf(value=value) for value in range(4)])
-
-    assert manager.demand(CPU_POOL.pool_key) == 1
-
-
-def test_manager_throttles_across_scripts_and_batches_within_one() -> None:
+def test_a_batch_holds_specs_from_one_plan_and_a_throttle_counts_batches(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     manager = Manager(url="ws://unused", manager_dir=None)
     scripts = [
-        _submit(manager, [ThrottledBatchedRunLeaf(value=value) for value in values])
-        for values in ((0, 1), (2, 3), (4,))
+        _submit(
+            manager,
+            [ThrottledBatchedRunLeaf(value=value) for value in values],
+            plan_path=_plan(f"e{index}"),
+        )[0]
+        for index, values in enumerate(((0, 1), (2, 3), (4,)))
     ]
 
-    first, second = _lease(manager), _lease(manager)
+    with _captured_furu_logs(caplog):
+        first, second = _leased(manager), _leased(manager)
 
-    # Both scripts' batches are called "b0", yet batch-mates never cross scripts.
-    assert [lease.script for lease in manager.leases.values()] == scripts[:2]
-    assert len(_ids(first)) == len(_ids(second)) == 2
-    # The throttle counts the two running batches across both scripts.
+    assert len(first.specs) == len(second.specs) == 2
+    assert [first.job.plan, second.job.plan] == [_plan("e0"), _plan("e1")]
+    # A worker could take three. It is said once for each pair of plans, to
+    # the script and in the manager's own log.
+    warned = manager.outbox
+    assert [script for script, _ in warned] == [scripts[0], scripts[0], scripts[1]]
+    reasons = [
+        message.reason for _, message in warned if isinstance(message, WarningMessage)
+    ]
+    assert len(reasons) == 3 and all("smaller batch" in reason for reason in reasons)
+    assert caplog.messages == reasons
+    # The throttle counts the two running batches across all scripts.
+    assert manager.demand(CPU_POOL.pool_key) == 2
     assert _lease(manager) is None
-    assert isinstance(first, Job)
-    _release(manager, first)
-    assert len(_ids(_lease(manager))) == 1
-    assert [lease.script for lease in manager.leases.values()] == scripts[1:]
+    _end(manager, first)
+    assert len(_leased(manager).specs) == 1
 
 
-def test_lease_filters_by_worker_resources() -> None:
-    cpu_leaf = CpuOnlyLeaf(value=1)
-    gpu_leaf = GpuLeaf(value=2)
+def test_a_spec_goes_to_the_pools_that_can_run_it() -> None:
+    cpu_leaf, gpu_leaf, memory_leaf = (
+        CpuOnlyLeaf(value=1),
+        GpuLeaf(value=2),
+        MemoryLeaf(value=3),
+    )
     gpu_pool = _pool(Worker(gpus=1))
-    manager = _manager([cpu_leaf, gpu_leaf], backends=(CPU_POOL, gpu_pool))
-
-    assert _ids(_lease(manager, CPU_POOL)) == [cpu_leaf.object_id]
-    assert _lease(manager, CPU_POOL) is None
-    assert _ids(_lease(manager, gpu_pool)) == [gpu_leaf.object_id]
-
-
-def test_lease_filters_by_worker_memory_gib() -> None:
-    memory_leaf = MemoryLeaf(value=1)
-    small, large = _pool(Worker(memory_gib=7)), _pool(Worker(memory_gib=8))
-    manager = _manager([memory_leaf], backends=(small, large))
-
-    assert _lease(manager, small) is None
-    assert _ids(_lease(manager, large)) == [memory_leaf.object_id]
-
-
-def test_lease_honors_pool_accepts() -> None:
-    cpu_leaf = CpuOnlyLeaf(value=1)
-    memory_leaf = MemoryLeaf(value=2)
     reserved = LocalThreadWorkerBackend(
         worker=Worker(memory_gib=16),
         accepts=lambda spec: isinstance(spec, MemoryLeaf),
     )
-    open_pool = _pool(Worker(memory_gib=32))
-    manager = _manager([cpu_leaf, memory_leaf], backends=(reserved, open_pool))
+    manager = _manager(
+        [cpu_leaf, gpu_leaf, memory_leaf], backends=(CPU_POOL, gpu_pool, reserved)
+    )
 
-    assert _ids(_lease(manager, reserved)) == [memory_leaf.object_id]
+    assert _leased(manager, reserved).specs == [memory_leaf.object_id]
     assert _lease(manager, reserved) is None
-    assert _ids(_lease(manager, open_pool)) == [cpu_leaf.object_id]
+    assert _leased(manager, gpu_pool).specs == [cpu_leaf.object_id]
+    assert _leased(manager, gpu_pool).specs == [gpu_leaf.object_id]
+    assert _lease(manager, CPU_POOL) is None
+
+
+def test_a_spec_waits_for_what_its_line_points_to_and_its_job_holds_what_its_fields_reach() -> (
+    None
+):
+    leaves = tuple(RunLeaf(value=value) for value in range(30))
+    sharing = [SharesLeaves(name=name, leaves=leaves) for name in "ab"]
+    returning = ReturnsLeaves(count=2)
+    manager = _manager([*sharing, returning])
+
+    jobs = {}
+    while (lease := _lease(manager)) is not None:
+        (spec,) = lease.specs
+        # Everything it waits for is finished by now.
+        assert all(
+            key not in manager.dag.nodes for key in plan.holds(lease.job.lines[0])
+        )
+        jobs[spec] = {plan.key(json.loads(line)) for line in lease.job.lines}
+        _end(manager, lease)
+
+    assert list(jobs)[32:] == _ids([*sharing, returning])
+    # The shared tuple's line and the lines of the specs in it.
+    assert len(jobs[sharing[0].object_id]) == 1 + 1 + 30
+    assert jobs[sharing[0].object_id] > set(_ids(leaves))
+    # What a dependency method returned is one fingerprint in the spec's line.
+    assert jobs[returning.object_id] == {returning.object_id}
+
+
+def test_a_spec_that_two_launches_ask_for_is_queued_once_under_the_first() -> None:
+    leaf, other = RunLeaf(value=1), RunLeaf(value=2)
+    manager = Manager(url="ws://unused", manager_dir=None)
+    first, _ = _submit(manager, [leaf, other])
+    second, _ = _submit(manager, [RunParent(child=leaf), other], plan_path=_plan("e2"))
+
+    lease = _leased(manager)
+    assert lease.specs == [leaf.object_id] and lease.job.plan == _plan()
+    _end(manager, lease)
+    assert [script for script, _ in manager.outbox] == [first, second]
+    assert _sent(manager) == 2 * [
+        _result([leaf], JobCompletedResult()).model_copy(update={"seconds": 0.0})
+    ]
+
+    # The first launch leaves: what only it asked for goes with it.
+    manager._drop(first)
+    running = [_leased(manager), _leased(manager)]
+    assert sorted(lease.specs for lease in running) == sorted(
+        [[other.object_id], [RunParent(child=leaf).object_id]]
+    )
+    # Nobody asks for the two that run any more. They finish all the same.
+    manager._drop(second)
+    assert not manager.placed
+    for lease in running:
+        _end(manager, lease)
+    assert not manager.dag.nodes and _sent(manager) == []
+
+
+def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happens() -> (
+    None
+):
+    leaf = RunLeaf(value=1)
+    parent = RunParent(child=leaf)
+    failed = JobFailedResult(error="boom")
+    manager = Manager(url="ws://unused", manager_dir=None)
+    script, _ = _submit(manager, [parent])
+
+    _end(manager, _leased(manager), failed)
+    assert _sent(manager) == [
+        _result([leaf], failed).model_copy(update={"seconds": 0.0})
+    ]
+    assert _lease(manager) is None
+    manager._rerun(script, RerunMessage(specs=[leaf.object_id]))
+    _end(manager, _leased(manager), failed)
+    gave_up = _gave_up([leaf], "boom")
+    manager._gave_up(script, gave_up)
+    assert _sent(manager)[1:] == [
+        gave_up.model_copy(update={"blocked": [parent.object_id]})
+    ]
+    assert _lease(manager) is None and manager.demand(CPU_POOL.pool_key) == 0
+
+    # Another launch that asks for the spec gives it a fresh go. What waited
+    # for it does not run for the script that was told it would not.
+    _submit(manager, [leaf], plan_path=_plan("e2"))
+    _end(manager, _leased(manager))
+    assert _lease(manager) is None and not manager.placed
+
+
+def test_each_script_answers_for_its_own_specs_of_a_batch_that_did_not_complete() -> (
+    None
+):
+    objs = [BatchedRunLeaf(value=value) for value in range(2)]
+    manager = Manager(url="ws://unused", manager_dir=None)
+    first, _ = _submit(manager, objs)
+    others = [
+        _submit(manager, [obj], plan_path=_plan(f"e{index}"))[0]
+        for index, obj in enumerate(objs, start=2)
+    ]
+    manager._drop(first)
+
+    _end(manager, _leased(manager), JobFailedResult(error="boom"))
+    assert [script for script, _ in manager.outbox] == others
+    manager._rerun(others[0], RerunMessage(specs=_ids(objs[:1])))
+    assert _leased(manager).specs == _ids(objs[:1])
+    # The other spec waits for the script that answers for it.
+    assert _lease(manager) is None
+    manager.outbox.clear()
+    gave_up = _gave_up(objs[1:], "boom")
+    manager._gave_up(others[1], gave_up)
+    assert manager.outbox == [(others[1], gave_up)]
+
+
+def test_a_blocked_attempt_reruns_once_what_it_found_is_built() -> None:
+    lazy, found = RunLazyParent(value=2), RunLeaf(value=2)
+    manager = Manager(url="ws://unused", manager_dir=None)
+    script, run = _submit(manager, [lazy])
+    blocked = _blocked(found)
+
+    _end(manager, _leased(manager), blocked)
+    _answer(manager, script, run)
+    lease = _leased(manager)
+    assert lease.specs == [found.object_id] and lease.job.plan == blocked.plan
+    assert _lease(manager) is None
+    _end(manager, lease)
+    _answer(manager, script, run)
+    again = _leased(manager)
+    assert again.specs == [lazy.object_id] and again.job.plan == _plan()
+
+    # It now finds a spec missing whose create() asks for it in turn.
+    cycle = RunLazyParent(value=3)
+    _end(manager, again, _blocked(cycle))
+    _answer(manager, script, run)
+    _end(manager, _leased(manager), _blocked(lazy))
+    run.result(cast(ResultMessage, manager.outbox.pop()[1]))
+    manager._rerun(script, RerunMessage(specs=_ids([cycle]), after=_ids([lazy])))
+    assert _sent(manager) == [
+        ErrorMessage(
+            reason=f"dependency cycle: {cycle._log_label} asks for "
+            f"{lazy._log_label}, which already waits for it"
+        )
+    ]
+
+
+def _stopped_sweep(count: int) -> tuple[Manager, list[str]]:
+    """A launch of ``count`` specs whose first 5 were a batch that stopped."""
+    specs = [SweepLeaf(value=value) for value in range(1, count + 1)]
+    manager = Manager(url="ws://unused", manager_dir=None)
+    script, _ = _submit(manager, specs, backends=(TINY, SMALL, LARGE))
+    lease = _leased(manager, SMALL)
+    _end(manager, lease, JobFailedResult(error="worker w0 disconnected"))
+    manager._rerun(script, RerunMessage(specs=lease.specs))
+    manager.outbox.clear()
+    return manager, _ids(specs)
+
+
+def _old_folder(ids: Sequence[str]) -> str:
+    """The working folder of the batch that stopped: specs 1 to 5."""
+    name = run_name([spec.rpartition(":")[2] for spec in ids[:5]])
+    return str(attempt_dir_in(SweepLeaf(value=1)._class_dir, name))
+
+
+@pytest.mark.parametrize(
+    ("count", "pool", "handed", "warns", "then"),
+    [
+        # 25 are unstarted: a worker of 20 gets 6 to 25, and the stopped batch
+        # stays whole.
+        (30, LARGE, range(6, 26), False, range(26, 31)),
+        # Only 3 are: it gets those and the stopped 5 as one batch of 8.
+        (8, LARGE, [6, 7, 8, 1, 2, 3, 4, 5], True, []),
+        # 18 are: it gets those and specs 1 and 2, and 3 to 5 are unstarted.
+        (23, LARGE, [*range(6, 24), 1, 2], True, [3, 4, 5]),
+        # Alone it goes out as it was, and continues in its folder.
+        (5, LARGE, range(1, 6), False, []),
+        # Too large for the worker that asks, it is cut.
+        (5, TINY, [1, 2], True, [3, 4, 5]),
+    ],
+)
+def test_a_worker_is_filled_with_unstarted_specs_then_stopped_batches(
+    count: int,
+    pool: LocalThreadWorkerBackend,
+    handed: Sequence[int],
+    warns: bool,
+    then: Sequence[int],
+) -> None:
+    manager, ids = _stopped_sweep(count)
+
+    lease = _leased(manager, pool)
+
+    assert lease.specs == [ids[number - 1] for number in handed]
+    warnings = _sent(manager)
+    assert len(warnings) == warns
+    for warning in warnings:
+        assert isinstance(warning, WarningMessage)
+        assert warning.reason.endswith(f"stays in attempts/: {_old_folder(ids)}")
+    # What a worker of 5 gets next: unstarted specs.
+    after = _lease(manager, SMALL)
+    assert (after.specs if after else []) == [ids[number - 1] for number in then]
+    assert _sent(manager) == []
+
+
+def test_a_new_manager_takes_up_the_working_folders_on_disk_once_their_lock_is_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(manager_module, "_IDLE_CHECK_INTERVAL_S", 0.0)
+    specs = [SweepLeaf(value=value) for value in range(4)]
+    # A batch that a worker of another manager opened, in its order.
+    started = [specs[2], specs[0]]
+    folder = working_folder(started)
+    folder.mkdir(parents=True)
+    events.start(folder, [spec._artifact_hash for spec in started], _plan(), _plan())
+
+    with lock(lock_path_in(folder.parent.parent, folder.name)):
+        manager = _manager(specs, backends=[SMALL])
+        assert _leased(manager, SMALL).specs == _ids([specs[1], specs[3]])
+        # Its worker is alive: nothing to hand out.
+        assert _lease(manager, SMALL) is None
+    assert _leased(manager, SMALL).specs == _ids(started)
+    assert _sent(manager) == []
 
 
 # --- the manager's server ------------------------------------------------------
@@ -1352,23 +1217,30 @@ def _hello(
 
 
 def _submit_over(manager: Manager, *objs: Spec) -> ClientConnection:
-    """Connect as a script whose jobs only the raw "cpu" pool runs."""
-    run = _new_run(objs, backends=(CPU_POOL,))
-    jobs = [
-        submission.model_copy(update={"pools": {"cpu": None}})
-        for submission in run.take_submissions()
-    ]
-    connection = connect(manager.url, legacy=True)
-    connection.send(
-        SubmitMessage(
-            pools={"cpu": LocalPool(max_workers=0)}, jobs=jobs
-        ).model_dump_json()
+    """Connect as a script whose specs only the raw "cpu" pool runs."""
+    _, submit = _new_run(objs, backends=(CPU_POOL,))
+    alone = {"cpu": Batch(batch="alone", cap=1)}
+    submit = submit.model_copy(
+        update={
+            "pools": {"cpu": LocalPool(max_workers=0)},
+            "groups": [
+                group.model_copy(update={"pools": alone}) for group in submit.groups
+            ],
+        }
     )
+    connection = connect(manager.url, legacy=True)
+    connection.send(submit.model_dump_json())
     # Workers of a pool the manager has not started yet are turned away.
     deadline = time.monotonic() + 5
-    while len(manager.queue) < len(jobs) and time.monotonic() < deadline:
+    while len(manager.placed) < len(objs) and time.monotonic() < deadline:
         time.sleep(0.01)
     return connection
+
+
+def _received(script: ClientConnection) -> ResultMessage:
+    message = manager_message_adapter.validate_json(script.recv(timeout=5))
+    assert isinstance(message, ResultMessage)
+    return message.model_copy(update={"seconds": 1.5})
 
 
 def test_manager_url_carries_a_token_and_rejects_others() -> None:
@@ -1401,13 +1273,12 @@ def test_job_round_trip_from_script_through_manager_to_worker() -> None:
         job = Job.model_validate_json(worker.recv(timeout=5))
         assert job.specs == [leaf.object_id]
         assert job.lines == [
-            plan.dump({"fields": {"value": 1}, "spec": leaf.object_id})
+            plan.dump({"fields": {"value": 1}, "runs": True, "spec": leaf.object_id})
         ]
+        assert job.plan == _plan()
 
         worker.send(JobCompletedResult().model_dump_json())
-        assert manager_message_adapter.validate_json(
-            script.recv(timeout=5)
-        ) == ResultMessage(object_ids=[leaf.object_id], result=JobCompletedResult())
+        assert _received(script) == _result([leaf], JobCompletedResult())
 
 
 def test_worker_disconnect_fails_its_job_for_the_script() -> None:
@@ -1423,11 +1294,8 @@ def test_worker_disconnect_fails_its_job_for_the_script() -> None:
         Job.model_validate_json(worker.recv(timeout=5))
         worker.close()
 
-        assert manager_message_adapter.validate_json(
-            script.recv(timeout=5)
-        ) == ResultMessage(
-            object_ids=[leaf.object_id],
-            result=JobFailedResult(error="worker doomed-worker disconnected"),
+        assert _received(script) == _result(
+            [leaf], JobFailedResult(error="worker doomed-worker disconnected")
         )
 
 
@@ -1537,6 +1405,8 @@ def test_run_fails_fast_when_no_pool_can_run_a_job() -> None:
             MemoryLeaf(value=uuid4().int),
             on=[LocalThreadWorkerBackend(worker=Worker())],
         )
+    # Nothing was launched: no plan was written.
+    assert not get_config().directories.anchored().plans.exists()
 
 
 def test_run_rejects_a_zero_batch_cap_before_submitting() -> None:
@@ -1628,7 +1498,7 @@ def test_run_writes_log_to_its_execution_dir() -> None:
     )
     assert any(" D w0    spawned child " in line for line in lines)
     assert any(f" completed {leaf._log_label} ok · " in line for line in lines)
-    assert any(line.endswith(" progress 1/1 · 0 running") for line in lines)
+    assert any(line.endswith(" progress 1/1") for line in lines)
     assert any(line.endswith(" run finished ok") for line in lines)
     log_text = "\n".join(lines)
     assert f"creating {leaf._log_label}" not in log_text
@@ -1699,7 +1569,7 @@ def test_job_result_uses_status_discriminator() -> None:
     ) == JobFailedResult(error="boom")
     assert adapter.validate_python(
         {"status": "blocked", "dependencies": [], "lines": [], "plan": _plan()}
-    ) == _blocked().model_copy(update={"plan": _plan()})
+    ) == JobBlockedResult(dependencies=[], lines=[], plan=_plan())
     with pytest.raises(ValidationError, match="Input tag 'skipped'"):
         adapter.validate_python({"status": "skipped"})
 
