@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable
+from collections.abc import Callable
 from dataclasses import fields
 from typing import TYPE_CHECKING, Any, NamedTuple, overload
 
 from furu.resources import Worker
+from furu.serializer.artifact import to_json
 from furu.spec_metadata import Metadata
 from furu.storage.directory import SpecDirectory
+from furu.utils import _stable_json_dump
 
 if TYPE_CHECKING:
     from furu.core import Spec
 
-type BatchFn = Callable[[Any, Worker], tuple[Hashable, int]]
+type BatchFn = Callable[[Any, Worker], tuple[object, int]]
 
 
 class _BatchedHook(NamedTuple):
@@ -28,8 +30,9 @@ def batch_of(
 ) -> tuple[str, int]:
     """The batch ``obj`` joins on ``worker``, by name, and how many specs it may hold.
 
-    The name is the class, the batch key as ``repr`` writes it, and the cap,
-    so two launches give the same batch the same name. A spec without
+    The name is the class, the batch key written as a field is in a plan
+    line, and the cap, so two launches give the same batch the same name. A
+    key that a field could not hold is refused. A spec without
     ``@furu.batched`` runs alone: a batch of one.
 
     A batch is one create() call in one process that publishes one folder,
@@ -45,7 +48,8 @@ def batch_of(
             f"{type(obj).__qualname__} batch key cap must be a positive int, "
             f"got {cap!r} on {worker}"
         )
-    name = f"{obj._stored_name}:{key!r}:{cap}"
+    written = _stable_json_dump(to_json(key, object, (), set()))
+    name = f"{obj._stored_name}:{written}:{cap}"
     first = firsts.setdefault((worker, name), obj)
     if differs := [
         f"{f.name} ({getattr(first._metadata, f.name)!r} and "
@@ -68,8 +72,9 @@ class batched:
 
     ``batch_fn(spec, worker)`` returns ``(key, cap)``; ``worker`` is the
     leasing worker (or this machine for in-process create), so the cap can
-    follow its resources, e.g. ``(spec.model, worker.gpus)``. Two keys are
-    the same batch when their ``repr`` is the same.
+    follow its resources, e.g. ``(spec.model, worker.gpus)``. A key may be
+    any value a field may be, and two keys are the same batch when they are
+    written the same, as two fields are.
 
     The decorated ``create(specs, directory)`` gets the batch's one
     ``data/`` and ``scratch/`` as its second argument. A batch is stored as
