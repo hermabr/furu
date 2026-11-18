@@ -68,7 +68,7 @@ class ComputedParent(Spec[str]):
 @contextmanager
 def mark_running(obj: Spec) -> Generator[None]:
     attempts_dir_in(obj._class_dir).mkdir(parents=True, exist_ok=True)
-    with lock([lock_path_in(obj._class_dir, obj._run_name)]):
+    with lock(lock_path_in(obj._class_dir, obj._artifact_hash)):
         yield
 
 
@@ -211,7 +211,7 @@ def test_dag_add_does_not_snapshot_running_dependency():
 def test_dag_add_does_not_reject_a_stopped_attempt():
     leaf = Leaf(name="inactive-lock")
     leaf._attempt_dir.mkdir(parents=True)
-    lock_path_in(leaf._class_dir, leaf._run_name).touch()
+    lock_path_in(leaf._class_dir, leaf._artifact_hash).touch()
 
     dag = _new_dag([leaf])
 

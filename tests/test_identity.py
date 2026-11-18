@@ -54,7 +54,7 @@ def _batched_train_id() -> str:
             return (None, 8)
 
         @furu.batched(batch_key)
-        def create(specs: list["Train"]) -> list[int]:
+        def create(specs: list["Train"], directory: furu.SpecDirectory) -> list[int]:
             return [spec.seed for spec in specs]
 
     Train.__qualname__ = "Train"

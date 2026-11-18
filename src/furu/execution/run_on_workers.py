@@ -20,6 +20,7 @@ from furu.logging import _execution_log, get_logger
 from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.snapshot import CodeLocation
 from furu.storage._layout import execution_log_path_in
+from furu.storage.stored import Stored
 from furu.worker.backends.protocol import WorkerBackend
 from furu.worker.messages import CancelMessage, LocalPool
 
@@ -48,7 +49,8 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
             "cannot mix local and Slurm worker backends: local threads run your "
             "live worktree, Slurm workers run the pushed commit"
         )
-    if all(obj.done for obj in objs):
+    look = Stored()
+    if all(look.row(obj) is not None for obj in objs):
         logger.info("all objects already exist; nothing to run")
         return
 

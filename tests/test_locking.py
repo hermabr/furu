@@ -39,16 +39,6 @@ def _manifest_claim_path(path: Path) -> Path:
     return Path(str(_read_manifest(path)["claim_path"]))
 
 
-def _child_acquire_batch_then_exit(lock_paths: list[Path], manifest_out: str) -> None:
-    with lock(
-        lock_paths,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-    ):
-        Path(manifest_out).write_text(lock_paths[0].read_text(encoding="utf-8"))
-        os._exit(0)
-
-
 def _child_acquire_then_exit(
     lock_path: Path, owner_path: str, *, lifetime_s: float = SHORT_LIFETIME_S
 ) -> None:
@@ -69,36 +59,15 @@ def _drop_current_lock(lock_path: Path) -> None:
     claim_path.unlink()
 
 
-def test_lock_with_many_paths_produces_hardlinks_to_one_manifest_inode(
-    tmp_path: Path,
-) -> None:
-    lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
-
-    with lock(
-        lock_paths,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-    ) as has_lock:
-        assert has_lock()
-
-        manifest = _read_manifest(lock_paths[0])
-
-        claim_path = Path(str(manifest["claim_path"]))
-        claim_stat = claim_path.stat()
-        assert manifest["lock_paths"] == [str(path.resolve()) for path in lock_paths]
-
-        for lock_path in lock_paths:
-            assert os.path.samestat(lock_path.stat(), claim_stat)
-
-
-def test_lock_accepts_a_single_path(tmp_path: Path) -> None:
+def test_lock_is_a_hardlink_to_its_claim_manifest(tmp_path: Path) -> None:
     lock_path = tmp_path / "single.lock"
 
     with lock(lock_path, acquire_timeout_s=1.0) as has_lock:
         assert has_lock()
 
         manifest = _read_manifest(lock_path)
-        assert manifest["lock_paths"] == [str(lock_path.resolve())]
+        claim_path = Path(str(manifest["claim_path"]))
+        assert os.path.samestat(lock_path.stat(), claim_path.stat())
 
     assert not lock_path.exists()
 
@@ -106,24 +75,6 @@ def test_lock_accepts_a_single_path(tmp_path: Path) -> None:
 def test_lock_uses_default_arguments(tmp_path: Path) -> None:
     with lock(tmp_path / "single.lock") as has_lock:
         assert has_lock()
-
-
-def test_lock_normalizes_paths_and_shares_one_claim_manifest(
-    tmp_path: Path,
-) -> None:
-    lock_a = tmp_path / "a.lock"
-    lock_b = tmp_path / "b.lock"
-
-    with lock([lock_b, lock_a, lock_a]) as has_lock:
-        manifest_a = _read_manifest(lock_a)
-        manifest_b = _read_manifest(lock_b)
-
-        assert has_lock()
-        assert manifest_a == manifest_b
-        assert manifest_a["lock_paths"] == [
-            str(lock_a.resolve()),
-            str(lock_b.resolve()),
-        ]
 
 
 def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
@@ -138,21 +89,6 @@ def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
         ) as has_lock,
     ):
         _drop_current_lock(lock_path)
-        assert not has_lock()
-
-
-def test_has_lock_returns_false_when_any_batch_link_is_lost(tmp_path: Path) -> None:
-    lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
-
-    with (
-        pytest.raises(LockError, match="lost lock"),
-        lock(
-            lock_paths,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-        ) as has_lock,
-    ):
-        lock_paths[1].unlink()
         assert not has_lock()
 
 
@@ -298,84 +234,48 @@ def test_lock_logs_when_waiting_for_lock(
     assert caplog.messages.count(wait_message) >= 2
 
 
-def test_stale_break_from_any_member_path_removes_whole_logical_lock_group(
+def test_stale_break_clears_a_lock_whose_claim_file_is_missing(
     tmp_path: Path,
 ) -> None:
-    lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
-    manifest_out = tmp_path / "manifest.json"
+    lock_path = tmp_path / "single.lock"
+    owner_path = tmp_path / "owner"
     proc = Process(
         daemon=True,
-        target=_child_acquire_batch_then_exit,
-        args=(lock_paths, str(manifest_out)),
+        target=_child_acquire_then_exit,
+        args=(lock_path, str(owner_path)),
     )
     proc.start()
     proc.join(timeout=TIMEOUT_S)
     assert proc.exitcode == 0
 
-    stale_manifest = json.loads(manifest_out.read_text(encoding="utf-8"))
-    stale_claim_path = Path(str(stale_manifest["claim_path"]))
+    Path(owner_path.read_text(encoding="utf-8")).unlink()
     stale_time = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
-    os.utime(stale_claim_path, (stale_time, stale_time))
+    os.utime(lock_path, (stale_time, stale_time))
 
     with lock(
-        lock_paths[1],
+        lock_path,
         lifetime_s=SHORT_LIFETIME_S,
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
     ) as has_lock:
         assert has_lock()
-        assert not lock_paths[0].exists()
-        assert not lock_paths[2].exists()
-        assert not stale_claim_path.exists()
 
 
-def test_stale_break_from_any_member_path_clears_group_when_claim_file_is_missing(
+def test_release_removes_the_lock_when_its_claim_file_is_missing(
     tmp_path: Path,
 ) -> None:
-    lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
-    manifest_out = tmp_path / "manifest.json"
-    proc = Process(
-        daemon=True,
-        target=_child_acquire_batch_then_exit,
-        args=(lock_paths, str(manifest_out)),
-    )
-    proc.start()
-    proc.join(timeout=TIMEOUT_S)
-    assert proc.exitcode == 0
-
-    stale_manifest = json.loads(manifest_out.read_text(encoding="utf-8"))
-    stale_claim_path = Path(str(stale_manifest["claim_path"]))
-    stale_claim_path.unlink()
-
-    stale_time = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
-    os.utime(lock_paths[0], (stale_time, stale_time))
-
-    with lock(
-        lock_paths[1],
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-    ) as has_lock:
-        assert has_lock()
-        assert not lock_paths[0].exists()
-        assert not lock_paths[2].exists()
-        assert not stale_claim_path.exists()
-
-
-def test_release_cleanup_removes_member_links_when_claim_file_is_missing(
-    tmp_path: Path,
-) -> None:
-    lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
+    lock_path = tmp_path / "single.lock"
 
     with (
         pytest.raises(LockError, match="lost lock"),
         lock(
-            lock_paths,
+            lock_path,
             lifetime_s=SHORT_LIFETIME_S,
             heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
         ),
     ):
-        _manifest_claim_path(lock_paths[0]).unlink()
+        _manifest_claim_path(lock_path).unlink()
 
-    assert not any(lock_path.exists() for lock_path in lock_paths)
+    assert not lock_path.exists()
 
 
 def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
@@ -384,10 +284,7 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
     lock_path = tmp_path / "single.lock"
     first_claim_path = tmp_path / "first.claim"
     second_claim_path = tmp_path / "second.claim"
-    manifest = LockManifest(
-        claim_path=first_claim_path.resolve(),
-        lock_paths=(lock_path.resolve(),),
-    )
+    manifest = LockManifest(claim_path=first_claim_path.resolve())
 
     locking_module._write_claim_file(manifest, lifetime_s=SHORT_LIFETIME_S)
     assert locking_module.try_link(
@@ -409,10 +306,7 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
             return None
 
         lock_path.unlink()
-        second_manifest = LockManifest(
-            claim_path=second_claim_path.resolve(),
-            lock_paths=(lock_path.resolve(),),
-        )
+        second_manifest = LockManifest(claim_path=second_claim_path.resolve())
         locking_module._write_claim_file(second_manifest, lifetime_s=lifetime_s)
         assert locking_module.try_link(
             lock_path=lock_path,
@@ -436,57 +330,7 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
     ):
         pass
 
-    assert locking_module.owns([lock_path], claim_path=second_claim_path.resolve())
-
-
-def test_cross_filesystem_lock_requests_raise_clear_error(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    first_parent = tmp_path / "one"
-    second_parent = tmp_path / "two"
-    first_parent.mkdir()
-    second_parent.mkdir()
-    lock_paths = [first_parent / "a.lock", second_parent / "b.lock"]
-    real_stat = Path.stat
-
-    class _FakeStat:
-        def __init__(self, stat_result: os.stat_result, *, st_dev: int):
-            self._stat_result = stat_result
-            self.st_dev = st_dev
-
-        def __getattr__(self, name: str):
-            return getattr(self._stat_result, name)
-
-    def fake_stat(path: Path, *args, **kwargs):
-        stat_result = real_stat(path, *args, **kwargs)
-        if path == lock_paths[1].parent:
-            return _FakeStat(stat_result, st_dev=stat_result.st_dev + 1)
-        return stat_result
-
-    monkeypatch.setattr(type(lock_paths[0].parent), "stat", fake_stat)
-
-    with pytest.raises(LockError, match="same filesystem device"), lock(lock_paths):
-        pass
-
-
-def test_partial_acquire_rollback_releases_subset_under_overlap(tmp_path: Path) -> None:
-    first_lock = tmp_path / "a.lock"
-    blocked_lock = tmp_path / "b.lock"
-
-    with (
-        lock(blocked_lock),
-        pytest.raises(LockError, match="could not acquire lock"),
-        lock(
-            [first_lock, blocked_lock],
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            acquire_timeout_s=0.0,
-        ),
-    ):
-        pass
-
-    assert not first_lock.exists()
+    assert locking_module.owns(lock_path, claim_path=second_claim_path.resolve())
 
 
 def test_does_not_break_lock_within_clock_slop(

@@ -37,7 +37,6 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.snapshot import CodeLocation
-from furu.storage._layout import log_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
@@ -82,7 +81,7 @@ def _job(
 ) -> Job:
     return Job(
         artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
-        log=log_path_in(objs[0]._attempt_dir),
+        class_dir=objs[0]._class_dir,
         execution_log=get_config().directories.anchored().executions
         / "e1"
         / "execution.log",
@@ -495,6 +494,7 @@ def test_batched_subprocess_execution_through_local_worker_backend() -> None:
     assert [value for _, _, value in parsed] == ["1", "2"]
     assert len({pid for pid, _, _ in parsed}) == 1
     assert int(parsed[0][0]) != os.getpid()
+    assert run_of(objs[0]) == run_of(objs[1])
 
 
 def test_job_output_lands_in_its_own_log_on_a_reused_child(

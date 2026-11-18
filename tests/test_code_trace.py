@@ -2,6 +2,7 @@ import importlib
 import itertools
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -20,7 +21,12 @@ from furu import code_trace
 from furu.code_trace import StaleCodeError, why_outdated
 from furu.config import _Config, get_config
 from furu.spec_metadata import Metadata
-from furu.storage._layout import run_dir_in, scratch_dir_in, trace_path_in
+from furu.storage._layout import (
+    events_path_in,
+    run_dir_in,
+    scratch_dir_in,
+    trace_path_in,
+)
 from furu.testing import override_config
 from furu.worker.execute import ChildSlot
 from furu.worker.messages import JobCompletedResult, JobFailedResult
@@ -341,7 +347,46 @@ def test_edits_to_what_ran_rerun(
     assert plot.create() != before_result
     assert _version(plot) != before
     # The old version is kept.
-    assert run_dir_in(plot._class_dir / before, plot._run_name).is_dir()
+    assert run_dir_in(plot._class_dir / before, plot._artifact_hash).is_dir()
+
+
+SWEEP = """\
+import furu
+
+SCALE = 2
+
+
+class Sweep(furu.Spec[int]):
+    seed: int
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    @furu.batched(lambda spec, worker: (None, 10))
+    def create(specs, directory):
+        return [spec.seed * SCALE for spec in specs]
+"""
+
+
+def test_a_traced_batch_is_one_run_found_under_the_live_code_version(
+    repo: Repo,
+) -> None:
+    repo.write("sweep.py", SWEEP)
+    sweep = repo.load("sweep").Sweep
+    specs = [sweep(seed=1), sweep(seed=2)]
+    assert furu.create(specs) == [2, 4]
+    before = run_of(specs[0])
+    assert run_of(specs[1]) == before
+    assert _version(specs[0]) != "fixed"
+
+    repo.edit("sweep.py", "SCALE = 2", "SCALE = 3")
+
+    sweep = repo.load("sweep").Sweep
+    specs = [sweep(seed=1), sweep(seed=2)]
+    assert not specs[0].done
+    assert furu.create(specs) == [3, 6]
+    assert run_of(specs[0]).name == before.name
+    assert _version_dir(specs[0]) != before.parent.parent
 
 
 def test_rerun_names_the_changed_file(
@@ -386,6 +431,22 @@ def test_revert_makes_the_old_version_valid_again(
     repo.edit("plots.py", "SCALE = BASE * 3", "SCALE = BASE * 2")
 
     assert _version(edited) == original
+
+
+def test_a_spec_under_two_live_versions_is_read_from_the_run_published_first(
+    plots: ModuleType,
+) -> None:
+    plot = plots.LossPlot(name="a")
+    plot.create()
+    first = _version_dir(plot)
+    # The same run under a second live version, whose folder sorts first.
+    second = first.with_name("0" * 20)
+    shutil.copytree(first, second)
+    events = events_path_in(run_dir_in(second, plot._artifact_hash))
+    events.write_text(re.sub(r"\d{4}-", "2999-", events.read_text()))
+    _fresh_process()
+
+    assert _version_dir(plot) == first
 
 
 DEPENDENCIES = """\

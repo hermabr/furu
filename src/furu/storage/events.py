@@ -22,9 +22,12 @@ from furu.storage._layout import events_path_in
 
 def read_events(run_dir: Path) -> list[dict[str, Any]]:
     try:
-        text = events_path_in(run_dir).read_text(encoding="utf-8")
+        return parse_events(events_path_in(run_dir).read_bytes())
     except FileNotFoundError:
         return []
+
+
+def parse_events(text: bytes) -> list[dict[str, Any]]:
     events = []
     for line in text.splitlines():
         try:

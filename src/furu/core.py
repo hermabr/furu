@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 from abc import ABC
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from inspect import get_annotations
@@ -17,7 +17,7 @@ from typing import (
     final,
 )
 
-from furu._batched import _BatchedCreate, _BatchedHook, batched
+from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
 from furu.dependencies import (
     _Dependency,
     dependency_field,
@@ -46,7 +46,7 @@ from furu.storage._layout import (
     version_dirs_in,
 )
 from furu.storage.directory import SpecDirectory
-from furu.storage.stored import load_stored_result, stored_run
+from furu.storage.stored import Stored, load_rows, stored_row
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
@@ -208,6 +208,13 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 "create() spawns threads that need .directory, propagate "
                 "context with contextvars.copy_context()."
             )
+        if is_batched(type(self)):
+            raise RuntimeError(
+                f"{self._log_label}.directory: a batch has one directory, which "
+                "its create() gets as the second argument: "
+                "create(specs, directory). Name the files you write per spec by "
+                "the spec's fields, since the same spec can land in another batch."
+            )
         return SpecDirectory(self._attempt_dir)
 
     @final
@@ -221,25 +228,31 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def load_existing(self) -> T:
-        if (run := stored_run(self)) is not None:
-            record_loaded(run)
-            return load_stored_result(self, run)
+        if (row := stored_row(self)) is not None:
+            return load_rows([self], [row])[0]
+        # A spec without the decorator is not looked for in batch folders.
+        row = None if is_batched(type(self)) else Stored().listed(self, batches=True)
         raise Missing(
             f"{self._log_label}.load_existing() could not find a result. "
-            "load_existing() only loads existing results; use create() to compute "
-            "missing results."
+            + (
+                f"Its result is in the batch folder {row.run}, stored when its "
+                "class had @furu.batched. Put the decorator back to load it."
+                if row
+                else "load_existing() only loads existing results; use create() "
+                "to compute missing results."
+            )
         )
 
     @final
     def provenance(self) -> Provenance:
-        if (run := stored_run(self)) is None:
+        if (row := stored_row(self)) is None:
             raise Missing(
                 f"{self._log_label}.provenance() could not find a result. "
                 "Provenance is recorded when a result is computed; use create() "
                 "to compute it first."
             )
-        record_loaded(run)
-        path = provenance_path_in(run)
+        record_loaded(row.run)
+        path = provenance_path_in(row.run)
         if not path.exists():
             raise Missing(
                 f"{self._log_label}.provenance(): the result exists but "
@@ -256,21 +269,34 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
         A spec that is being computed, or whose attempt stopped, is not done.
         """
-        return stored_run(self) is not None
+        return stored_row(self) is not None
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         """Remove this spec's runs under every code version, and its working folder.
 
         A traced class keeps each version's trace.json, so what was built on
-        the deleted results stays done.
+        the deleted results stays done. A spec with ``@furu.batched`` is a row
+        in a run that other specs share, so this raises and names that run.
         """
+        if is_batched(type(self)):
+            row = stored_row(self)
+            raise RuntimeError(
+                f"{self._log_label}.delete(): a spec with @furu.batched has no "
+                "folder of its own. "
+                + (
+                    "It has no stored result."
+                    if row is None
+                    else f"Its result is a row in {row.run}, and deleting that "
+                    "folder deletes every spec in the batch."
+                )
+            )
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
         attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._run_name)):
+        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
             folders = [self._attempt_dir] + [
-                run_dir_in(version, self._run_name)
+                run_dir_in(version, self._artifact_hash)
                 for version in version_dirs_in(self._class_dir)
             ]
             folders = [folder for folder in folders if folder.is_dir()]
@@ -339,15 +365,17 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @property
-    def _run_name(self) -> str:
-        return run_name([self._artifact_hash])
-
-    @final
-    @property
     def _attempt_dir(self) -> Path:
-        return attempt_dir_in(self._class_dir, self._run_name)
+        return working_folder([self])
 
     @final
     @cached_property
     def _log_label(self) -> str:
         return spec_label(self._stored_name, self._class_part, self._artifact_hash)
+
+
+def working_folder(specs: Sequence[Spec]) -> Path:
+    """Where the run that holds ``specs`` as its rows does its work."""
+    return attempt_dir_in(
+        specs[0]._class_dir, run_name([spec._artifact_hash for spec in specs])
+    )

@@ -21,6 +21,7 @@ import furu.dag as dag_module
 import furu.worker.loop as worker_loop_module
 from furu import Spec, Throttle, Worker
 from furu.config import get_config
+from furu.core import working_folder
 from furu.execution.manager import Manager, _Lease, _Queued, _Script
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
@@ -82,7 +83,7 @@ def _submit_provenance() -> SubmitProvenance:
 def _job(*objs: Spec) -> Job:
     return Job(
         artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
-        log=log_path_in(objs[0]._attempt_dir),
+        class_dir=objs[0]._class_dir,
         execution_log=get_config().directories.anchored().executions
         / "e1"
         / "execution.log",
@@ -209,7 +210,7 @@ def _ids(job: Job | None) -> list[str]:
 @contextmanager
 def _mark_running(obj: Spec) -> Generator[None]:
     attempts_dir_in(obj._class_dir).mkdir(parents=True, exist_ok=True)
-    with lock([lock_path_in(obj._class_dir, obj._run_name)]):
+    with lock(lock_path_in(obj._class_dir, obj._artifact_hash)):
         yield
 
 
@@ -311,7 +312,22 @@ class BatchedRunLeaf(furu.Spec[int]):
         return (self.group, self.cap)
 
     @furu.batched(batch_key)
-    def create(objs: list["BatchedRunLeaf"]) -> list[int]:
+    def create(
+        objs: list["BatchedRunLeaf"], directory: furu.SpecDirectory
+    ) -> list[int]:
+        return [obj.value for obj in objs]
+
+
+class MixedMetadataLeaf(furu.Spec[int]):
+    value: int
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(reuse="never" if self.value % 2 else "same_environment")
+
+    @furu.batched(lambda _, __: (None, 10))
+    def create(
+        objs: list["MixedMetadataLeaf"], directory: furu.SpecDirectory
+    ) -> list[int]:
         return [obj.value for obj in objs]
 
 
@@ -319,7 +335,9 @@ class BatchSizeRunLeaf(furu.Spec[int]):
     value: int
 
     @furu.batched(lambda _, __: (None, 10))
-    def create(objs: list["BatchSizeRunLeaf"]) -> list[int]:
+    def create(
+        objs: list["BatchSizeRunLeaf"], directory: furu.SpecDirectory
+    ) -> list[int]:
         return [len(objs)] * len(objs)
 
 
@@ -347,7 +365,9 @@ class GpuBatchedLeaf(furu.Spec[int]):
         return worker.gpus in (1, 8)
 
     @furu.batched(lambda _, worker: (None, worker.gpus))
-    def create(objs: list["GpuBatchedLeaf"]) -> list[int]:
+    def create(
+        objs: list["GpuBatchedLeaf"], directory: furu.SpecDirectory
+    ) -> list[int]:
         return [obj.value for obj in objs]
 
 
@@ -355,7 +375,9 @@ class PerGpuBatchedLeaf(furu.Spec[int]):
     value: int
 
     @furu.batched(lambda _, worker: (None, worker.gpus))
-    def create(objs: list["PerGpuBatchedLeaf"]) -> list[int]:
+    def create(
+        objs: list["PerGpuBatchedLeaf"], directory: furu.SpecDirectory
+    ) -> list[int]:
         return [obj.value for obj in objs]
 
 
@@ -367,7 +389,9 @@ class ThrottledBatchedRunLeaf(furu.Spec[int]):
         return (None, 3)
 
     @furu.batched(batch_key)
-    def create(objs: list["ThrottledBatchedRunLeaf"]) -> list[int]:
+    def create(
+        objs: list["ThrottledBatchedRunLeaf"], directory: furu.SpecDirectory
+    ) -> list[int]:
         return [obj.value for obj in objs]
 
 
@@ -1048,17 +1072,54 @@ def test_run_ignores_a_result_for_a_spec_it_is_not_running() -> None:
     assert run.completed == {}
 
 
-def test_batched_group_failure_retries_each_member() -> None:
+def test_a_failed_batch_retries_each_spec_and_points_at_the_batchs_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     objs = [BatchedRunLeaf(value=value) for value in range(2)]
+    ids = [obj.object_id for obj in objs]
     run = _new_run(objs, max_retries_per_object=1)
+    log = log_path_in(working_folder(objs))
 
     run.take_submissions()
-    for obj in objs:
-        run.job_result(obj.object_id, JobFailedResult(error="boom"))
+    run.batch_result(ids, JobFailedResult(error="boom"))
 
-    assert run.failures == {obj.object_id: ["boom"] for obj in objs}
-    assert set(run.ready) == {obj.object_id for obj in objs}
+    assert run.failures == {object_id: ["boom"] for object_id in ids}
+    assert set(run.ready) == set(ids)
     _assert_one_state(run)
+
+    run.take_submissions()
+    run.batch_result(ids, JobFailedResult(error="boom"))
+    with pytest.raises(RuntimeError) as excinfo:
+        run.finish()
+
+    assert [
+        record.__dict__["path"]
+        for record in caplog.records
+        if record.message.startswith("failed ")
+    ] == [log] * 4
+    assert all(
+        line.endswith(f"→ {_display_path(log)}")
+        for line in str(excinfo.value).splitlines()[1:]
+    )
+
+
+def test_two_metadata_under_one_batch_key_stop_the_run_before_anything_is_sent() -> (
+    None
+):
+    with pytest.raises(ValueError, match="differ in Metadata reuse"):
+        _new_run([MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)])
+
+
+def test_two_metadata_among_found_specs_stop_the_run() -> None:
+    parent = RunLeaf(value=1)
+    run = _new_run([parent])
+    run.take_submissions()
+
+    with pytest.raises(RuntimeError, match="ValueError: .* differ in Metadata reuse"):
+        run.job_result(
+            parent.object_id,
+            _blocked(MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1186,7 +1247,7 @@ def test_lease_assembles_same_key_batched_group_into_one_job() -> None:
 
     assert _ids(job) == [obj.object_id for obj in objs]
     assert isinstance(job, Job)
-    assert job.log == log_path_in(objs[0]._attempt_dir)
+    assert job.log == log_path_in(working_folder(objs))
     assert manager.queue == []
 
 

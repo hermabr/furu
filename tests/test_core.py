@@ -22,6 +22,7 @@ import furu
 import furu.execution.load_or_create as execution_module
 from furu import Metadata, Spec, Throttle, Worker
 from furu.config import get_config
+from furu.core import working_folder
 from furu.dependencies import (
     _DependencyNotReady,
     collect_declared_refs,
@@ -30,7 +31,7 @@ from furu.dependencies import (
 from furu.execution.load_or_create import _load_or_create
 from furu.logging import _execution_log
 from furu.metadata import ArtifactSpec
-from furu.result.bundle import _save_result_bundle, load_result_bundle
+from furu.result.bundle import _save_result_bundle
 from furu.serializer.artifact import _from_json, to_json
 from furu.storage._layout import (
     data_dir_in,
@@ -38,7 +39,6 @@ from furu.storage._layout import (
     lock_path_in,
     log_path_in,
     result_dir_in,
-    result_manifest_path_in,
 )
 
 type SOME_TYPE = Literal["a", "b"] | int
@@ -124,17 +124,23 @@ class DirectoryPeekingValue(Spec[str]):
         return "ok"
 
 
-class BatchedDirectoryValue(Spec[str]):
+class BatchedDirectoryValue(Spec[Path]):
     key: int
 
     def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["BatchedDirectoryValue"]) -> list[str]:
-        for obj in objs:
-            assert obj.directory.data == obj._attempt_dir / "data"
-        return [f"dir:{obj.key}" for obj in objs]
+    def create(
+        objs: list["BatchedDirectoryValue"], directory: furu.SpecDirectory
+    ) -> list[Path]:
+        assert directory.data == working_folder(objs) / "data"
+        with pytest.raises(RuntimeError, match=r"create\(specs, directory\)"):
+            _ = objs[0].directory
+        paths = [directory.data / f"{obj.key}.txt" for obj in objs]
+        for obj, path in zip(objs, paths):
+            path.write_text(f"dir:{obj.key}", encoding="utf-8")
+        return paths
 
 
 class ScratchWritingValue(Spec[str]):
@@ -321,7 +327,9 @@ class BatchOnlyValue(furu.Spec[str]):
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["BatchOnlyValue"]) -> list[str]:
+    def create(
+        objs: list["BatchOnlyValue"], directory: furu.SpecDirectory
+    ) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         BatchOnlyValue.batch_calls.append(keys)
         return [f"batch:{obj.key}" for obj in objs]
@@ -341,7 +349,9 @@ class KeyedBatchValue(furu.Spec[str]):
         return (self.group, self.cap)
 
     @furu.batched(batch_key)
-    def create(objs: list["KeyedBatchValue"]) -> list[str]:
+    def create(
+        objs: list["KeyedBatchValue"], directory: furu.SpecDirectory
+    ) -> list[str]:
         KeyedBatchValue.batch_calls.append(
             (objs[0].group, tuple(obj.key for obj in objs))
         )
@@ -356,7 +366,7 @@ class GroupBatchA(furu.Spec[str]):
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["GroupBatchA"]) -> list[str]:
+    def create(objs: list["GroupBatchA"], directory: furu.SpecDirectory) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         GroupBatchA.batch_calls.append(keys)
         GROUP_EXECUTION_EVENTS.append(("batch_a", keys))
@@ -371,7 +381,7 @@ class GroupBatchB(furu.Spec[str]):
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["GroupBatchB"]) -> list[str]:
+    def create(objs: list["GroupBatchB"], directory: furu.SpecDirectory) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         GroupBatchB.batch_calls.append(keys)
         GROUP_EXECUTION_EVENTS.append(("batch_b", keys))
@@ -385,10 +395,25 @@ class LoggedBatchValue(furu.Spec[str]):
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["LoggedBatchValue"]) -> list[str]:
+    def create(
+        objs: list["LoggedBatchValue"], directory: furu.SpecDirectory
+    ) -> list[str]:
         keys = ",".join(str(obj.key) for obj in objs)
         objs[0].logger.info("batched detail for %s", keys)
         return [f"logged-batch:{obj.key}" for obj in objs]
+
+
+class MixedMetadataValue(furu.Spec[int]):
+    key: int
+
+    def metadata(self) -> Metadata:
+        return Metadata(reuse="never" if self.key % 2 else "same_environment")
+
+    @furu.batched(lambda spec, worker: (None, 1024))
+    def create(
+        objs: list["MixedMetadataValue"], directory: furu.SpecDirectory
+    ) -> list[int]:
+        return [obj.key for obj in objs]
 
 
 class LoggedSingleValue(Spec[str]):
@@ -406,7 +431,9 @@ class FailingBatchValue(furu.Spec[str]):
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["FailingBatchValue"]) -> list[str]:
+    def create(
+        objs: list["FailingBatchValue"], directory: furu.SpecDirectory
+    ) -> list[str]:
         _local_debug_value = "furu-local-debug-value-should-not-leak"
         raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
 
@@ -423,17 +450,6 @@ class InterruptingValue(Spec[str]):
 
     def create(self) -> str:
         raise KeyboardInterrupt
-
-
-class PartialBatchValue(furu.Spec[str]):
-    key: int
-
-    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
-        return (None, 1024)
-
-    @furu.batched(batch_key)
-    def create(objs: list["PartialBatchValue"]) -> list[str]:
-        return [f"partial:{obj.key}" for obj in objs]
 
 
 class MetadataTimingValue(Spec[str]):
@@ -526,7 +542,9 @@ class BatchDependencyParent(furu.Spec[str]):
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["BatchDependencyParent"]) -> list[str]:
+    def create(
+        objs: list["BatchDependencyParent"], directory: furu.SpecDirectory
+    ) -> list[str]:
         eager_values = [obj.eager.create() for obj in objs]
         lazy_value = Node(name="shared-lazy").create()
         return [f"{value}:{lazy_value}" for value in eager_values]
@@ -1038,11 +1056,14 @@ class _ParentIgnoringChild(Spec[str]):
         return "parent"
 
 
-def _forbid_loading(monkeypatch: pytest.MonkeyPatch) -> None:
-    def load_stored_result(obj: Spec, result_dir: Path) -> object:
-        raise AssertionError(f"unexpected load of {obj._log_label}")
+def _forbid_loading(monkeypatch: pytest.MonkeyPatch, *forbidden: Spec) -> None:
+    load_rows = execution_module.load_rows
 
-    monkeypatch.setattr(execution_module, "load_stored_result", load_stored_result)
+    def spy(objs: list[Spec], rows: Any) -> Any:
+        assert not set(objs) & set(forbidden)
+        return load_rows(objs, rows)
+
+    monkeypatch.setattr(execution_module, "load_rows", spy)
 
 
 def test_build_stores_results_without_loading_them(
@@ -1050,7 +1071,7 @@ def test_build_stores_results_without_loading_them(
 ) -> None:
     cached, fresh = Node(name="build-cached"), Node(name="build-fresh")
     furu.create(cached)
-    _forbid_loading(monkeypatch)
+    _forbid_loading(monkeypatch, cached, fresh)
 
     furu.build({"cached": cached, "fresh": [fresh]})
 
@@ -1062,7 +1083,7 @@ def test_create_does_not_load_cached_declared_dependencies(
 ) -> None:
     parent = _ParentIgnoringChild(child=Node(name="cached-child"))
     furu.create(parent.child)
-    _forbid_loading(monkeypatch)
+    _forbid_loading(monkeypatch, parent.child)
 
     assert furu.create(parent) == "parent"
 
@@ -1381,10 +1402,15 @@ def test_directory_of_another_spec_raises_inside_create() -> None:
     assert DirectoryPeekingValue().create() == "ok"
 
 
-def test_batched_create_can_access_every_group_members_directory() -> None:
+def test_a_batch_has_one_directory_and_a_spec_of_it_has_none() -> None:
     objs = [BatchedDirectoryValue(key=1), BatchedDirectoryValue(key=2)]
 
-    assert _load_or_create(objs) == ["dir:1", "dir:2"]
+    paths = _load_or_create(objs)
+
+    # A path into data/ is stored relative to it, so it follows the rename.
+    data = run_of(objs[0]) / "data"
+    assert paths == [data / "1.txt", data / "2.txt"]
+    assert [path.read_text(encoding="utf-8") for path in paths] == ["dir:1", "dir:2"]
 
 
 def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
@@ -1562,7 +1588,9 @@ def test_create_hook_flavor_validation() -> None:
 
         class BatchedNonCreateMethod(Spec[int]):
             @furu.batched(lambda _, __: (None, 1))
-            def run(objs: list["BatchedNonCreateMethod"]) -> list[int]:
+            def run(
+                objs: list["BatchedNonCreateMethod"], directory: furu.SpecDirectory
+            ) -> list[int]:
                 return [1 for _ in objs]
 
     # Abstract intermediate bases defining no hook stay legal.
@@ -1601,8 +1629,8 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
     obj = NoCreateHookValue(key=3)
 
     @contextmanager
-    def fake_lock(lock_paths: list[Path], **_: object):
-        assert lock_paths == [lock_path_in(obj._class_dir, obj._run_name)]
+    def fake_lock(lock_path: Path, **_: object):
+        assert lock_path == lock_path_in(obj._class_dir, obj._artifact_hash)
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
@@ -1700,7 +1728,7 @@ class PerGpuBatch(furu.Spec[int]):
     key: int
 
     @furu.batched(lambda _, worker: (None, worker.gpus))
-    def create(objs: list["PerGpuBatch"]) -> list[int]:
+    def create(objs: list["PerGpuBatch"], directory: furu.SpecDirectory) -> list[int]:
         return [len(objs)] * len(objs)
 
 
@@ -1755,17 +1783,17 @@ def test_existing_items_are_skipped_before_locking(
 
     assert existing.create() == "single:1"
 
-    lock_calls: list[list[Path]] = []
+    lock_calls: list[Path] = []
 
     @contextmanager
-    def fake_lock(lock_paths: list[Path], **_: object):
-        lock_calls.append(lock_paths)
+    def fake_lock(lock_path: Path, **_: object):
+        lock_calls.append(lock_path)
         yield lambda: True
 
     monkeypatch.setattr(execution_module, "lock", fake_lock)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [[lock_path_in(missing._class_dir, missing._run_name)]]
+    assert lock_calls == [lock_path_in(missing._class_dir, missing._artifact_hash)]
 
 
 def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
@@ -1774,8 +1802,8 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
     pending = CountedSingleValue(key=5)
 
     @contextmanager
-    def fake_lock(lock_paths: list[Path], **_: object):
-        assert lock_paths == [lock_path_in(pending._class_dir, pending._run_name)]
+    def fake_lock(lock_path: Path, **_: object):
+        assert lock_path == lock_path_in(pending._class_dir, pending._artifact_hash)
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
@@ -1885,27 +1913,26 @@ def test_mixed_type_list_batches_each_type_when_its_first_member_is_next() -> No
     ]
 
 
-def test_batched_compute_writes_result_layout_per_object() -> None:
-    objs = [BatchOnlyValue(key=1), BatchOnlyValue(key=2)]
+def test_two_metadata_under_one_batch_key_stop_the_launch() -> None:
+    first, alone, second = (MixedMetadataValue(key=key) for key in (0, 2, 1))
 
-    assert _load_or_create(objs) == ["batch:1", "batch:2"]
+    with pytest.raises(ValueError) as error:
+        furu.create([first, alone, second])
 
-    for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
-        run = run_of(obj)
-        assert result_manifest_path_in(run).exists()
-        assert ends_of(obj) == [{"outcome": "ok"}]
-        assert load_result_bundle(
-            result_dir_in(run), [0], data_dir=data_dir_in(run), declared_type=str
-        ) == [expected]
+    assert str(error.value).startswith(
+        f"{first._log_label} and {second._log_label} have the same batch key and "
+        "differ in Metadata reuse ('same_environment' and 'never')."
+    )
+    assert not first.done
 
 
-def test_a_batched_create_logs_to_its_leads_run() -> None:
+def test_a_batch_has_one_log() -> None:
     objs = [LoggedBatchValue(key=1), LoggedBatchValue(key=2)]
 
     assert _load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
 
-    assert "batched detail for 1,2" in log_of(objs[0])
-    assert not log_path_in(run_of(objs[1])).exists()
+    assert run_of(objs[0]) == run_of(objs[1])
+    assert "batched detail for 1,2" in log_of(objs[1])
 
 
 def test_unbatched_specs_log_to_their_own_runs() -> None:
@@ -1919,22 +1946,20 @@ def test_unbatched_specs_log_to_their_own_runs() -> None:
     assert "single detail for 2" in second_log
 
 
-def test_a_failed_batch_logs_the_traceback_once_and_ends_every_members_attempt() -> (
-    None
-):
+def test_a_failed_batch_logs_the_traceback_once_and_ends_its_one_attempt() -> None:
     objs = [FailingBatchValue(key=1), FailingBatchValue(key=2)]
 
     with pytest.raises(RuntimeError, match="failed batch"):
         _load_or_create(objs)
 
-    lead_log = log_of(objs[0])
-    assert "create failed" in lead_log
-    assert "Traceback (most recent call last):" in lead_log
-    assert "furu-local-debug-value-should-not-leak" not in lead_log
-    for obj in objs:
-        assert ends_of(obj) == [
-            {"outcome": "failed", "error": "RuntimeError: failed batch for [1, 2]"}
-        ]
+    log = log_of(objs)
+    assert log.count("create failed") == 1
+    assert "Traceback (most recent call last):" in log
+    assert "furu-local-debug-value-should-not-leak" not in log
+    assert ends_of(objs) == [
+        {"outcome": "failed", "error": "RuntimeError: failed batch for [1, 2]"}
+    ]
+    assert not objs[0]._attempt_dir.exists()
 
 
 def test_a_failed_create_logs_the_traceback_once() -> None:
@@ -1958,29 +1983,6 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
 
     assert "create failed" not in log_of(obj)
     assert ends_of(obj) == [{"outcome": "failed", "error": "KeyboardInterrupt"}]
-
-
-def test_partial_persistence_leaves_already_written_objects_completed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    objs = [PartialBatchValue(key=1), PartialBatchValue(key=2)]
-    real_publish = execution_module._publish
-    call_count = 0
-
-    def flaky_publish(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("stop after first store")
-        return real_publish(*args, **kwargs)
-
-    monkeypatch.setattr(execution_module, "_publish", flaky_publish)
-
-    with pytest.raises(RuntimeError, match="stop after first store"):
-        _load_or_create(objs)
-
-    assert objs[0].done
-    assert not objs[1].done
 
 
 def test_create_publicly_loads_or_computes_result() -> None:
