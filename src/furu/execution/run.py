@@ -17,7 +17,7 @@ from websockets.sync.client import ClientConnection
 
 from furu.config import _Config, get_config
 from furu.core import Spec, working_folder
-from furu.dag import Dag, DagNode, MixedBatchError
+from furu.dag import Dag, DagNode
 from furu.dependencies import missing_dependencies
 from furu.locking import is_active_lock
 from furu.logging import _display_path, get_logger
@@ -223,18 +223,6 @@ class Run(Dag):
             return
         node, started_at = running
         log = self.logs[object_id] = log or log_path_in(node.obj._attempt_dir)
-        why = None
-        if isinstance(result, JobBlockedResult):
-            try:
-                why = self.block(
-                    node, [Spec.from_artifact(dep) for dep in result.dependencies]
-                )
-            except MixedBatchError as exc:
-                # What its create() asked for cannot run: that fails the job
-                # that asked, and the rest of the run goes on.
-                result = JobFailedResult(error=f"{type(exc).__name__}: {exc}")
-            except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
-                self.fail(f"{type(exc).__name__}: {exc}")
         match result:
             case JobCompletedResult():
                 self.complete(node)
@@ -263,6 +251,12 @@ class Run(Dag):
                     extra={"path": log},
                 )
             case JobBlockedResult(dependencies=dependencies):
+                try:
+                    why = self.block(
+                        node, [Spec.from_artifact(dep) for dep in dependencies]
+                    )
+                except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
+                    self.fail(f"{type(exc).__name__}: {exc}")
                 logger.info(
                     "blocked %s · %s",
                     node.obj._log_label,
