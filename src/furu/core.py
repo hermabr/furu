@@ -13,27 +13,26 @@ from typing import (
     Any,
     ClassVar,
     Literal,
-    Self,
     final,
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
 from furu.dependencies import (
+    Returned,
     _Dependency,
     dependency_field,
     is_under_creation,
     record_loaded,
+    returned_attributes,
 )
 from furu.locking import lock
 from furu.logging import get_logger
-from furu.metadata import ArtifactSpec
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
 from furu.provenance import Provenance
 from furu.resources import Worker
 from furu.result.codec import Codec
-from furu.serializer.artifact import hashed_fields
-from furu.serializer.artifact import to_json as _to_json
+from furu.serializer.artifact import field_fingerprints
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
@@ -48,10 +47,8 @@ from furu.storage._layout import (
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Stored, load_rows, stored_row
 from furu.utils import (
-    JsonValue,
     _hash_dict_deterministically,
     nfs_safe_unique_name,
-    object_id_from_parts,
     spec_label,
 )
 
@@ -108,6 +105,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
     result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
     artifact_serializers: ClassVar[tuple[type[Serializer], ...]] = ()
+    # Whether the spec was built from a plan line, which gives it what naming
+    # finds. The script that wrote the line named the spec and checked its class.
+    _from_line: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -149,7 +149,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         for name, value in dependencies.items():
             # Set after the dataclass has taken the field: the first read
             # calls the method and keeps what it returned.
-            lazy = cached_property(value.func)
+            lazy = Returned(value.func)
             lazy.__set_name__(cls, name)
             setattr(cls, name, lazy)
         naming(cls)  # refuses steps that do not fit the fields
@@ -220,11 +220,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def object_id(self) -> str:
-        return object_id_from_parts(
-            fully_qualified_name=self._stored_name,
-            class_part=self._class_part,
-            artifact_hash=self._artifact_hash,
-        )
+        return f"{self._stored_name}:{self._class_part}:{self._artifact_hash}"
 
     @final
     def load_existing(self) -> T:
@@ -315,38 +311,34 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return True
 
     @final
-    @classmethod
-    def from_artifact(cls, artifact: ArtifactSpec) -> Self:
-        from furu.serializer.artifact import _from_artifact
-
-        return _from_artifact(artifact, cls)
-
-    @final
     @cached_property
-    def _artifact_data(  # TODO: make sure this doesn't prevent garbage collection
-        self,
-    ) -> dict[str, JsonValue]:
-        return _to_json(
-            self,
-            declared_type=type(self),
-            artifact_serializers=self.artifact_serializers,
-        )  # ty:ignore[invalid-return-type] # TODO: check this or make _to_json return dict[str, JsonValue] or typed value
+    def _named(self) -> tuple[str, dict[str, str]]:
+        """The fingerprint of the field values, and of what each dependency method returned.
 
-    @final
-    @cached_property
-    def _artifact_hash(  # TODO: should this be __hash__?
-        self,
-    ) -> str:
+        The second is by field, so that the spec's line is written without the
+        returned values being written out again. A method that returned its
+        declared default is left out of the id, and of this.
+        """
         # One fingerprint per field, so writing a large value apart from the
         # spec that holds it never changes the id.
-        return _hash_dict_deterministically(
-            {
-                name: _hash_dict_deterministically(value)
-                for name, value in hashed_fields(
-                    self, self.artifact_serializers, held[type(self)]
-                ).items()
-            }
-        )
+        cls = type(self)
+        fingerprints = field_fingerprints(self, self.artifact_serializers, held[cls])
+        returned = {
+            attribute: fingerprints[name]
+            for attribute, name, _ in naming(cls).fields
+            if attribute in returned_attributes(cls) and name in fingerprints
+        }
+        return _hash_dict_deterministically(fingerprints), returned
+
+    @final
+    @property
+    def _artifact_hash(self) -> str:  # TODO: should this be __hash__?
+        return self._named[0]
+
+    @final
+    @property
+    def _returned(self) -> dict[str, str]:
+        return self._named[1]
 
     @final
     @property

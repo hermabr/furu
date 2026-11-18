@@ -765,6 +765,14 @@ class Holder(furu.Spec[int]):
 
     def create(self) -> int:
         return self.parent.create() + 1
+
+
+class Search(furu.Spec[int]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        return FixedParent(n=3).create()
 """
 
 
@@ -800,6 +808,33 @@ def test_a_dependency_refactor_returning_the_same_spec_keeps_the_result(
 
     parent = getattr(repo.load("parents"), parent_class)(n=1)
     assert _version(parent) == before
+
+
+def test_a_worker_calls_a_dependency_method_with_tracing_paused(
+    repo: Repo, declared: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from furu.worker.backends.local import LocalThreadWorkerBackend
+
+    monkeypatch.setenv(
+        "PYTHONPATH", f"{repo.root}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"
+    )
+    parent = declared.TracedParent(n=1)
+
+    # The worker builds the spec from its line, so its create() is the first
+    # to read the dependency. In this process the method runs before create()
+    # starts, and it is in neither trace.
+    furu.build([parent], on=[LocalThreadWorkerBackend()])
+
+    ran = _trace(parent)["code"][f"{repo.package}/parents.py"]["ran"]
+    assert ran == ["TracedParent.create"]
+
+
+def test_a_traced_create_cannot_build_a_spec_that_has_a_dependency_method(
+    declared: ModuleType,
+) -> None:
+    with pytest.raises(RuntimeError, match="built a FixedParent, whose") as stopped:
+        declared.Search().create()
+    assert f"{declared.__name__}.Search traces its code" in str(stopped.value)
 
 
 def test_a_spec_held_in_a_field_reruns_when_its_dependency_changes(

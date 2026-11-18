@@ -74,7 +74,7 @@ def mark_running(obj: Spec) -> Generator[None]:
 
 def _new_dag(objs: Sequence[Spec]) -> Dag:
     dag = Dag()
-    dag.add(objs)
+    dag.add(objs, Path("launch.plan"))
     return dag
 
 

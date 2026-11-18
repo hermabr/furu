@@ -15,7 +15,7 @@ import pytest
 from runs import ends_of, events_of, fixed_run, run_of
 
 import furu
-from furu import Spec
+from furu import Spec, plan
 from furu.code_trace import Trace
 from furu.core import working_folder
 from furu.execution import load_or_create
@@ -80,7 +80,7 @@ BatchedMerge.__qualname__ = "Merge"
 
 def _compute_again(specs: Sequence[Spec], monkeypatch: pytest.MonkeyPatch) -> None:
     """Run ``specs`` as one batch, as a worker does that does not see them stored."""
-    with monkeypatch.context() as patched:
+    with monkeypatch.context() as patched, plan.listed_in(Path("launch.plan")):
         patched.setattr(stored.Stored, "row", lambda self, obj: None)
         load_or_create._ensure_group_result(
             specs, submit_provenance=load_or_create.capture_submit_provenance()
@@ -249,7 +249,7 @@ def test_a_batch_with_a_stored_spec_still_runs_whole_in_the_folder_named_for_it(
     specs = [FailsAsABatch(n=1), FailsAsABatch(n=2)]
     furu.create(specs[0])
 
-    with pytest.raises(ValueError, match="boom"):
+    with pytest.raises(ValueError, match="boom"), plan.listed_in(Path("launch.plan")):
         load_or_create._ensure_group_result(
             specs, submit_provenance=load_or_create.capture_submit_provenance()
         )
@@ -356,6 +356,7 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
     )
     # Attempts in one second still sort by when they happened.
     assert times[1:] == sorted(set(times[1:]))
+    plans = [Path(event.pop("plan")) for event in events if event["event"] == "start"]
     host = socket.gethostname()
     assert events == [
         {"event": "opened", "specs": [spec._artifact_hash]},
@@ -366,6 +367,15 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
         {"event": "start", "attempt": 3, "host": host},
         {"event": "end", "outcome": "ok"},
     ]
+    # Each start names the plan of its launch, which lists the spec.
+    assert plans[0] == plans[1] != plans[2]
+    listed = {"fields": {}, "runs": True, "spec": spec.object_id}
+    assert plan.read(plans[0])[1:] == plan.read(plans[2])[1:] == [listed]
+    # The leaf its create() asked for is listed in a file of the process that
+    # ran the create(), in the folder of the launch.
+    leaf = Leaf(n=7)
+    found = Path(events_of(leaf)[1]["plan"])
+    assert found.parent == plans[0].with_suffix("")
 
 
 def test_an_attempt_killed_in_the_middle_of_a_line_costs_only_that_line() -> None:

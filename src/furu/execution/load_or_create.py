@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import shutil
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
@@ -8,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
+from furu import plan
 from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
@@ -19,6 +21,7 @@ from furu.code_trace import (
     recording,
     why_not_resumable,
 )
+from furu.config import get_config
 from furu.core import Missing, Spec, working_folder
 from furu.dag import Dag
 from furu.dependencies import (
@@ -42,6 +45,7 @@ from furu.provenance import (
 )
 from furu.resources import Worker
 from furu.result.bundle import _save_result_bundle
+from furu.serializer.artifact import remembering
 from furu.storage import events
 from furu.storage._layout import (
     FIXED,
@@ -94,7 +98,7 @@ def _open_attempt(group: Sequence[Spec], attempt: Path) -> LogState:
         else:
             assert logged is not None
             resumed = logged
-    events.start(attempt, [obj._artifact_hash for obj in group])
+    events.start(attempt, [obj._artifact_hash for obj in group], plan.listing())
     return resumed
 
 
@@ -229,18 +233,20 @@ def _load_or_create(
 def _load_or_create(
     tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
 ) -> Any:
-    if on is not None:
-        from furu.execution.run_on_workers import run_on_workers
+    # One launch: a large value that many of its specs hold is named once.
+    with remembering():
+        if on is not None:
+            from furu.execution.run_on_workers import run_on_workers
 
-        run_on_workers(specs_in(tree), on)
-    _require_uv()
-    if isinstance(tree, Spec):
-        tree.logger.debug(".create called for %s", tree)
-    objs = specs_in(tree)
-    if any_under_creation():
-        outputs = _load_or_block(objs, load=load)
-    else:
-        outputs = _load_or_create_local(objs, load=load)
+            run_on_workers(specs_in(tree), on)
+        _require_uv()
+        if isinstance(tree, Spec):
+            tree.logger.debug(".create called for %s", tree)
+        objs = specs_in(tree)
+        if any_under_creation():
+            outputs = _load_or_block(objs, load=load)
+        else:
+            outputs = _load_or_create_local(objs, load=load)
     if not load:
         return None
     results = {obj.object_id: output for obj, output in zip(objs, outputs)}
@@ -406,9 +412,12 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         # What a launch would list for them: the classes under them can have
         # changed too.
         dag = Dag()
-        dag.add(missing)
-        ask([node.obj for node in dag.nodes_by_id.values()], found=True)
-        raise _DependencyNotReady(missing)
+        dag.add(missing, plan.listing())
+        running = [node.obj for node in dag.nodes_by_id.values()]
+        ask(running, found=True)
+        # Saved before anyone is told, so a found spec that fails or never
+        # starts is still described.
+        raise _DependencyNotReady(missing, *plan.save_found(running))
 
     found = cast(list[Row], rows)
     if load:
@@ -425,15 +434,22 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     is aborted with its locks released, they are built, and it reruns.
     """
     dag = Dag()
-    dag.add(objs)
+    launch_plan = (
+        get_config().directories.anchored().plans / f"{secrets.token_hex(16)}.plan"
+    )
+    dag.add(objs, launch_plan)
     cached = [obj for obj in objs if obj.object_id not in dag.nodes_by_id]
     if cached:
         to_build = [obj for obj in objs if obj.object_id in dag.nodes_by_id]
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
     if dag.ready:
-        with asked(ask([node.obj for node in dag.nodes_by_id.values()])):
-            _run_in_process(dag)
+        running = [node.obj for node in dag.nodes_by_id.values()]
+        stages = ask(running)
+        submit_provenance = capture_submit_provenance()
+        plan.write(launch_plan, objs, running, submit_provenance)
+        with asked(stages):
+            _run_in_process(dag, submit_provenance)
     if not load:
         return []
     # Load the way a cache hit does, so the first run returns what every later
@@ -442,9 +458,8 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     return [loaded[obj.object_id] for obj in objs]
 
 
-def _run_in_process(dag: Dag) -> None:
+def _run_in_process(dag: Dag, submit_provenance: SubmitProvenance) -> None:
     """Create every ready spec in ``dag``."""
-    submit_provenance = capture_submit_provenance()
     here = Worker.here()
     for node in dag.nodes_by_id.values():
         dag.batch_group(node, here)  # a batch with two Metadata stops the launch here
@@ -452,15 +467,21 @@ def _run_in_process(dag: Dag) -> None:
         lead = next(iter(dag.ready.values()))
         group = [lead]
         if (batch := dag.batch_group(lead, here)) is not None:
-            group = [n for n in dag.ready.values() if dag.batch_group(n, here) == batch]
+            # A batch holds specs from one plan, which its run names.
+            group = [
+                node
+                for node in dag.ready.values()
+                if dag.batch_group(node, here) == batch and node.plan == lead.plan
+            ]
             group = group[: batch[1]]
         for node in group:
             del dag.ready[node.obj.object_id]
 
         try:
-            _create_in_process(
-                [node.obj for node in group], submit_provenance=submit_provenance
-            )
+            with plan.listed_in(lead.plan):
+                _create_in_process(
+                    [node.obj for node in group], submit_provenance=submit_provenance
+                )
         except _DependencyNotReady as exc:
             lead.obj.logger.info(
                 "blocked %s · %s",
@@ -468,7 +489,7 @@ def _run_in_process(dag: Dag) -> None:
                 missing_dependencies(len(exc.dependencies)),
             )
             for node in group:
-                if (why := dag.block(node, exc.dependencies)) is not None:
+                if (why := dag.block(node, exc.dependencies, exc.plan)) is not None:
                     raise RuntimeError(f"{node.obj._log_label} {why}") from None
             continue
         except Exception as exc:

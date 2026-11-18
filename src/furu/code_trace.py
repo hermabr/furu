@@ -854,11 +854,12 @@ _tool_id: int | None = None
 
 
 def _on_py_start(code: CodeType, offset: int) -> object:
-    if (collector := _active) is not None:
-        try:
-            collector.see(code)
-        except Exception:  # noqa: BLE001 -- never break the code being traced
-            collector.log.abandon()
+    if (collector := _active) is None:
+        return None  # paused: seen at its next call, if create() makes one
+    try:
+        collector.see(code)
+    except Exception:  # noqa: BLE001 -- never break the code being traced
+        collector.log.abandon()
     return sys.monitoring.DISABLE
 
 
@@ -891,6 +892,22 @@ def _trace_into(collector: _Collector | None) -> None:
     monitoring.set_events(_tool_id, monitoring.events.PY_START if collector else 0)
     # _on_py_start disables each code object it sees; re-arm them all.
     monitoring.restart_events()
+
+
+def tracing() -> bool:
+    """Whether a traced create() is running, and its tracing is not paused."""
+    return _active is not None
+
+
+@contextmanager
+def paused() -> Generator[None]:
+    """Run code that is no part of the create() being traced."""
+    global _active
+    collector, _active = _active, None
+    try:
+        yield
+    finally:
+        _active = collector
 
 
 @dataclass(slots=True)

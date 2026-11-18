@@ -6,6 +6,7 @@ runs here; the manager gets plain data.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Sequence
@@ -15,13 +16,13 @@ from typing import ClassVar, NoReturn, assert_never
 
 from websockets.sync.client import ClientConnection
 
+from furu import plan
 from furu.config import _Config, get_config
 from furu.core import Spec, working_folder
 from furu.dag import Dag, DagNode
 from furu.dependencies import missing_dependencies
 from furu.locking import is_active_lock
 from furu.logging import _display_path, get_logger
-from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
 from furu.storage._layout import lock_path_in, log_path_in
@@ -103,8 +104,9 @@ class Run(Dag):
                     None
                     if group is None
                     else Batch(
+                        # A batch holds specs from one plan, which its run names.
                         batch=self.batch_ids.setdefault(
-                            group[0], f"b{len(self.batch_ids)}"
+                            (group[0], node.plan), f"b{len(self.batch_ids)}"
                         ),
                         cap=group[1],
                     )
@@ -149,10 +151,11 @@ class Run(Dag):
 
     def _submission(self, node: DagNode) -> Submission:
         obj = node.obj
-        artifact = ArtifactSpec.from_furu(obj)
         return Submission(
             job=Job(
-                artifacts=[artifact],
+                specs=[obj.object_id],
+                lines=list(map(plan.dump, plan.lines([obj]))),
+                plan=node.plan,
                 class_dir=obj._class_dir,
                 execution_log=self.execution_log,
                 provenance=self.provenance,
@@ -164,9 +167,7 @@ class Run(Dag):
             pools=self.placement[obj.object_id],
             throttle=None
             if (throttle := obj.throttle) is None
-            else JobThrottle(
-                key=artifact.fully_qualified_name, max_running=throttle.max_running
-            ),
+            else JobThrottle(key=obj._stored_name, max_running=throttle.max_running),
         )
 
     def poll_waiting(self) -> None:
@@ -252,8 +253,9 @@ class Run(Dag):
                 )
             case JobBlockedResult(dependencies=dependencies):
                 try:
+                    found = plan.Specs(map(json.loads, result.lines))
                     why = self.block(
-                        node, [Spec.from_artifact(dep) for dep in dependencies]
+                        node, [found[dep] for dep in dependencies], result.plan
                     )
                 except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
                     self.fail(f"{type(exc).__name__}: {exc}")

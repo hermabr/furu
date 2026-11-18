@@ -12,6 +12,7 @@ from importlib.metadata import version
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import ClientConnection, connect
 
+from furu import plan
 from furu.config import get_config
 from furu.core import Spec
 from furu.execution.launch import ask, stage_table
@@ -56,9 +57,10 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
 
     provenance = capture_submit_provenance()
     code = CodeLocation.here() if local == {True} else _prepare_snapshot(provenance)
-    execution_log = execution_log_path_in(
-        get_config().directories.anchored().executions / secrets.token_hex(16)
-    )
+    directories = get_config().directories.anchored()
+    launch = secrets.token_hex(16)
+    execution_log = execution_log_path_in(directories.executions / launch)
+    launch_plan = directories.plans / f"{launch}.plan"
     from furu.execution.manager import Manager
 
     in_process = (
@@ -68,7 +70,8 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
         if local == {True}
         else nullcontext(None)
     )
-    # Asked once: planning again after losing the manager is the same launch.
+    # Asked and written once: planning again after losing the manager is the
+    # same launch.
     asked: frozenset[str] = frozenset()
     with _execution_log(execution_log), in_process as manager:
         while True:
@@ -79,7 +82,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
                 config=get_config().anchored(),
                 execution_log=execution_log,
             )
-            run.add(objs)
+            run.add(objs, launch_plan)
             if not run.nodes_by_id:
                 logger.info("run finished ok")
                 return
@@ -92,7 +95,10 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
                 stage_table(missing),
                 extra={"path": execution_log},
             )
-            run.asked = asked = asked or ask(missing)
+            if not asked:
+                asked = ask(missing)
+                plan.write(launch_plan, objs, missing, provenance)
+            run.asked = asked
             with (
                 connect(manager.url, max_size=None)
                 if manager is not None
