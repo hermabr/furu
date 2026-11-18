@@ -1778,7 +1778,7 @@ def test_mixed_type_list_batches_each_type_when_its_first_member_is_next() -> No
 def test_two_metadata_under_one_batch_key_stop_the_launch() -> None:
     first, alone, second = (MixedMetadataValue(key=key) for key in (0, 2, 1))
 
-    with pytest.raises(RuntimeError) as error:
+    with pytest.raises(ValueError) as error:
         furu.create([first, alone, second])
 
     assert str(error.value).startswith(

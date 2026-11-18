@@ -15,10 +15,6 @@ from furu.storage.stored import Stored
 from furu.utils import format_duration
 
 
-class MixedBatchError(RuntimeError):
-    """Two specs with one batch key have different Metadata."""
-
-
 @dataclass(eq=False)
 class DagNode:
     obj: Spec
@@ -80,7 +76,7 @@ class Dag:
                 for f in fields(Metadata)
                 if getattr(first._metadata, f.name) != getattr(obj._metadata, f.name)
             ]:
-                raise MixedBatchError(
+                raise ValueError(
                     f"{first._log_label} and {obj._log_label} have the same batch "
                     f"key and differ in Metadata {', '.join(differs)}. A batch is "
                     "one create() call that publishes one folder, so it has one "
