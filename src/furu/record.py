@@ -11,7 +11,6 @@ launch listed does for them what a launch does, in its own file.
     {"worker": {"host": ..., "cpus": ..., "gpus": [...], ...}}
     {"metadata": fingerprint, "is": {"environment": {...}, ...}}
     {"value": fingerprint, "is": value}
-    {"moved": {old class name: where the class lives now}}
     {"run": name, "storage": root, "version": folder, "launch": id,
      "metadata": fingerprint, "start": at, "end": at, "specs": [line, ...],
      "loaded": [id, ...]}
@@ -21,8 +20,7 @@ ids it points to, never the specs upstream. Those are followed to their own
 lines, in whichever file has them, and a fingerprint to a value line. So no
 file here may be deleted. ``storage`` and ``version`` make the run's path
 together with the ids. ``loaded`` lists the specs whose results the create()
-loaded and that none of the run's lines point to. A line names a class as it
-was hashed, and the table of moved classes says where one that has moved is.
+loaded and that none of the run's lines point to.
 
 The files are written as plan files are: compressed as they grow, on disk
 after every addition, and added to only by the process that created them.
@@ -63,8 +61,7 @@ def _described(running: Sequence[Spec], shared: list[Line]) -> Iterator[Line]:
 
     Once they are taken, ``shared`` holds what the record lines of ``running``
     point to by fingerprint: each distinct Metadata, what their dependency
-    methods returned, and each value over 1 KB that one of them holds. The
-    table of moved classes is in it too.
+    methods returned, and each value over 1 KB that one of them holds.
     """
     # Compared before any is fingerprinted: a launch has few distinct ones,
     # however many specs it runs.
@@ -86,8 +83,6 @@ def _described(running: Sequence[Spec], shared: list[Line]) -> Iterator[Line]:
             for fingerprint in map(plan.pointer, line["fields"].values()):
                 if fingerprint in values:
                     shared.append(values.pop(fingerprint))
-        elif "moved" in line:
-            shared.append(line)
         yield line
 
 
