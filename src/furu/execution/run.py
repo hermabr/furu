@@ -19,7 +19,7 @@ from typing import ClassVar, NoReturn, assert_never
 from websockets.sync.client import ClientConnection
 
 from furu import plan
-from furu._batched import MixedBatchError, batch_of
+from furu._batched import batch_of
 from furu.config import get_config
 from furu.core import Spec, working_folder
 from furu.dag import why_stuck
@@ -224,10 +224,6 @@ class Run:
                     )
                 try:
                     replies = self._blocked(ids, blocked)
-                except MixedBatchError as exc:
-                    # What its create() asked for cannot run: that fails the
-                    # job that asked, and the rest of the run goes on.
-                    replies = self._failed(ids, f"{type(exc).__name__}: {exc}", log)
                 except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
                     self.fail(f"{type(exc).__name__}: {exc}")
             case _ as unreachable:
