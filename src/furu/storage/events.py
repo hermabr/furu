@@ -46,7 +46,7 @@ def _append(run_dir: Path, text: str) -> None:
 
 
 def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _line(event: str, at: str, **fields: object) -> str:

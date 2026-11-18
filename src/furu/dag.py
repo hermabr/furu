@@ -69,8 +69,8 @@ class Dag:
                 continue
             if held == key or held in self.waiting_for([key]):
                 raise RuntimeError(
-                    f"dependency cycle: {spec_label(*key.split(':'))} and "
-                    f"{spec_label(*held.split(':'))} wait for each other"
+                    f"dependency cycle: {spec_label(*key.split(':'))} asks for "
+                    f"{spec_label(*held.split(':'))}, which already waits for it"
                 )
             self._wait(node, held)
         self._settle(node)

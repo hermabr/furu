@@ -1,5 +1,6 @@
 import logging
 import re
+import sys
 import types
 from contextlib import contextmanager
 from dataclasses import (
@@ -10,7 +11,6 @@ from dataclasses import (
     replace,
 )
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 from unittest.mock import patch
@@ -155,11 +155,6 @@ class ScratchWritingValue(Spec[str]):
         if not payload_path.exists():
             payload_path.write_text(self.name, encoding="utf-8")
         return payload_path.read_text(encoding="utf-8")
-
-
-class Fruit(Enum):  # TODO: test enums at some point
-    apple = "apple"
-    banana = "banana"
 
 
 class A[T](Spec):
@@ -423,6 +418,18 @@ class MixedMetadataValue(furu.Spec[int]):
         objs: list["MixedMetadataValue"], directory: furu.SpecDirectory
     ) -> list[int]:
         return [obj.key for obj in objs]
+
+
+# The batch key of each KeyedValue, by n.
+BATCH_KEYS: dict[int, object] = {}
+
+
+class KeyedValue(furu.Spec[int]):
+    n: int
+
+    @furu.batched(lambda spec, worker: (BATCH_KEYS[spec.n], 1024))
+    def create(objs: list["KeyedValue"], directory: furu.SpecDirectory) -> list[int]:
+        return [obj.n for obj in objs]
 
 
 class LoggedSingleValue(Spec[str]):
@@ -1762,6 +1769,21 @@ def test_two_metadata_under_one_batch_key_stop_the_launch() -> None:
         "differ in Metadata reuse ('same_environment' and 'never')."
     )
     assert not first.done
+
+
+def test_a_batch_key_is_written_as_a_field_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = {1: ("gpt2", Path("/x")), 2: ("gpt2", Path("/x")), 3: object()}
+    monkeypatch.setattr(sys.modules[__name__], "BATCH_KEYS", keys)
+    first, second = KeyedValue(n=1), KeyedValue(n=2)
+
+    assert furu.create([first, second]) == [1, 2]
+    assert run_of(first) == run_of(second)
+
+    # A key without its own repr was one batch per spec; now it is refused.
+    with pytest.raises(TypeError, match="Cannot serialize value <object object"):
+        furu.create(KeyedValue(n=3))
 
 
 def test_a_batch_has_one_log() -> None:
