@@ -451,7 +451,7 @@ def test_a_spec_under_two_live_versions_is_read_from_the_run_published_first(
 DEPENDENCIES = """\
 import furu
 
-from PKG.child import Child
+from PKG.child import Child, FixedChild
 
 
 def parent_helper():
@@ -472,7 +472,14 @@ class FixedParent(furu.Spec[int]):
     n: int
 
     def create(self) -> int:
-        return Child(n=self.n).create() * 10
+        return FixedChild(n=self.n).create() * 10
+
+
+class FixedOnTraced(furu.Spec[int]):
+    n: int
+
+    def create(self) -> int:
+        return Child(n=self.n).create()
 
 
 class Loader(furu.Spec[int]):
@@ -502,6 +509,13 @@ class Child(furu.Spec[int]):
 
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        return child_helper(self.n)
+
+
+class FixedChild(furu.Spec[int]):
+    n: int
 
     def create(self) -> int:
         return child_helper(self.n)
@@ -547,8 +561,7 @@ def test_a_traced_dependency_change_reruns_only_traced_consumers(
     traced, fixed = dependencies.TracedParent(n=1), dependencies.FixedParent(n=1)
     assert (traced.create(), fixed.create()) == (102, 20)
     traced_before = _version(traced)
-    # A class that does not trace its code has one version and no trace, even
-    # when it was built on a traced result.
+    # A class that does not trace its code has one version and no trace.
     assert sorted(path.name for path in fixed._class_dir.iterdir()) == [
         "attempts",
         "fixed",
@@ -569,6 +582,18 @@ def test_a_traced_dependency_change_reruns_only_traced_consumers(
     repo.edit("child.py", "return n + 2", "return n + 1")
 
     assert _version(traced) == traced_before
+
+
+def test_a_fixed_create_cannot_load_a_traced_result(dependencies: ModuleType) -> None:
+    spec = dependencies.FixedOnTraced(n=1)
+
+    # Its result would not follow Child's code, so it would outlive a fix.
+    with pytest.raises(RuntimeError, match="whose class traces its code") as stopped:
+        spec.create()
+
+    assert "Trace FixedOnTraced too" in str(stopped.value)
+    assert dependencies.Child(n=1).done  # building it is fine; loading it is not
+    assert not spec.done
 
 
 def test_a_fixed_spec_ignores_its_own_code(
@@ -731,7 +756,7 @@ def test_parent_code_edit_reruns_only_the_parent(
 DECLARED = """\
 import furu
 
-from PKG.child import Child
+from PKG.child import Child, FixedChild
 
 
 class TracedParent(furu.Spec[int]):
@@ -752,8 +777,8 @@ class FixedParent(furu.Spec[int]):
     n: int
 
     @furu.dependency
-    def child(self) -> Child:
-        return Child(n=self.n)
+    def child(self) -> FixedChild:
+        return FixedChild(n=self.n)
 
     def create(self) -> int:
         return self.child.create() * 10
