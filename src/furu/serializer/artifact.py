@@ -1,4 +1,5 @@
 import enum
+import numbers
 from collections.abc import Callable, Collection, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -259,8 +260,18 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     match obj:
         case None:
             return None
-        case int() | str() | float() | bool():
+        case enum.Enum():
+            raise TypeError(
+                f"Cannot serialize enum value {obj!r}: use a Literal field instead, "
+                'such as mode: Literal["fast", "slow"]'
+            )
+        case int() | str() | float() | bool() if tp in _PLAIN:
             return obj
+        case numbers.Number() | str():
+            raise TypeError(
+                f"Cannot serialize {obj!r} of type {tp.__name__!r}: "
+                "convert it with int(), float() or str() first"
+            )
         case Path():
             return {KINDMARKER: "path", VALUEMARKER: str(obj)}
         case datetime():
@@ -330,11 +341,6 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     for k in model_fields
                 },
             }
-        case enum.Enum():
-            raise TypeError(
-                f"Cannot serialize enum value {obj!r}: enums are not supported "
-                "in furu artifacts yet"
-            )
         case _:
             raise TypeError(
                 f"Cannot serialize value {obj!r} of type {type(obj).__name__!r} "
