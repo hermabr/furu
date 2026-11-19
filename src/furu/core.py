@@ -13,6 +13,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    Protocol,
     final,
 )
 
@@ -89,8 +90,22 @@ _RESERVED_FIELD_NAMES = frozenset(
 )
 
 
-class Spec[T](_FuruDataclassTransform, ABC):
+class Creates[T](Protocol):
+    """Any spec whose ``create()`` gives a ``T``, e.g. ``list[furu.Creates[Path]]``.
+
+    For annotations only: a spec's result type is what its ``create()`` is
+    annotated to return, so ``Spec`` itself takes no type parameter.
+    """
+
+    @property
+    def create(self) -> Callable[[], T]: ...
+
+
+class Spec(_FuruDataclassTransform, ABC):
     """One result, described by its fields; ``create()`` computes it once.
+
+    The result's type is the return annotation of ``create()``. A result with
+    several parts can be a dataclass nested in the spec, named ``Result``.
 
     A spec's id is its class, the names of the class's fields and
     ``@furu.dependency`` methods, and a fingerprint of its field values.
@@ -168,7 +183,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 cls._furu_create_hook = hook
                 del cls.create  # unshadow the inherited create verb
 
-    def create(self) -> T:
+    def create(self) -> Any:
         """Return this spec's result, building it first if it's missing.
 
         Declare the specs a create depends on as fields or ``@furu.dependency`` so
@@ -223,7 +238,8 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return f"{self._stored_name}:{self._class_part}:{self._artifact_hash}"
 
     @final
-    def load_existing(self) -> T:
+    def load_existing[T](self: Creates[T]) -> T:
+        assert isinstance(self, Spec)
         if (row := stored_row(self)) is not None:
             return load_rows([self], [row])[0]
         checked("caught furu.Missing")

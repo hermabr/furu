@@ -10,7 +10,7 @@ from furu import Spec, Worker
 type SlurmTaskKind = Literal["a_only", "b_only", "shared"]
 
 
-class SlurmWorkloadTask(Spec[dict[str, object]]):
+class SlurmWorkloadTask(Spec):
     task_id: str
     kind: SlurmTaskKind
     scenario_id: str

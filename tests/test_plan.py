@@ -25,7 +25,7 @@ class Vimeo:
     fps: int = 30
 
 
-class Video(Spec[int]):
+class Video(Spec):
     migrations = (Renamed("src", to="source"), Added("min_overlap", default=0.5))
     source: Vimeo
     min_overlap: float = 0.5
@@ -34,14 +34,14 @@ class Video(Spec[int]):
         return 1
 
 
-class Cifar(Spec[int]):
+class Cifar(Spec):
     split: str
 
     def create(self) -> int:
         return 1
 
 
-class Triage(Spec[int]):
+class Triage(Spec):
     lemma: str
     merges: tuple[Cifar, ...]
 
@@ -49,7 +49,7 @@ class Triage(Spec[int]):
         return len(self.merges)
 
 
-class Sharded(Spec[int]):
+class Sharded(Spec):
     split: str
     shards: int = field(init=False, default=8)
 
@@ -57,7 +57,7 @@ class Sharded(Spec[int]):
         return self.shards
 
 
-class Merged(Spec[int]):
+class Merged(Spec):
     triage: Triage
 
     @furu.dependency
@@ -68,7 +68,7 @@ class Merged(Spec[int]):
         return len(self.merges)
 
 
-class Train(Spec[int]):
+class Train(Spec):
     data: Cifar
     seed: int
 
@@ -76,7 +76,7 @@ class Train(Spec[int]):
         return self.data.create() + self.seed
 
 
-class LooTable(Spec[int]):
+class LooTable(Spec):
     data: Cifar
     seeds: int
 
@@ -88,7 +88,7 @@ class LooTable(Spec[int]):
         return sum(furu.load_existing(self.runs))
 
 
-class InfluenceReport(Spec[int]):
+class InfluenceReport(Spec):
     table: LooTable
     top_k: int
 

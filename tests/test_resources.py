@@ -3,7 +3,7 @@ from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.backends.protocol import can_run
 
 
-class Generate(Spec[str]):
+class Generate(Spec):
     def runs_on(self, worker: Worker) -> bool:
         return worker.gpus in (1, 8) and "hopper" in worker.labels
 
@@ -11,7 +11,7 @@ class Generate(Spec[str]):
         return "x"
 
 
-class Tokenize(Spec[str]):
+class Tokenize(Spec):
     def create(self) -> str:
         return "x"
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator, Mapping
 from functools import cache
 from itertools import chain, repeat
@@ -61,22 +62,38 @@ def item_declared_types(declared_type: object) -> Iterator[object]:
 
 @cache
 def declared_result_type(spec_type: type[Spec]) -> object:
-    from furu.core import Spec
+    """The result type ``create()`` is annotated to return; for a batched one, an item's.
 
-    declared: object = Any
-    for cls in spec_type.__mro__:
-        for base in getattr(cls, "__orig_bases__", ()):
-            if get_origin(base) is Spec:
-                declared = get_args(base)[0]
-                break
-        else:
-            continue
-        break
+    Read when the first result is stored, after the module that defines the
+    class has run to its end, so the annotation may name a class defined
+    below it, or a ``Result`` class nested in the spec.
+    """
+    from furu._batched import _BatchedHook
 
-    if isinstance(declared, TypeVar) or any(
-        isinstance(arg, TypeVar) for arg in get_args(declared)
-    ):
+    owner = next(
+        (c for c in spec_type.__mro__ if "_furu_create_hook" in c.__dict__), None
+    )
+    if owner is None:
+        return Any
+    hook = owner.__dict__["_furu_create_hook"]
+    func = hook.func if isinstance(hook, _BatchedHook) else hook
+    # The class's own names: a nested Result, and the T of class Base[T].
+    names = {param.__name__: param for param in owner.__type_params__}
+    declared = get_type_hints(
+        func,
+        globalns=sys.modules[owner.__module__].__dict__,
+        localns={**names, **vars(owner)},
+        include_extras=True,
+    ).get("return", Any)
+    if isinstance(hook, _BatchedHook):
+        declared = child_declared_type(declared, 0)
+    if _has_type_var(declared):
         raise TypeError(
-            f"{spec_type.__name__} must declare its concrete result type directly as Spec[...]"
+            f"{spec_type.__name__}.create() must be annotated with a concrete "
+            f"result type, not {declared}"
         )
     return declared
+
+
+def _has_type_var(declared: object) -> bool:
+    return isinstance(declared, TypeVar) or any(map(_has_type_var, get_args(declared)))

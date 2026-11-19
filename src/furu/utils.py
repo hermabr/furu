@@ -46,8 +46,6 @@ def fully_qualified_name(value: object) -> str:
 
     if "<locals>" in qualname:
         raise ValueError("Cannot serialize local classes")
-    elif "." in qualname:
-        raise ValueError("Cannot serialize nested classes")
     elif isinstance(value, type) and issubclass(value, Enum):
         raise ValueError(
             "TODO: support this in the future"
@@ -67,11 +65,22 @@ def fully_qualified_name(value: object) -> str:
 
 
 def resolve_fully_qualified_name(name: str) -> Any:
-    module_name, _, attr_name = name.rpartition(".")
-    if not module_name or not attr_name:
-        raise ValueError(f"Expected fully qualified name, got {name!r}")
-
-    return getattr(importlib.import_module(module_name), attr_name)
+    """What ``fully_qualified_name`` named: ``module.Class``, or ``module.Class.Result``."""
+    parts = name.split(".")
+    for split in range(len(parts) - 1, 0, -1):
+        module_name = ".".join(parts[:split])
+        try:
+            value = importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            # Not a module, so the next part is a class in a shorter one; a
+            # module that fails to import a module of its own still raises.
+            if exc.name is None or (module_name + ".").startswith(exc.name + "."):
+                continue
+            raise
+        for attr_name in parts[split:]:
+            value = getattr(value, attr_name)
+        return value
+    raise ValueError(f"Expected fully qualified name, got {name!r}")
 
 
 def spec_label(fully_qualified_name: str, class_part: str, artifact_hash: str) -> str:

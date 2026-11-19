@@ -8,14 +8,14 @@ from furu.resources import Worker
 from furu.utils import _hash_dict_deterministically
 
 
-class SnapshotValue(Spec[str]):
+class SnapshotValue(Spec):
     name: str
 
     def create(self) -> str:
         return self.name
 
 
-class Pair(Spec[str]):
+class Pair(Spec):
     label: str
     values: tuple[SnapshotValue, ...]
 
@@ -23,7 +23,7 @@ class Pair(Spec[str]):
         return self.label
 
 
-class ReturnsLeaves(Spec[str]):
+class ReturnsLeaves(Spec):
     label: str
     returned: ClassVar[tuple[str, ...]] = ()
 
@@ -36,7 +36,7 @@ class ReturnsLeaves(Spec[str]):
 
 
 def _train_id() -> str:
-    class Train(Spec[int]):
+    class Train(Spec):
         seed: int
 
         def create(self) -> int:
@@ -47,7 +47,7 @@ def _train_id() -> str:
 
 
 def _batched_train_id() -> str:
-    class Train(Spec[int]):
+    class Train(Spec):
         seed: int
 
         def batch_key(self, worker: Worker) -> tuple[None, int]:

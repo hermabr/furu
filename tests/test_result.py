@@ -95,7 +95,7 @@ _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
 _CHILD_DECLARED_TYPE_GLOBALS = {"__builtins__": {"__import__": __import__}}
 
 
-class JsonResult(Spec[dict[str, object]]):
+class JsonResult(Spec):
     create_calls: ClassVar[list[int]] = []
 
     def create(self) -> dict[str, object]:
@@ -121,7 +121,7 @@ def test_json_only_result_is_one_manifest_and_is_not_recomputed() -> None:
     assert [path.name for path in result_dir.iterdir()] == ["manifest.json"]
 
 
-class PathResult(Spec[dict[str, Path]]):
+class PathResult(Spec):
     def create(self) -> dict[str, Path]:
         return {
             "relative": Path("outputs/model.bin"),
@@ -136,7 +136,7 @@ def test_path_values_round_trip() -> None:
     }
 
 
-class DataPathResult(Spec[Path]):
+class DataPathResult(Spec):
     def create(self) -> Path:
         path = self.directory.data / "model.bin"
         path.write_text("weights", encoding="utf-8")
@@ -179,7 +179,7 @@ def test_set_of_values_without_value_based_repr_is_rejected(tmp_path: Path) -> N
         )
 
 
-class NonFiniteFloatResult(Spec[dict[str, float]]):
+class NonFiniteFloatResult(Spec):
     def create(self) -> dict[str, float]:
         return {
             "nan": float("nan"),
@@ -480,17 +480,15 @@ class _DataDirPathCodec(Codec[_DataDirPathValue]):
         return _DataDirPathValue(cast(Path, metadata["path"]))
 
 
-class RegistryAutoRegisteredValueResult(Spec[_AutoRegisteredValue]):
+class RegistryAutoRegisteredValueResult(Spec):
     result_codecs = (_CoreRegistryAutoValueCodec,)
 
     def create(self) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(10)
 
 
-class AnnotatedAutoRegisteredValueResult(
-    Spec[Annotated[_AutoRegisteredValue, _CoreRegistryAutoValueCodec]]
-):
-    def create(self) -> _AutoRegisteredValue:
+class AnnotatedAutoRegisteredValueResult(Spec):
+    def create(self) -> Annotated[_AutoRegisteredValue, _CoreRegistryAutoValueCodec]:
         return _AutoRegisteredValue(11)
 
 
@@ -522,7 +520,7 @@ class _ScratchBackedCodec(Codec[_ScratchBackedValue]):
         return _ScratchBackedValue(artifact_directory / "data.txt")
 
 
-class ScratchBackedResult(Spec[_ScratchBackedValue]):
+class ScratchBackedResult(Spec):
     name: str
     result_codecs = (_ScratchBackedCodec,)
 
@@ -784,12 +782,12 @@ class AnnotatedArrayOutput:
     weights: Annotated[Any, NumpyNpyCodec]
 
 
-class AnnotatedArrayResult(Spec[AnnotatedArrayOutput]):
+class AnnotatedArrayResult(Spec):
     def create(self) -> AnnotatedArrayOutput:
         return AnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
 
-class GenericAnnotatedArrayBase[T](Spec[T]):
+class GenericAnnotatedArrayBase[T](Spec):
     def create(self) -> T:
         return np.arange(3, dtype=np.int64)
 
@@ -806,7 +804,7 @@ class StrictAnnotatedArrayOutput(BaseModel):
     weights: Annotated[np.ndarray[Any, Any], NumpyNpyCodec]
 
 
-class StrictAnnotatedArrayResult(Spec[StrictAnnotatedArrayOutput]):
+class StrictAnnotatedArrayResult(Spec):
     def create(self) -> StrictAnnotatedArrayOutput:
         return StrictAnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
@@ -823,7 +821,7 @@ def test_annotated_codec_selects_artifact_storage() -> None:
 def test_generic_furu_base_with_annotated_result_codec_is_rejected() -> None:
     obj = GenericAnnotatedArrayResult()
 
-    with pytest.raises(TypeError, match="concrete result type directly as Spec"):
+    with pytest.raises(TypeError, match="annotated with a concrete result type"):
         obj.create()
 
 
@@ -840,7 +838,7 @@ def test_strict_pydantic_annotated_codec_selects_artifact_storage() -> None:
     assert np.array_equal(loaded_again.weights, np.arange(3, dtype=np.int64))
 
 
-class DataDirPathResult(Spec[dict[str, _DataDirPathValue]]):
+class DataDirPathResult(Spec):
     result_codecs = (_DataDirPathCodec,)
 
     def create(self) -> dict[str, _DataDirPathValue]:
@@ -938,7 +936,7 @@ class NestedInner:
     value: int
 
 
-class NestedDataclassResult(Spec[NestedOuter]):
+class NestedDataclassResult(Spec):
     def create(self) -> NestedOuter:
         return NestedOuter(inner=NestedInner(value=42), label="root")
 
@@ -951,12 +949,66 @@ def test_nested_dataclass_round_trip() -> None:
     assert loaded == NestedOuter(inner=NestedInner(value=42), label="root")
 
 
+class TrainWithResult(Spec):
+    lr: float
+
+    @dataclass(frozen=True)
+    class Result:
+        loss: float
+        weights: Path
+
+    def create(self) -> Result:
+        weights = self.directory.data / "weights.txt"
+        weights.write_text("w", encoding="utf-8")
+        return self.Result(loss=self.lr * 2, weights=weights)
+
+
+class SweepWithResult(Spec):
+    seed: int
+
+    @dataclass(frozen=True)
+    class Result:
+        seed: int
+
+    @furu.batched(lambda spec, worker: (None, 10))
+    def create(
+        specs: list[SweepWithResult], directory: furu.SpecDirectory
+    ) -> list[Result]:
+        return [SweepWithResult.Result(seed=spec.seed) for spec in specs]
+
+
+class UnresolvableResult(Spec):
+    def create(self) -> NotDefinedAnywhere:  # noqa: F821  # ty: ignore[unresolved-reference]
+        raise AssertionError("create() ran")
+
+
+def test_a_result_type_that_names_nothing_fails_before_create_runs() -> None:
+    with pytest.raises(NameError, match="NotDefinedAnywhere"):
+        UnresolvableResult().create()
+
+
+def test_a_result_class_nested_in_its_spec_is_stored_and_loaded() -> None:
+    train = TrainWithResult(lr=0.5)
+    train.create()
+    loaded = train.load_existing()
+
+    assert type(loaded) is TrainWithResult.Result
+    assert loaded.loss == 1.0
+    assert loaded.weights.read_text(encoding="utf-8") == "w"
+
+    sweep = [SweepWithResult(seed=seed) for seed in range(3)]
+    furu.build(sweep)
+    assert furu.load_existing(sweep) == [
+        SweepWithResult.Result(seed=seed) for seed in range(3)
+    ]
+
+
 class NestedPydanticOuter(BaseModel):
     metrics: dict[str, float]
     items: list[dict[str, int]]
 
 
-class NestedPydanticResult(Spec[NestedPydanticOuter]):
+class NestedPydanticResult(Spec):
     def create(self) -> NestedPydanticOuter:
         return NestedPydanticOuter(
             metrics={"loss": 0.12, "accuracy": 0.94},
@@ -972,7 +1024,7 @@ def test_pydantic_with_nested_structures_round_trips() -> None:
     assert loaded.items == [{"v": 1}, {"v": 2}, {"v": 3}]
 
 
-class NumpyResult(Spec[dict[str, object]]):
+class NumpyResult(Spec):
     def create(self) -> dict[str, object]:
         return {"weights": np.arange(10, dtype=np.float32)}
 
@@ -986,7 +1038,7 @@ def test_numpy_array_round_trips_as_a_plain_array() -> None:
         assert _same(loaded, {"weights": np.arange(10, dtype=np.float32)})
 
 
-class PolarsResult(Spec[dict[str, object]]):
+class PolarsResult(Spec):
     def create(self) -> dict[str, object]:
         return {"frame": pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]})}
 
@@ -1004,7 +1056,7 @@ def test_polars_dataframe_round_trips() -> None:
     assert frame.equals(pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}))
 
 
-class NestedNumpyResult(Spec[dict[str, list[dict[str, object]]]]):
+class NestedNumpyResult(Spec):
     def create(self) -> dict[str, list[dict[str, object]]]:
         return {
             "layers": [{"weights": np.arange(i, dtype=np.float32)} for i in range(10)]
@@ -1308,7 +1360,7 @@ def test_codec_with_save_many_and_load_many_gets_one_call_each(tmp_path: Path) -
     assert _MergingCodec.loaded_lines == [[3, 1]]
 
 
-class _Sweep(Spec[_CountingValue]):
+class _Sweep(Spec):
     seed: int
     key: int = 0
     result_codecs = (_MergingCodec,)
@@ -1320,7 +1372,7 @@ class _Sweep(Spec[_CountingValue]):
         return [_CountingValue(spec.seed) for spec in specs]
 
 
-class _Alone(Spec[_CountingValue]):
+class _Alone(Spec):
     seed: int
     result_codecs = (_MergingCodec,)
 

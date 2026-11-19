@@ -17,14 +17,14 @@ from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
-class Leaf(Spec[str]):
+class Leaf(Spec):
     name: str
 
     def create(self) -> str:
         return f"leaf:{self.name}"
 
 
-class Mid(Spec[str]):
+class Mid(Spec):
     label: str
     child: Leaf
 
@@ -32,7 +32,7 @@ class Mid(Spec[str]):
         return f"mid:{self.label}:{self.child.create()}"
 
 
-class Top(Spec[str]):
+class Top(Spec):
     name: str
     left: Mid
     right: Mid
@@ -47,14 +47,14 @@ class LeafBundle:
     b: Leaf
 
 
-class NestedParent(Spec[str]):
+class NestedParent(Spec):
     bundle: LeafBundle
 
     def create(self) -> str:
         return self.bundle.a.create()
 
 
-class ComputedParent(Spec[str]):
+class ComputedParent(Spec):
     name: str
 
     @furu.dependency()
@@ -182,7 +182,7 @@ def _calls(calls_dir: Path, cls: type) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
-class TrackingLeaf(Spec[int]):
+class TrackingLeaf(Spec):
     n: int
     calls_dir: str
 
@@ -191,7 +191,7 @@ class TrackingLeaf(Spec[int]):
         return self.n * 2
 
 
-class TrackingMid(Spec[int]):
+class TrackingMid(Spec):
     label: str
     child: TrackingLeaf
     calls_dir: str
@@ -201,7 +201,7 @@ class TrackingMid(Spec[int]):
         return self.child.create() + 1
 
 
-class LazyChildLoader(Spec[int]):
+class LazyChildLoader(Spec):
     base: int
     calls_dir: str
 
@@ -210,14 +210,14 @@ class LazyChildLoader(Spec[int]):
         return self.base + TrackingLeaf(n=self.base, calls_dir=self.calls_dir).create()
 
 
-class AlwaysFails(Spec[int]):
+class AlwaysFails(Spec):
     name: str
 
     def create(self) -> int:
         raise RuntimeError(f"intentional failure: {self.name}")
 
 
-class DependsOnFailing(Spec[int]):
+class DependsOnFailing(Spec):
     label: str
     child: AlwaysFails
 

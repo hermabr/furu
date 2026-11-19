@@ -157,7 +157,7 @@ class MainCodec(Codec[bytes]):
         return (artifact_directory / "data.bin").read_bytes()
 
 
-class Adder(Spec[Payload]):
+class Adder(Spec):
     a: int
     b: int
 

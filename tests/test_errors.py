@@ -3,7 +3,7 @@ import pytest
 from furu import Spec
 
 
-class SubtractPositive(Spec[int]):
+class SubtractPositive(Spec):
     a: int
     b: int
 

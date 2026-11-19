@@ -23,7 +23,7 @@ from furu.code_trace import (
     why_not_resumable,
 )
 from furu.config import get_config
-from furu.core import Missing, Spec, working_folder
+from furu.core import Creates, Missing, Spec, working_folder
 from furu.dag import Dag, why_stuck
 from furu.dependencies import (
     _DependencyNotReady,
@@ -138,9 +138,9 @@ def _recording(
             yield run, loaded
 
 
-def _call_create[T](
-    group: list[Spec[T]], attempt: Path, resumed: LogState
-) -> tuple[list[T], Recording | None, list[Spec]]:
+def _call_create(
+    group: list[Spec], attempt: Path, resumed: LogState
+) -> tuple[list[Any], Recording | None, list[Spec]]:
     """Run the group's one create() call: on the whole batch, or on its one spec.
 
     Returns its results, its trace recording when its class traces its code,
@@ -168,11 +168,12 @@ def _call_create[T](
     return results, run, loaded
 
 
-def _store[T](
-    group: list[Spec[T]],
-    results: list[T],
+def _store(
+    group: list[Spec],
+    results: list[Any],
     attempt: Path,
     *,
+    declared_type: object,
     run: Recording | None,
     has_lock: HasLock,
 ) -> Trace | None:
@@ -186,7 +187,7 @@ def _store[T](
     _save_result_bundle(
         results,
         result_dir,
-        declared_type=declared_result_type(type(lead)),
+        declared_type=declared_type,
         result_codecs=lead.result_codecs,
         data_dir=data_dir_in(attempt),
         label=type(lead).__name__,
@@ -235,7 +236,7 @@ def _publish(group: Sequence[Spec], trace: Trace | None, *, has_lock: HasLock) -
 
 @overload
 def _load_or_create[T](
-    tree: Spec[T], *, on: Sequence[WorkerBackend] | None = None, load: bool = True
+    tree: Creates[T], *, on: Sequence[WorkerBackend] | None = None, load: bool = True
 ) -> T: ...
 @overload
 def _load_or_create(
@@ -264,7 +265,7 @@ def _load_or_create(
     return map_specs(lambda obj: results[obj.object_id], tree)
 
 
-def _ensure_group_result[T](objs: Sequence[Spec[T]]) -> None:
+def _ensure_group_result(objs: Sequence[Spec]) -> None:
     """Create and publish one create() call's ``objs`` as one run, unless all are stored.
 
     The run and its working folder are named for all of ``objs``, so one that
@@ -291,33 +292,38 @@ def _ensure_group_result[T](objs: Sequence[Spec[T]]) -> None:
             _create_and_store_group(list(objs), has_lock=has_lock)
 
 
-# Python cannot map Spec[T] -> T through an arbitrary structure, so the shapes
+# Python cannot map Creates[T] -> T through an arbitrary structure, so the shapes
 # it can express get exact types and every other pytree is Any. Dataclasses and
 # pydantic models come back as dicts of their fields.
 @overload
-def create[T](tree: Spec[T], /, *, on: Sequence[WorkerBackend] | None = None) -> T: ...
+def create[T](
+    tree: Creates[T], /, *, on: Sequence[WorkerBackend] | None = None
+) -> T: ...
 @overload
 def create[T0, T1](
-    tree: tuple[Spec[T0], Spec[T1]], /, *, on: Sequence[WorkerBackend] | None = None
+    tree: tuple[Creates[T0], Creates[T1]],
+    /,
+    *,
+    on: Sequence[WorkerBackend] | None = None,
 ) -> tuple[T0, T1]: ...
 @overload
 def create[T0, T1, T2](
-    tree: tuple[Spec[T0], Spec[T1], Spec[T2]],
+    tree: tuple[Creates[T0], Creates[T1], Creates[T2]],
     /,
     *,
     on: Sequence[WorkerBackend] | None = None,
 ) -> tuple[T0, T1, T2]: ...
 @overload
 def create[T](
-    tree: tuple[Spec[T], ...], /, *, on: Sequence[WorkerBackend] | None = None
+    tree: tuple[Creates[T], ...], /, *, on: Sequence[WorkerBackend] | None = None
 ) -> tuple[T, ...]: ...
 @overload
 def create[T](
-    tree: Sequence[Spec[T]], /, *, on: Sequence[WorkerBackend] | None = None
+    tree: Sequence[Creates[T]], /, *, on: Sequence[WorkerBackend] | None = None
 ) -> list[T]: ...
 @overload
 def create[K, T](
-    tree: Mapping[K, Spec[T]], /, *, on: Sequence[WorkerBackend] | None = None
+    tree: Mapping[K, Creates[T]], /, *, on: Sequence[WorkerBackend] | None = None
 ) -> dict[K, T]: ...
 @overload
 def create(
@@ -338,19 +344,21 @@ def build(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> None
 
 
 @overload
-def load_existing[T](tree: Spec[T], /) -> T: ...
+def load_existing[T](tree: Creates[T], /) -> T: ...
 @overload
-def load_existing[T0, T1](tree: tuple[Spec[T0], Spec[T1]], /) -> tuple[T0, T1]: ...
+def load_existing[T0, T1](
+    tree: tuple[Creates[T0], Creates[T1]], /
+) -> tuple[T0, T1]: ...
 @overload
 def load_existing[T0, T1, T2](
-    tree: tuple[Spec[T0], Spec[T1], Spec[T2]], /
+    tree: tuple[Creates[T0], Creates[T1], Creates[T2]], /
 ) -> tuple[T0, T1, T2]: ...
 @overload
-def load_existing[T](tree: tuple[Spec[T], ...], /) -> tuple[T, ...]: ...
+def load_existing[T](tree: tuple[Creates[T], ...], /) -> tuple[T, ...]: ...
 @overload
-def load_existing[T](tree: Sequence[Spec[T]], /) -> list[T]: ...
+def load_existing[T](tree: Sequence[Creates[T]], /) -> list[T]: ...
 @overload
-def load_existing[K, T](tree: Mapping[K, Spec[T]], /) -> dict[K, T]: ...
+def load_existing[K, T](tree: Mapping[K, Creates[T]], /) -> dict[K, T]: ...
 @overload
 def load_existing(tree: DataclassInstance | BaseModel, /) -> dict[str, Any]: ...
 @overload
@@ -400,7 +408,7 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
+def _load_or_block(objs: list[Spec], *, load: bool) -> list[Any]:
     """Load ``objs`` inside a create hook, or block that create if any are missing.
 
     Blocking aborts the hook; the caller builds the missing specs and reruns it
@@ -431,7 +439,7 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     return []
 
 
-def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
+def _load_or_create_local(objs: list[Spec], *, load: bool) -> list[Any]:
     """Build what ``objs`` need in this process, then return their results.
 
     Runs the same graph as a worker run: a create that blocks on missing specs
@@ -533,7 +541,7 @@ def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> Non
         completed.update(group)
 
 
-def _create_in_process[T](group: list[Spec[T]]) -> None:
+def _create_in_process(group: list[Spec]) -> None:
     """Create one group in this process, announced on the terminal."""
     lead = group[0]
     label = _group_label(lead._log_label, len(group))
@@ -546,7 +554,7 @@ def _create_in_process[T](group: list[Spec[T]]) -> None:
     lead.logger.info("finished %s ok · %s", label, duration)
 
 
-def _create_and_store_group[T](group: list[Spec[T]], *, has_lock: HasLock) -> None:
+def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
     """Run the group's create() in its one working folder, then publish it.
 
     events.jsonl gets this attempt's start and end, and what create() writes
@@ -555,6 +563,8 @@ def _create_and_store_group[T](group: list[Spec[T]], *, has_lock: HasLock) -> No
     has a line there.
     """
     lead = group[0]
+    # Before create() runs, so an annotation that names nothing fails at once.
+    declared_type = declared_result_type(type(lead))
     attempt = working_folder(group)
     attempt.mkdir(exist_ok=True)
     with _log_scope(log_path_in(attempt)):
@@ -567,7 +577,14 @@ def _create_and_store_group[T](group: list[Spec[T]], *, has_lock: HasLock) -> No
         )
         try:
             results, run, loaded = _call_create(group, attempt, resumed)
-            trace = _store(group, results, attempt, run=run, has_lock=has_lock)
+            trace = _store(
+                group,
+                results,
+                attempt,
+                declared_type=declared_type,
+                run=run,
+                has_lock=has_lock,
+            )
         except _DependencyNotReady as exc:
             # Without the lock the folder is a successor's, or published.
             if has_lock():

@@ -17,14 +17,14 @@ from furu.config import get_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
-class Cifar(Spec[int]):
+class Cifar(Spec):
     split: str
 
     def create(self) -> int:
         return 1
 
 
-class Train(Spec[int]):
+class Train(Spec):
     data: Cifar
     seed: int
 
@@ -39,7 +39,7 @@ class Train(Spec[int]):
         return [spec.seed for spec in specs]
 
 
-class LooTable(Spec[int]):
+class LooTable(Spec):
     data: Cifar
     notes: tuple[str, ...]
 
@@ -51,7 +51,7 @@ class LooTable(Spec[int]):
         return sum(furu.load_existing(self.runs))
 
 
-class Recount(Spec[int]):
+class Recount(Spec):
     data: Cifar
 
     @furu.dependency
@@ -62,7 +62,7 @@ class Recount(Spec[int]):
         return furu.load_existing(Train(data=self.data, seed=7))
 
 
-class Hinted(Spec[int]):
+class Hinted(Spec):
     seed: int
 
     @furu.dependency
@@ -73,7 +73,7 @@ class Hinted(Spec[int]):
         return self.seed
 
 
-class Search(Spec[int]):
+class Search(Spec):
     arm: str
 
     def create(self) -> int:
@@ -251,7 +251,7 @@ def test_a_process_creates_its_own_file_and_a_killed_writer_costs_one_line(
 _created: list[int] = []
 
 
-class _Node(Spec[int]):
+class _Node(Spec):
     value: int
 
     def create(self) -> int:
