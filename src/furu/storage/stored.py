@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from furu._batched import is_batched
 from furu.code_trace import versions
@@ -195,7 +195,7 @@ def why_rerun(class_dir: Path, run: str) -> str | None:
     return max(outdated)[1] if outdated else None
 
 
-def load_rows(objs: Sequence[Spec], rows: Sequence[Row]) -> list[Any]:
+def load_rows(objs: Sequence[Spec], rows: Sequence[Row]) -> list[object]:
     """Each spec's result from its row, reading every run's files once.
 
     Rows of one run are read together, so a codec is handed the rows that

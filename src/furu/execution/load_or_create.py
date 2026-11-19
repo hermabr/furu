@@ -140,7 +140,7 @@ def _recording(
 
 def _call_create(
     group: list[Spec], attempt: Path, resumed: LogState
-) -> tuple[list[Any], Recording | None, list[Spec]]:
+) -> tuple[list[object], Recording | None, list[Spec]]:
     """Run the group's one create() call: on the whole batch, or on its one spec.
 
     Returns its results, its trace recording when its class traces its code,
@@ -170,7 +170,7 @@ def _call_create(
 
 def _store(
     group: list[Spec],
-    results: list[Any],
+    results: list[object],
     attempt: Path,
     *,
     declared_type: object,
@@ -408,7 +408,7 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_block(objs: list[Spec], *, load: bool) -> list[Any]:
+def _load_or_block(objs: list[Spec], *, load: bool) -> list[object]:
     """Load ``objs`` inside a create hook, or block that create if any are missing.
 
     Blocking aborts the hook; the caller builds the missing specs and reruns it
@@ -439,7 +439,7 @@ def _load_or_block(objs: list[Spec], *, load: bool) -> list[Any]:
     return []
 
 
-def _load_or_create_local(objs: list[Spec], *, load: bool) -> list[Any]:
+def _load_or_create_local(objs: list[Spec], *, load: bool) -> list[object]:
     """Build what ``objs`` need in this process, then return their results.
 
     Runs the same graph as a worker run: a create that blocks on missing specs

@@ -14,6 +14,7 @@ from typing import (
     ClassVar,
     Literal,
     Protocol,
+    cast,
     final,
 )
 
@@ -246,7 +247,7 @@ class Spec(_FuruDataclassTransform, ABC):
     def load_existing[T](self: Creates[T]) -> T:
         assert isinstance(self, Spec)
         if (row := stored_row(self)) is not None:
-            return load_rows([self], [row])[0]
+            return cast(T, load_rows([self], [row])[0])
         checked("caught furu.Missing")
         # A spec without the decorator is not looked for in batch folders.
         row = None if is_batched(type(self)) else Stored().listed(self, batches=True)
