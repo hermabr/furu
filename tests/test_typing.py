@@ -85,6 +85,8 @@ if TYPE_CHECKING:
     assert_type(furu.create([train, train]), list[TypingTrain.Result])
     any_int: furu.Creates[int] = child
     assert_type(typing_create_all([child, any_int]), list[int])
+    assert_type(any_int.load_existing(), int)
+    assert_type(any_int.done, bool)
     # Shapes Python's type system cannot map Creates[T] -> T through are Any.
     assert_type(furu.create([[child]]), Any)
     assert_type(furu.create({"a": [child]}), Any)

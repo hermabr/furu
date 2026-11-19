@@ -100,6 +100,11 @@ class Creates[T](Protocol):
     @property
     def create(self) -> Callable[[], T]: ...
 
+    def load_existing(self) -> T: ...
+
+    @property
+    def done(self) -> bool: ...
+
 
 class Spec(_FuruDataclassTransform, ABC):
     """One result, described by its fields; ``create()`` computes it once.
