@@ -18,6 +18,7 @@ import furu
 from furu import Spec, plan
 from furu.config import get_config
 from furu.core import working_folder
+from furu.dependencies import creating
 from furu.execution import load_or_create
 from furu.locking import is_active_lock
 from furu.storage import stored
@@ -84,7 +85,7 @@ def _launch_plan() -> Path:
 
 def _compute_again(specs: Sequence[Spec], monkeypatch: pytest.MonkeyPatch) -> None:
     """Run ``specs`` as one batch, as a worker does that does not see them stored."""
-    with monkeypatch.context() as patched, plan.listed_in(_launch_plan()):
+    with monkeypatch.context() as patched, creating(plan=_launch_plan()):
         patched.setattr(stored.Stored, "row", lambda self, obj: None)
         load_or_create._ensure_group_result(specs)
 
@@ -254,7 +255,7 @@ def test_a_batch_with_a_stored_spec_still_runs_whole_in_the_folder_named_for_it(
     specs = [FailsAsABatch(n=1), FailsAsABatch(n=2)]
     furu.create(specs[0])
 
-    with pytest.raises(ValueError, match="boom"), plan.listed_in(_launch_plan()):
+    with pytest.raises(ValueError, match="boom"), creating(plan=_launch_plan()):
         load_or_create._ensure_group_result(specs)
 
     # Where the job that handed the batch out looks for its log.

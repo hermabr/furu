@@ -7,8 +7,7 @@ import traceback
 from furu import plan, provenance
 from furu.code_trace import StaleCodeError
 from furu.config import _Config, _set_config
-from furu.dependencies import _DependencyNotReady
-from furu.execution.launch import asked
+from furu.dependencies import _DependencyNotReady, creating
 from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import _configure_child_logging
 from furu.worker.messages import (
@@ -24,7 +23,7 @@ def _execute(job: Job) -> JobResult:
     provenance._set_submitted_repo_root(job.code.checkout)
     try:
         specs = plan.Specs(map(json.loads, job.lines))
-        with plan.listed_in(job.plan), asked(job.asked):
+        with creating(plan=job.plan, asked=job.asked):
             _ensure_group_result([specs[spec] for spec in job.specs])
         return JobCompletedResult()
     except _DependencyNotReady as exc:

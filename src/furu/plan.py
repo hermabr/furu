@@ -32,9 +32,7 @@ import os
 import re
 import socket
 import zlib
-from collections.abc import Collection, Generator, Iterable, Iterator, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import fields
 from itertools import chain
 from pathlib import Path
@@ -45,7 +43,7 @@ from furu._tree import specs_in
 from furu.config import get_config
 from furu.constants import KINDMARKER, VALUEMARKER
 from furu.core import Spec
-from furu.dependencies import returned_attributes, specs_under_creation
+from furu.dependencies import creation, returned_attributes
 from furu.migration.schema import held
 from furu.migration.steps import naming
 from furu.provenance import SubmitProvenance
@@ -355,22 +353,11 @@ def write(
     return lines
 
 
-# The plan file that lists the specs whose create() runs in this context.
-_listed: ContextVar[Path] = ContextVar("furu_plan_listed")
-
-
-@contextmanager
-def listed_in(plan: Path) -> Generator[None]:
-    """Run the create() of specs that ``plan`` lists."""
-    token = _listed.set(plan)
-    try:
-        yield
-    finally:
-        _listed.reset(token)
-
-
 def listing() -> Path:
-    return _listed.get()
+    """The plan file that lists the specs whose create() runs in this context."""
+    listed = creation().plan
+    assert listed is not None
+    return listed
 
 
 def launch() -> str:
@@ -393,5 +380,5 @@ def save_found(found: Sequence[Line]) -> Path:
     folder = get_config().directories.anchored().plans / launch()
     if (file := _own.get(folder)) is None:
         file = _own[folder] = File.new(folder, ".plan")
-    file.add([{"asked_by": sorted(specs_under_creation())}, *found])
+    file.add([{"asked_by": sorted(creation().specs)}, *found])
     return file.path

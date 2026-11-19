@@ -21,9 +21,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter, defaultdict
-from collections.abc import Collection, Generator, Iterable, Iterator, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 
@@ -33,6 +31,7 @@ from furu._batched import is_batched
 from furu._tree import specs_in
 from furu.core import Spec
 from furu.dag import Dag
+from furu.dependencies import creation
 from furu.logging import get_logger
 from furu.migration import schema
 from furu.migration.steps import (
@@ -49,11 +48,6 @@ from furu.storage.stored import Stored
 logger = get_logger("run")
 
 IGNORE_STORED = "FURU_IGNORE_STORED"
-
-# The stored names of the classes the launch asked about, where its create()s run.
-_asked: ContextVar[frozenset[str]] = ContextVar(
-    "furu_launch_asked", default=frozenset()
-)
 
 
 def missing(objs: Sequence[Spec], dag: Dag | None = None) -> list[Spec]:
@@ -212,7 +206,7 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
     """
     ignore: set[str] = set()
     if found:
-        skip = _asked.get()
+        skip = creation().asked
         missing = [obj for obj in missing if obj._stored_name not in skip]
     else:
         ignore = {name.strip() for name in os.environ.get(IGNORE_STORED, "").split(",")}
@@ -286,13 +280,3 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
             logger.info("ignoring stored results · %s", line)
     _check_batch_folders(missing)
     return frozenset(map(stored_name, class_dirs.values()))
-
-
-@contextmanager
-def asked(stages: frozenset[str]) -> Generator[None]:
-    """Run create()s of a launch that asked about ``stages``."""
-    token = _asked.set(stages)
-    try:
-        yield
-    finally:
-        _asked.reset(token)

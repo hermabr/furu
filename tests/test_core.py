@@ -27,7 +27,7 @@ from furu.core import working_folder
 from furu.dag import Dag
 from furu.dependencies import (
     _DependencyNotReady,
-    under_creation,
+    creating,
 )
 from furu.execution.launch import missing
 from furu.execution.load_or_create import _load_or_create
@@ -1666,7 +1666,7 @@ def test_nested_create_loads_cached_result_without_recomputing(
     assert cached.create() == "object-id:10"
     ObjectIdStorageValue.create_calls.clear()
 
-    with under_creation([ObjectIdStorageValue(key=0)]):
+    with creating(specs=frozenset({ObjectIdStorageValue(key=0).object_id})):
         assert cached.create() == "object-id:10"
 
     assert ObjectIdStorageValue.create_calls == []
@@ -1683,8 +1683,7 @@ def test_nested_create_reports_all_missing_dependencies(
     launch_plan = get_config().directories.anchored().plans / "launch.plan"
 
     with (
-        plan.listed_in(launch_plan),
-        under_creation([parent]),
+        creating(plan=launch_plan, specs=frozenset({parent.object_id})),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
         _load_or_create([first, second])
@@ -1708,7 +1707,7 @@ def test_nested_load_existing_raises_missing(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "data"
     missing = ObjectIdStorageValue(key=13)
 
-    with under_creation([ObjectIdStorageValue(key=0)]):
+    with creating(specs=frozenset({ObjectIdStorageValue(key=0).object_id})):
         with pytest.raises(furu.Missing):
             missing.load_existing()
         with pytest.raises(furu.Missing):
@@ -1723,8 +1722,10 @@ def test_dependency_not_ready_is_not_caught_as_exception(
 
     with (
         pytest.raises(_DependencyNotReady),
-        plan.listed_in(get_config().directories.anchored().plans / "launch.plan"),
-        under_creation([ObjectIdStorageValue(key=0)]),
+        creating(
+            plan=get_config().directories.anchored().plans / "launch.plan",
+            specs=frozenset({ObjectIdStorageValue(key=0).object_id}),
+        ),
     ):
         try:
             missing.create()

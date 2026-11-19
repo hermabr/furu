@@ -14,6 +14,7 @@ from runs import events_of, run_of
 import furu
 from furu import Metadata, Spec, plan, provenance, record
 from furu.config import get_config
+from furu.dependencies import creating
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
@@ -221,7 +222,7 @@ def _own_files() -> tuple[Path, Path]:
 
 def test_a_forked_process_creates_files_of_its_own() -> None:
     plans = get_config().directories.anchored().plans
-    with plan.listed_in(plans / "9f3c.plan"):
+    with creating(plan=plans / "9f3c.plan"):
         mine = _own_files()
         with get_context("fork").Pool(1) as pool:
             theirs = pool.apply(_own_files)

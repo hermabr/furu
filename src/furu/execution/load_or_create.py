@@ -29,12 +29,11 @@ from furu.dependencies import (
     _DependencyNotReady,
     any_under_creation,
     checked,
+    creating,
     missing_dependencies,
     record_loaded,
-    recording_loads,
-    under_creation,
 )
-from furu.execution.launch import ask, asked, held_in
+from furu.execution.launch import ask, held_in
 from furu.execution.launch import missing as missing_under
 from furu.locking import lock
 from furu.logging import _group_label, _log_scope, get_logger
@@ -107,7 +106,7 @@ def _recording(
             if run is not None:
                 run.loaded(folder)
 
-        with recording_loads(on_load), under_creation(group):
+        with creating(specs=frozenset(obj.object_id for obj in group), on_load=on_load):
             yield run, loaded
 
 
@@ -330,7 +329,7 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         launch_plan = get_config().directories.anchored().plans / f"{launch}.plan"
         stages = ask(running)
         record.launch(launch_plan, objs, running, capture_submit_provenance())
-        with asked(stages):
+        with creating(asked=stages):
             _run_in_process(dag, running, launch_plan)
     if not load:
         return []
@@ -376,7 +375,7 @@ def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> Non
         objs = [specs[spec] for spec in group]
 
         try:
-            with plan.listed_in(plans[lead]):
+            with creating(plan=plans[lead]):
                 _create_in_process(objs)
         except _DependencyNotReady as exc:
             label = _group_label(objs[0]._log_label, len(objs))

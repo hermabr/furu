@@ -22,8 +22,8 @@ from furu.dependencies import (
     Returned,
     _Dependency,
     checked,
+    creation,
     dependency_field,
-    is_under_creation,
     remembered_methods,
     remembers,
     returned_attributes,
@@ -199,7 +199,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @property
     def directory(self) -> SpecDirectory:
-        if not is_under_creation(self):
+        if self.object_id not in creation().specs:
             raise RuntimeError(
                 f"{self._log_label}.directory is only available inside this "
                 "spec's own create() hook. To use files another spec produced, "
