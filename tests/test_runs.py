@@ -16,7 +16,6 @@ from runs import ends_of, events_of, fixed_run, run_of
 
 import furu
 from furu import Spec, plan
-from furu.code_trace import Trace
 from furu.config import get_config
 from furu.core import working_folder
 from furu.execution import load_or_create
@@ -130,19 +129,19 @@ def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
 ) -> None:
     spec = Leaf(n=1)
     seen: dict[str, object] = {}
-    publish = load_or_create._publish
+    rename = Path.rename
 
-    def spy(group: list[Spec], trace: Trace, **kwargs: Any) -> None:
-        (obj,) = group
-        seen["files"] = sorted(path.name for path in obj._attempt_dir.iterdir())
-        seen["ends"] = ends_of(obj)
-        seen["locked"] = is_active_lock(
-            lock_path_in(obj._class_dir, obj._artifact_hash)
-        )
-        seen["done"] = obj.done
-        publish(group, trace, **kwargs)
+    def spy(self: Path, target: Path) -> Path:
+        if self == spec._attempt_dir:
+            seen["files"] = sorted(path.name for path in self.iterdir())
+            seen["ends"] = ends_of(spec)
+            seen["locked"] = is_active_lock(
+                lock_path_in(spec._class_dir, spec._artifact_hash)
+            )
+            seen["done"] = spec.done
+        return rename(self, target)
 
-    monkeypatch.setattr(load_or_create, "_publish", spy)
+    monkeypatch.setattr(Path, "rename", spy)
 
     assert spec.create() == 1
 
@@ -163,11 +162,15 @@ def test_a_crash_before_the_rename_publishes_nothing(
 ) -> None:
     spec = Leaf(n=2)
 
-    def crash(*args: object, **kwargs: object) -> None:
-        raise RuntimeError("killed before the rename")
+    rename = Path.rename
+
+    def crash(self: Path, target: Path) -> Path:
+        if self == spec._attempt_dir:
+            raise RuntimeError("killed before the rename")
+        return rename(self, target)
 
     with monkeypatch.context() as patched:
-        patched.setattr(load_or_create, "_publish", crash)
+        patched.setattr(Path, "rename", crash)
         with pytest.raises(RuntimeError, match="killed before the rename"):
             spec.create()
 
