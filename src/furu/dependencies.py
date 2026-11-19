@@ -137,7 +137,7 @@ class Returned:
             if self.name in vars(obj):
                 return vars(obj)[self.name]
         if named:
-            with creating(on_load=None), paused():
+            with creating(on_load=_ignore_loads), paused():
                 value = self.func(obj)
                 found = self._fingerprint(obj, value)
             if found != (known := obj._returned[self.name]):
@@ -299,6 +299,10 @@ def remembered_methods(cls: type) -> dict[str, Returned]:
 type OnLoad = Callable[[Path, Iterable[Spec]], None]
 
 
+def _ignore_loads(run: Path, specs: Iterable[Spec]) -> None:
+    pass
+
+
 @dataclass(frozen=True)
 class Creation:
     """What code that runs in this context knows of the create() it runs in.
@@ -313,7 +317,7 @@ class Creation:
     specs: frozenset[str] = frozenset()
     plan: Path | None = None
     asked: frozenset[str] = frozenset()
-    on_load: OnLoad | None = None
+    on_load: OnLoad = _ignore_loads
 
 
 # TODO: results loaded in threads a create() starts aren't recorded (ContextVar
@@ -330,8 +334,16 @@ def creation() -> Creation:
 
 
 @contextmanager
-def creating(**changes: Any) -> Generator[None]:
-    """Run code with ``changes`` to the fields of ``creation()``."""
+def creating(
+    *,
+    specs: frozenset[str] | None = None,
+    plan: Path | None = None,
+    asked: frozenset[str] | None = None,
+    on_load: OnLoad | None = None,
+) -> Generator[None]:
+    """Run code with ``creation()`` changed in each field that is given."""
+    given = {"specs": specs, "plan": plan, "asked": asked, "on_load": on_load}
+    changes = {name: value for name, value in given.items() if value is not None}
     token = _creation.set(replace(_creation.get(), **changes))
     try:
         yield
@@ -340,8 +352,7 @@ def creating(**changes: Any) -> Generator[None]:
 
 
 def record_loaded(run: Path, specs: Iterable[Spec]) -> None:
-    if (on_load := creation().on_load) is not None:
-        on_load(run, specs)
+    creation().on_load(run, specs)
 
 
 def any_under_creation() -> bool:
