@@ -52,7 +52,7 @@ from pydantic import BaseModel, ConfigDict
 from furu.config import get_config
 from furu.logging import get_logger
 from furu.storage._layout import FIXED, trace_path_in, version_dirs_in
-from furu.utils import _hash_dict_deterministically
+from furu.utils import _hash_dict_deterministically, parse_json
 
 _PROCESS_START_NS = time.time_ns()
 _PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -337,7 +337,7 @@ def _calls(node: ast.AST, calls: set[str]) -> None:
     if isinstance(node, (*_DEFS, ast.Lambda)):
         args = node.args
         children = [
-            *getattr(node, "decorator_list", ()),
+            *(() if isinstance(node, ast.Lambda) else node.decorator_list),
             *args.defaults,
             *filter(None, args.kw_defaults),
         ]
@@ -346,6 +346,11 @@ def _calls(node: ast.AST, calls: set[str]) -> None:
 
 
 _FACTS: dict[int, _Facts] = {}  # keyed by id(node); _PARSED keeps the nodes alive
+
+
+def _line(node: ast.AST) -> int:
+    """The line ``node`` starts on; 0 for the kinds of node that have none."""
+    return line if isinstance(line := getattr(node, "lineno", 0), int) else 0
 
 
 def _facts(node: ast.AST) -> _Facts:
@@ -365,9 +370,9 @@ def _facts(node: ast.AST) -> _Facts:
             elif isinstance(child, (*_DEFS, ast.ClassDef)):
                 _strip_docstring(child)
             if (what := _dynamic(child, mentions)) and dynamic is None:
-                dynamic = (what, getattr(child, "lineno", 0))
+                dynamic = (what, _line(child))
             if (what := _untraced(child)) and untraced is None:
-                untraced = (what, getattr(child, "lineno", 0))
+                untraced = (what, _line(child))
         facts = _FACTS[id(node)] = _Facts(
             frozenset(mentions), tuple(imports), dynamic, untraced
         )
@@ -440,7 +445,9 @@ class FileTrace(BaseModel):
         return "all" if self.uses == "all" else frozenset(self.uses)
 
 
-_MODULES: dict[str, tuple[tuple[tuple[str, object], ...], dict]] = {}
+_MODULES: dict[
+    str, tuple[tuple[tuple[str, object], ...], dict[str, tuple[str, str | None]]]
+] = {}
 
 
 def _repo_modules(root: str) -> dict[str, tuple[str, str | None]]:
@@ -450,15 +457,13 @@ def _repo_modules(root: str) -> dict[str, tuple[str, str | None]]:
     """
     loaded = tuple(sys.modules.items())
     if (seen := _MODULES.get(root)) is None or seen[0] != loaded:
-        seen = _MODULES[root] = (
-            loaded,
-            {
-                name: (rel, getattr(module, "__package__", None))
-                for name, module in loaded
-                if isinstance(file := getattr(module, "__file__", None), str)
-                and (rel := _rel(file, root)) is not None
-            },
-        )
+        modules: dict[str, tuple[str, str | None]] = {}
+        for name, module in loaded:
+            file = getattr(module, "__file__", None)
+            if isinstance(file, str) and (rel := _rel(file, root)) is not None:
+                package = getattr(module, "__package__", None)
+                modules[name] = (rel, package if isinstance(package, str) else None)
+        seen = _MODULES[root] = (loaded, modules)
     return seen[1]
 
 
@@ -796,19 +801,19 @@ class LogState:
         state = cls()
         for line in lines:
             try:
-                kind, key, *value = json.loads(line)
-            except (TypeError, ValueError):
+                entry = parse_json(line)
+            except ValueError:
                 continue  # a line cut short by a crash
-            match kind, value:
-                case "source", [text]:
+            match entry:
+                case ["source", str(key), str(text)]:
                     state.sources.setdefault(key, text)
-                case "hash", [digest]:
+                case ["hash", str(key), str(digest)]:
                     state.hashes.setdefault(key, digest)
-                case "ran", [qualname]:
+                case ["ran", str(key), str(qualname)]:
                     state.ran.setdefault(key, set()).add(qualname)
-                case "built_on", []:
+                case ["built_on", str(key)]:
                     state.built_on.add(key)
-                case "stale", []:
+                case ["stale", str(key)]:
                     state.stale.add(key)
         return state
 

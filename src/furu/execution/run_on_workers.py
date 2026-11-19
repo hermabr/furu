@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import secrets
 import subprocess
@@ -21,6 +20,7 @@ from furu.logging import _execution_log, get_logger
 from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.snapshot import CodeLocation
 from furu.storage._layout import execution_log_path_in
+from furu.utils import parse_json_object
 from furu.worker.backends.protocol import WorkerBackend
 from furu.worker.messages import CancelMessage, Launch, LocalPool
 
@@ -140,8 +140,10 @@ def _connect_to_manager() -> ClientConnection:
     waiting = False
     while True:
         try:
-            published = json.loads(address.read_text(encoding="utf-8"))
-            return connect(published["url"], max_size=None)
+            published = parse_json_object(address.read_text(encoding="utf-8"))
+            if not isinstance(url := published["url"], str):
+                raise TypeError(f"{address} holds no url: {published}")
+            return connect(url, max_size=None)
         except (OSError, ValueError, InvalidHandshake) as exc:  # not up yet
             if not waiting:
                 waiting = True

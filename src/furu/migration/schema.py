@@ -20,7 +20,6 @@ takes no lock.
 
 from __future__ import annotations
 
-import json
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -33,7 +32,7 @@ from furu.locking import lock, read_text_or_none
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
-from furu.utils import _stable_json_dump
+from furu.utils import _stable_json_dump, json_strings, parse_json_object
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -78,20 +77,20 @@ def _declared_defaults(cls: type[Spec]) -> dict[_Step, tuple[str, JsonValue]]:
     return declared
 
 
-def _read(path: Path) -> list[dict[str, Any]] | None:
+def _read(path: Path) -> list[dict[str, JsonValue]] | None:
     """The file's whole lines; None when there is no file."""
     if (text := read_text_or_none(path)) is None:
         return None
     lines = []
     for line in text.splitlines():
         try:
-            lines.append(json.loads(line))
+            lines.append(parse_json_object(line))
         except ValueError:  # blank, or cut short when its writer was killed
             continue
     return lines
 
 
-def _append(path: Path, lines: list[dict[str, Any]]) -> None:
+def _append(path: Path, lines: list[dict[str, JsonValue]]) -> None:
     with path.open("a", encoding="utf-8") as file:
         # On a line of its own even when the writer before this one was killed
         # in the middle of a line.
@@ -102,12 +101,20 @@ def _append(path: Path, lines: list[dict[str, Any]]) -> None:
         os.fsync(file.fileno())
 
 
-def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
-    return {
-        (line.get("nested"), line.get("class_part"), line["added"]): line["default"]
-        for line in lines
-        if "added" in line
-    }
+def _recorded_defaults(lines: list[dict[str, JsonValue]]) -> dict[_Step, JsonValue]:
+    recorded: dict[_Step, JsonValue] = {}
+    for line in lines:
+        match line:
+            case {
+                "added": str(name),
+                "default": default,
+                "nested": str(nested),
+                "class_part": str(part),
+            }:
+                recorded[nested, part, name] = default
+            case {"added": str(name), "default": default}:
+                recorded[None, None, name] = default
+    return recorded
 
 
 def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
@@ -128,7 +135,7 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
             with lock(schema_lock_path_in(class_dir)):
                 lines = _read(path) or []
                 recorded = _recorded_defaults(lines)
-                new: list[dict[str, Any]] = [
+                new: list[dict[str, JsonValue]] = [
                     {"added": name, "default": default}
                     | ({} if nested is None else {"nested": nested, "class_part": part})
                     for (nested, part, name), (_, default) in declared.items()
@@ -161,7 +168,7 @@ def stored_names(class_dir: Path) -> list[str] | None:
     """The names a class folder's results are stored under, when its file says."""
     for line in _read(schema_path_in(class_dir)) or ():
         if "names" in line and "nested" not in line:
-            return line["names"]
+            return json_strings(line["names"])
     return None
 
 
@@ -169,8 +176,9 @@ def nested_names(class_dir: Path) -> dict[str, set[tuple[str, ...]]]:
     """Each set of first names a dataclass was stored with in a class folder."""
     recorded: defaultdict[str, set[tuple[str, ...]]] = defaultdict(set)
     for line in _read(schema_path_in(class_dir)) or ():
-        if "names" in line and "nested" in line:
-            recorded[line["nested"]].add(tuple(line["names"]))
+        match line:
+            case {"names": names, "nested": str(nested)}:
+                recorded[nested].add(tuple(json_strings(names)))
     return recorded
 
 
@@ -187,7 +195,7 @@ def record_nested_names(class_dir: Path, holds: dict[type, tuple[str, ...]]) -> 
     if lines.keys() <= _nested_recorded:
         return
 
-    def unrecorded() -> list[dict[str, Any]]:
+    def unrecorded() -> list[dict[str, JsonValue]]:
         recorded = nested_names(class_dir)
         return [
             {"nested": name, "at": list(at), "names": list(names)}

@@ -22,7 +22,7 @@ def get_current_version() -> str:
     match = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
     if match is None:
         raise RuntimeError(f"Could not find version in {PYPROJECT_PATH}")
-    return match.group(1)
+    return str(match.group(1))
 
 
 def bump_version(version: str, bump: str) -> str:

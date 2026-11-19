@@ -15,7 +15,6 @@ it goes out alone.
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
@@ -43,7 +42,7 @@ from furu.storage._layout import (
     run_name,
 )
 from furu.storage.events import read_events
-from furu.utils import spec_label
+from furu.utils import json_strings, parse_json_object, spec_label
 from furu.worker.backends.local import LocalThreadPool
 from furu.worker.backends.protocol import WorkerPool
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -301,7 +300,7 @@ class Manager:
         listed = script.plans.setdefault(launch.plan, _Plan(launch))
         values = set()
         for text in message.lines:
-            line = json.loads(text)
+            line = parse_json_object(text)
             listed.lines[key := plan.key(line)] = text
             if "value" in line:
                 values.add(key)
@@ -351,7 +350,7 @@ class Manager:
             hashes = [
                 spec
                 for opened in read_events(attempt_dir_in(class_dir, run))[:1]
-                for spec in opened.get("specs", ())
+                for spec in json_strings(opened.get("specs", []))
             ]
             if hashes and all(
                 spec in by_hash and by_hash[spec] not in self.stopped_in

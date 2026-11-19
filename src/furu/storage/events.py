@@ -16,23 +16,26 @@ import socket
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
+
+from pydantic import JsonValue
 
 from furu.storage._layout import events_path_in
+from furu.utils import parse_json_object
 
 
-def read_events(run_dir: Path) -> list[dict[str, Any]]:
+def read_events(run_dir: Path) -> list[dict[str, JsonValue]]:
     try:
         return parse_events(events_path_in(run_dir).read_bytes())
     except FileNotFoundError:
         return []
 
 
-def parse_events(text: bytes) -> list[dict[str, Any]]:
+def parse_events(text: bytes) -> list[dict[str, JsonValue]]:
     events = []
     for line in text.splitlines():
         try:
-            events.append(json.loads(line))
+            events.append(parse_json_object(line))
         except ValueError:
             continue  # blank, or cut short when its attempt was killed
     return events

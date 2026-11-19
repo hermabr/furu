@@ -20,14 +20,13 @@ always safe: the next launch calls the methods again.
 
 from __future__ import annotations
 
-import json
 import os
 from contextlib import suppress
 from pathlib import Path
 
 from furu.code_trace import Trace, why_trace_outdated
 from furu.storage._layout import remembered_dir_in
-from furu.utils import _stable_json_dump, atomic_write_text
+from furu.utils import _stable_json_dump, atomic_write_text, parse_json_object
 
 # The method's name and the fingerprint of the spec's other fields.
 type _Key = tuple[str, str]
@@ -52,7 +51,8 @@ def lookup(class_dir: Path, method: str, fields: str, storage_root: Path) -> str
     has changed since, or loaded a result that is out of date, does not.
     """
     if (lines := _LINES.get(class_dir)) is None:
-        lines = _LINES[class_dir] = {}
+        lines: dict[_Key, str] = {}
+        _LINES[class_dir] = lines
         folder = remembered_dir_in(class_dir)
         try:
             files = sorted(folder.glob("launch-*.jsonl"), key=os.path.getmtime)
@@ -61,12 +61,22 @@ def lookup(class_dir: Path, method: str, fields: str, storage_root: Path) -> str
             texts = []
         holds: dict[str, bool] = {}
         for text in texts:
-            for line in map(json.loads, text.splitlines()):
-                if (trace := line["trace"]) not in holds:
+            for line in map(parse_json_object, text.splitlines()):
+                match line:
+                    case {
+                        "method": str(called),
+                        "fields": str(named),
+                        "returned": str(returned),
+                        "trace": str(trace),
+                    }:
+                        pass
+                    case _:
+                        raise ValueError(f"malformed line in {folder}: {line}")
+                if trace not in holds:
                     path = _trace_path(class_dir, trace)
                     holds[trace] = why_trace_outdated(path, storage_root) is None
                 if holds[trace]:
-                    lines[line["method"], line["fields"]] = line["returned"]
+                    lines[called, named] = returned
     return lines.get((method, fields))
 
 

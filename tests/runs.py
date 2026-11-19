@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from furu import Spec
+from furu import Spec, plan
 from furu.core import working_folder
 from furu.storage._layout import FIXED, log_path_in, run_dir_in
 from furu.storage.events import read_events
@@ -33,6 +33,16 @@ def _folder(specs: Spec | Sequence[Spec]) -> Path:
 def log_of(specs: Spec | Sequence[Spec]) -> str:
     """What the create() of a spec or batch wrote."""
     return log_path_in(_folder(specs)).read_text(encoding="utf-8")
+
+
+def plan_lines(path: Path) -> list[dict[str, Any]]:
+    """The lines of a plan or provenance file."""
+    return plan.read(path)
+
+
+def lines_of(specs: Sequence[Spec]) -> list[dict[str, Any]]:
+    """The plan lines that describe specs."""
+    return list(plan.lines(specs))
 
 
 def events_of(specs: Spec | Sequence[Spec]) -> list[dict[str, Any]]:

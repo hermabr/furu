@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from gitrepo import git, init_repo
-from runs import ends_of, events_of, log_of, run_of
+from runs import ends_of, events_of, log_of, plan_lines, run_of
 from subprocess_objects import (
     OtherSubprocessEnvLeaf,
     SubprocessBatchLeaf,
@@ -107,7 +107,7 @@ def test_subprocess_environment_override_is_visible_in_child(
 
     # The child's own record begins with a line about it, and the run's start
     # event names the file.
-    record, finished = plan.read(Path(events_of(leaf)[1]["provenance"]))
+    record, finished = plan_lines(Path(events_of(leaf)[1]["provenance"]))
     assert record["worker"].items() >= {"backend": "test", "pid": pid}.items()
     assert finished["run"] == leaf._artifact_hash
 

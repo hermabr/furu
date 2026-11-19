@@ -8,7 +8,6 @@ this half says what happens to an attempt that did not complete.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections.abc import Sequence
@@ -28,7 +27,7 @@ from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
 from furu.storage._layout import log_path_in
-from furu.utils import error_summary, format_duration
+from furu.utils import error_summary, format_duration, parse_json_object
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.messages import (
     Batch,
@@ -272,7 +271,7 @@ class Run:
         one missing for over ``unseen_grace_s`` without getting anywhere in
         between, its specs are given up on.
         """
-        lines = list(map(json.loads, blocked.lines))
+        lines = list(map(parse_json_object, blocked.lines))
         found = plan.Specs(lines)
         dependencies = [found[dependency] for dependency in blocked.dependencies]
         unbuilt = [
