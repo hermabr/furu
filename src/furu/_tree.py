@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import fields, is_dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from furu.core import Spec
 
 
-def map_specs(fn: Callable[[Spec], object], tree: object) -> Any:
+def map_specs(fn: Callable[[Spec], object], tree: object) -> object:
     """Replace every spec in `tree` with `fn(spec)`, returning plain containers.
 
     This is the one definition of which values furu looks inside for specs.

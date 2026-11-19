@@ -24,9 +24,9 @@ class CodecMeta(ABCMeta):
     def __init__(
         cls,
         name: str,
-        bases: tuple[type[Any], ...],
-        namespace: dict[str, Any],
-        **kwargs: Any,
+        bases: tuple[type, ...],
+        namespace: dict[str, object],
+        **kwargs: object,
     ) -> None:
         super().__init__(name, bases, namespace, **kwargs)
         is_root_codec_class = not any(isinstance(base, CodecMeta) for base in bases)

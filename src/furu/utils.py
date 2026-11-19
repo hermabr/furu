@@ -9,8 +9,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import JsonValue  # noqa: F401  (furu's JSON type, imported from here)
-
 
 def _running_main_module_name() -> str | None:
     main = sys.modules.get("__main__")
