@@ -121,7 +121,7 @@ def _load_or_create(
 ) -> Any: ...
 def _load_or_create(
     tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
-) -> Any:
+) -> object:
     # One launch: a large value that many of its specs hold is named once.
     with remembering():
         if on is not None:
@@ -206,7 +206,7 @@ def create(
 ) -> dict[str, Any]: ...
 @overload
 def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any: ...
-def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any:
+def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> object:
     return _load_or_create(tree, on=on)
 
 
@@ -233,7 +233,7 @@ def load_existing[K, T](tree: Mapping[K, Spec[T]], /) -> dict[K, T]: ...
 def load_existing(tree: DataclassInstance | BaseModel, /) -> dict[str, Any]: ...
 @overload
 def load_existing(tree: object, /) -> Any: ...
-def load_existing(tree: object, /) -> Any:
+def load_existing(tree: object, /) -> object:
     objs = specs_in(tree)
     loaded = _load(objs)
     if objs:
@@ -466,7 +466,7 @@ def _create_and_store_group[T](group: list[Spec[T]], *, has_lock: HasLock) -> No
         )
         try:
             # Run the group's one create() call: on the whole batch, or on its one spec.
-            hook = getattr(cls, "_furu_create_hook", None)
+            hook = cls._furu_create_hook
             if hook is None:
                 raise TypeError(
                     f"{cls.__qualname__} cannot create missing results "

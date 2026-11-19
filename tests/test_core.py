@@ -188,7 +188,7 @@ class B[T](Spec):
             "__annotations__": ann,
             "_hidden": 0,
         }
-        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[call-non-callable]
+        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[not-callable]
 
         Hidden = types.new_class(
             cls.__name__,
@@ -599,7 +599,7 @@ def test_reserved_field_name_raises_at_class_creation():
     with pytest.raises(TypeError) as excinfo:
 
         class DoneField(Spec[int]):
-            done: str  # ty: ignore[override-of-final-method,invalid-property-type-override]
+            done: str  # ty: ignore[override-of-final-method,incompatible-property-override]
 
             def create(self) -> int:
                 return 0
@@ -706,7 +706,7 @@ def test_hashes_and_data_dir():
 
     def qualname_alias(cls: type[Spec[object]], *, ret_typ: type) -> type[Spec[object]]:
         namespace: dict[str, object] = {"__module__": cls.__module__}
-        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[call-non-callable]
+        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[not-callable]
         alias = type(ret_typ.__qualname__, (cls,), namespace)
         alias.__qualname__ = ret_typ.__qualname__
         return alias
@@ -1408,7 +1408,7 @@ def test_create_hook_flavor_validation() -> None:
 
         class BareBatchedDecorator(Spec[int]):
             @furu.batched  # ty: ignore[invalid-argument-type]
-            def create(  # ty: ignore[invalid-attribute-override]
+            def create(  # ty: ignore[incompatible-attribute-override]
                 objs: list["BareBatchedDecorator"],
             ) -> list[int]:
                 return [1 for _ in objs]

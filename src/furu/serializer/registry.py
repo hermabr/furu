@@ -3,10 +3,12 @@ from __future__ import annotations
 from abc import ABC, ABCMeta, abstractmethod
 from functools import cache
 from threading import Lock
-from typing import Annotated, Any, ClassVar, cast, final, get_args, get_origin
+from typing import Annotated, ClassVar, cast, final, get_args, get_origin
+
+from pydantic import JsonValue
 
 from furu._declared_types import strip_annotated
-from furu.utils import JsonValue, fully_qualified_name
+from furu.utils import fully_qualified_name
 
 
 class SerializerMeta(ABCMeta):
@@ -16,9 +18,9 @@ class SerializerMeta(ABCMeta):
     def __init__(
         cls,
         name: str,
-        bases: tuple[type[Any], ...],
-        namespace: dict[str, Any],
-        **kwargs: Any,
+        bases: tuple[type, ...],
+        namespace: dict[str, object],
+        **kwargs: object,
     ) -> None:
         super().__init__(name, bases, namespace, **kwargs)
         is_root_serializer_class = not any(

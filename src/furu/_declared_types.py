@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 @cache
-def cached_type_hints(cls: type) -> Mapping[str, Any]:
+def cached_type_hints(cls: type) -> Mapping[str, object]:
     return get_type_hints(cls, include_extras=True)
 
 

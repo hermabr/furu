@@ -20,13 +20,14 @@ from typing import (
 )
 
 import pydantic
+from pydantic import JsonValue
 
 from furu._declared_types import cached_type_hints, child_declared_type
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.logging import get_logger
 from furu.result.codec import Codec, CodecMeta
 from furu.storage._layout import scratch_dir_in
-from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
+from furu.utils import fully_qualified_name, resolve_fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
 # artifacts/<position>: what a codec merged for every row with a value there.
