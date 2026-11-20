@@ -38,14 +38,12 @@ def _save_rows(
     values: list[Any],
     bundle_dir: Path,
     *,
-    result_codecs: tuple[type[Codec], ...] = (),
     label: str = "Rows",
 ) -> None:
     _save_result_bundle_impl(
         values,
         bundle_dir,
         spec_classes=[Rows] * len(values),
-        result_codecs=result_codecs,
         data_dir=data_dir_in(bundle_dir.parent),
         label=label,
     )
@@ -66,13 +64,8 @@ def _load_rows(bundle_dir: Path, rows: list[int]) -> list[Any]:
     )
 
 
-def _save_result_bundle(
-    value: object,
-    bundle_dir: Path,
-    *,
-    result_codecs: tuple[type[Codec], ...],
-) -> None:
-    _save_rows([value], bundle_dir, result_codecs=result_codecs)
+def _save_result_bundle(value: object, bundle_dir: Path) -> None:
+    _save_rows([value], bundle_dir)
 
 
 def load_result_bundle(bundle_dir: Path) -> object:
@@ -167,7 +160,7 @@ def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
         "frozenset": frozenset({"b", "a"}),
     }
 
-    _save_result_bundle(value, bundle_dir, result_codecs=())
+    _save_result_bundle(value, bundle_dir)
 
     assert _same(load_result_bundle(bundle_dir), value)
 
@@ -179,9 +172,7 @@ def test_set_of_values_without_value_based_repr_is_rejected(tmp_path: Path) -> N
     bundle_dir = tmp_path / "bundle"
 
     with pytest.raises(ValueError, match="no value-based repr"):
-        _save_result_bundle(
-            {AddressRepr(), AddressRepr()}, bundle_dir, result_codecs=()
-        )
+        _save_result_bundle({AddressRepr(), AddressRepr()}, bundle_dir)
 
 
 class NonFiniteFloatResult(Spec):
@@ -216,7 +207,7 @@ def test_datetime_values_round_trip(tmp_path: Path) -> None:
         ),
     }
 
-    _save_result_bundle(value, bundle_dir, result_codecs=())
+    _save_result_bundle(value, bundle_dir)
 
     loaded = cast(dict[str, datetime], load_result_bundle(bundle_dir))
     assert loaded == value
@@ -278,23 +269,23 @@ def test_datetime_requires_codec_when_iso_round_trip_is_lossy(
         _save_result_bundle(
             value,
             tmp_path / "bundle",
-            result_codecs=(),
         )
 
 
-def test_explicit_codec_overrides_native_datetime_storage(tmp_path: Path) -> None:
+@dataclass(frozen=True)
+class _Stamped:
+    at: Annotated[datetime, _CustomTimezoneDatetimeCodec]
+
+
+def test_annotated_codec_overrides_native_datetime_storage(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    value = datetime(2026, 9, 1, 12, 30, tzinfo=_CustomTimezone())
+    value = _Stamped(datetime(2026, 9, 1, 12, 30, tzinfo=_CustomTimezone()))
 
-    _save_result_bundle(
-        value,
-        bundle_dir,
-        result_codecs=(_CustomTimezoneDatetimeCodec,),
-    )
+    _save_result_bundle(value, bundle_dir)
 
-    loaded = load_result_bundle(bundle_dir)
+    loaded = cast(_Stamped, load_result_bundle(bundle_dir))
     assert loaded == value
-    assert isinstance(cast(datetime, loaded).tzinfo, _CustomTimezone)
+    assert isinstance(loaded.at.tzinfo, _CustomTimezone)
 
 
 class _CustomTensor:
@@ -485,11 +476,13 @@ class _DataDirPathCodec(Codec[_DataDirPathValue]):
         return _DataDirPathValue(cast(Path, metadata["path"]))
 
 
-class RegistryAutoRegisteredValueResult(Spec):
-    result_codecs = (_CoreRegistryAutoValueCodec,)
+class AnnotatedOverRegisteredValueResult(Spec):
+    @dataclass(frozen=True)
+    class Result:
+        value: Annotated[_AutoRegisteredValue, _CoreRegistryAutoValueCodec]
 
-    def create(self) -> _AutoRegisteredValue:
-        return _AutoRegisteredValue(10)
+    def create(self) -> Result:
+        return self.Result(_AutoRegisteredValue(10))
 
 
 class _ScratchBackedValue:
@@ -522,12 +515,15 @@ class _ScratchBackedCodec(Codec[_ScratchBackedValue]):
 
 class ScratchBackedResult(Spec):
     name: str
-    result_codecs = (_ScratchBackedCodec,)
 
-    def create(self) -> _ScratchBackedValue:
+    @dataclass(frozen=True)
+    class Result:
+        data: Annotated[_ScratchBackedValue, _ScratchBackedCodec]
+
+    def create(self) -> Result:
         source = self.directory.scratch / "download.csv"
         source.write_text(self.name, encoding="utf-8")
-        return _ScratchBackedValue(source)
+        return self.Result(_ScratchBackedValue(source))
 
 
 def test_result_path_into_scratch_is_rejected(tmp_path: Path) -> None:
@@ -535,40 +531,26 @@ def test_result_path_into_scratch_is_rejected(tmp_path: Path) -> None:
         _save_result_bundle(
             tmp_path / "scratch" / "download.csv",
             tmp_path / "result",
-            result_codecs=(),
         )
 
 
 def test_scratch_files_survive_until_codec_save() -> None:
     obj = ScratchBackedResult(name="lazy")
 
-    value = obj.create()
+    value = obj.create().data
 
     assert not (run_of(obj) / "scratch").exists()
     assert value.source.is_relative_to(result_dir_in(run_of(obj)))
     assert value.source.read_text(encoding="utf-8") == "lazy"
 
 
-def test_result_codec_meta_find_codec_uses_result_codecs() -> None:
-    first = (_CountingCodec,)
-    second = (_CountingCodec, _OtherCountingCodec)
-
-    assert CodecMeta.find_codec(_CountingValue(1), ()) is None
-    assert CodecMeta.find_codec(_CountingValue(1), first) is _CountingCodec
-    with pytest.raises(TypeError, match="result codecs matched multiple codecs"):
-        CodecMeta.find_codec(_CountingValue(1), second)
-
-
 def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
-    assert (
-        CodecMeta.find_codec(_AutoRegisteredValue(1), ()) is _AutoRegisteredValueCodec
-    )
+    assert CodecMeta.find_codec(_AutoRegisteredValue(1)) is _AutoRegisteredValueCodec
 
     bundle_dir = tmp_path / "bundle"
     _save_result_bundle(
         _AutoRegisteredValue(3),
         bundle_dir,
-        result_codecs=(),
     )
 
     artifact_dir = bundle_dir / "rows" / "0" / "root"
@@ -579,21 +561,22 @@ def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
     assert loaded.value == 3
 
 
+@dataclass(frozen=True)
+class _OptedOut:
+    value: Annotated[_OptOutRegisteredValue, _OptOutRegisteredValueCodec]
+
+
 def test_auto_register_false_opts_out_of_auto_registered_codecs(
     tmp_path: Path,
 ) -> None:
-    assert CodecMeta.find_codec(_OptOutRegisteredValue(), ()) is None
+    assert CodecMeta.find_codec(_OptOutRegisteredValue()) is None
 
     bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        _OptOutRegisteredValue(),
-        bundle_dir,
-        result_codecs=(_OptOutRegisteredValueCodec,),
-    )
+    _save_result_bundle(_OptedOut(_OptOutRegisteredValue()), bundle_dir)
 
-    assert (bundle_dir / "rows" / "0" / "root" / "manual.txt").exists()
-    loaded = load_result_bundle(bundle_dir)
-    assert isinstance(loaded, _OptOutRegisteredValue)
+    assert (bundle_dir / "rows" / "0" / "value" / "manual.txt").exists()
+    loaded = cast(_OptedOut, load_result_bundle(bundle_dir))
+    assert isinstance(loaded.value, _OptOutRegisteredValue)
 
 
 def test_auto_registered_codec_takes_priority_over_builtin_codec(
@@ -602,21 +585,21 @@ def test_auto_registered_codec_takes_priority_over_builtin_codec(
     bundle_dir = tmp_path / "bundle"
     value = np.arange(3, dtype=np.int64).view(_AutoRegisteredArray)
 
-    _save_result_bundle(value, bundle_dir, result_codecs=())
+    _save_result_bundle(value, bundle_dir)
 
     artifact_dir = bundle_dir / "rows" / "0" / "root"
     assert (artifact_dir / "auto.npy").exists()
     assert not (artifact_dir / "data.npy").exists()
 
 
-def test_task_result_codecs_take_priority_over_auto_registered_codec() -> None:
-    obj = RegistryAutoRegisteredValueResult()
+def test_an_annotated_codec_takes_priority_over_an_auto_registered_codec() -> None:
+    obj = AnnotatedOverRegisteredValueResult()
 
-    loaded = obj.create()
+    loaded = obj.create().value
 
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 10
-    artifact_dir = result_dir_in(run_of(obj)) / "rows" / "0" / "root"
+    artifact_dir = result_dir_in(run_of(obj)) / "rows" / "0" / "value"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
 
@@ -625,7 +608,7 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
     class LateAutoRegisteredValue:
         pass
 
-    assert CodecMeta.find_codec(LateAutoRegisteredValue(), ()) is None
+    assert CodecMeta.find_codec(LateAutoRegisteredValue()) is None
 
     class LateAutoRegisteredCodec(Codec[LateAutoRegisteredValue]):
         @classmethod
@@ -646,9 +629,7 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
             artifact_directory.joinpath("late.txt").read_text(encoding="utf-8")
             return LateAutoRegisteredValue()
 
-    assert (
-        CodecMeta.find_codec(LateAutoRegisteredValue(), ()) is LateAutoRegisteredCodec
-    )
+    assert CodecMeta.find_codec(LateAutoRegisteredValue()) is LateAutoRegisteredCodec
 
 
 def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
@@ -694,10 +675,10 @@ def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
             return AutoAmbiguousValue()
 
     with pytest.raises(TypeError) as exc_info:
-        CodecMeta.find_codec(AutoAmbiguousValue(), ())
+        CodecMeta.find_codec(AutoAmbiguousValue())
 
     message = str(exc_info.value)
-    assert "auto-registered codec registry matched multiple codecs" in message
+    assert "matches several registered codecs" in message
     assert "FirstAutoAmbiguousCodec" in message
     assert "SecondAutoAmbiguousCodec" in message
 
@@ -809,8 +790,6 @@ def test_strict_pydantic_annotated_codec_selects_artifact_storage() -> None:
 
 
 class DataDirPathResult(Spec):
-    result_codecs = (_DataDirPathCodec,)
-
     def create(self) -> dict[str, _DataDirPathValue]:
         path = self.directory.data / "data.zarr"
         path.mkdir()
@@ -844,7 +823,6 @@ def test_codec_metadata_path_outside_data_dir_raises_at_save(tmp_path: Path) -> 
         _save_result_bundle(
             _DataDirPathValue(outside_path),
             bundle_dir,
-            result_codecs=(_DataDirPathCodec,),
         )
 
 
@@ -854,7 +832,7 @@ def test_unsupported_nested_path_includes_padded_index(tmp_path) -> None:
     layers[3] = {"weights": _CustomTensor()}
 
     with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle({"layers": layers}, bundle_dir, result_codecs=())
+        _save_result_bundle({"layers": layers}, bundle_dir)
     assert "layers/03/weights" in str(exc_info.value)
 
 
@@ -872,7 +850,7 @@ def test_dict_keys_that_cannot_be_stored_fail(
     tmp_path: Path, key: object, message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        _save_result_bundle({key: "x"}, tmp_path / "bundle", result_codecs=())
+        _save_result_bundle({key: "x"}, tmp_path / "bundle")
 
 
 @dataclass(frozen=True)
@@ -888,7 +866,7 @@ class DataclassWithPostInit:
 
 def test_dataclass_load_uses_constructor(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(DataclassWithPostInit(value=3), bundle_dir, result_codecs=())
+    _save_result_bundle(DataclassWithPostInit(value=3), bundle_dir)
 
     loaded = load_result_bundle(bundle_dir)
 
@@ -1100,7 +1078,7 @@ def test_private_save_result_bundle_refuses_existing_directory(tmp_path) -> None
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     with pytest.raises(FileExistsError):
-        _save_result_bundle({"x": 1}, bundle_dir, result_codecs=())
+        _save_result_bundle({"x": 1}, bundle_dir)
 
 
 def _files(bundle_dir: Path) -> set[str]:
@@ -1312,26 +1290,27 @@ def test_arrays_that_one_file_cannot_hold_are_left_to_save(tmp_path: Path) -> No
         _save_rows([masked], tmp_path / "masked")
 
 
+@dataclass(frozen=True)
+class _Counted:
+    value: Annotated[_CountingValue, _CountingCodec]
+
+
 def test_codec_with_only_save_and_load_gets_one_call_per_row(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
 
-    _save_rows(
-        [_CountingValue(seed) for seed in range(3)],
-        bundle_dir,
-        result_codecs=(_CountingCodec,),
-    )
+    _save_rows([_Counted(_CountingValue(seed)) for seed in range(3)], bundle_dir)
     loaded = _load_rows(bundle_dir, [2, 0])
 
     assert _files(bundle_dir) == {
         "manifest.json",
-        "rows/0/root/value.txt",
-        "rows/1/root/value.txt",
-        "rows/2/root/value.txt",
+        "rows/0/value/value.txt",
+        "rows/1/value/value.txt",
+        "rows/2/value/value.txt",
     }
     assert not (bundle_dir / "artifacts").exists()
-    assert [value.value for value in loaded] == [2, 0]
+    assert [row.value.value for row in loaded] == [2, 0]
     assert (_CountingCodec.dump_calls, _CountingCodec.load_calls) == (3, 2)
 
 
@@ -1360,40 +1339,37 @@ class _MergingCodec(_CountingCodec):
         ]
 
 
+@dataclass(frozen=True)
+class _Merged:
+    value: Annotated[_CountingValue, _MergingCodec]
+
+
 def test_codec_with_save_many_and_load_many_gets_one_call_each(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     _MergingCodec.loaded_lines.clear()
 
-    _save_rows(
-        [_CountingValue(seed) for seed in range(4)],
-        bundle_dir,
-        result_codecs=(_MergingCodec,),
-    )
+    _save_rows([_Merged(_CountingValue(seed)) for seed in range(4)], bundle_dir)
     loaded = _load_rows(bundle_dir, [3, 1])
 
-    assert _files(bundle_dir) == {"manifest.json", "artifacts/root/values.txt"}
-    assert [value.value for value in loaded] == [3, 1]
+    assert _files(bundle_dir) == {"manifest.json", "artifacts/value/values.txt"}
+    assert [row.value.value for row in loaded] == [3, 1]
     assert _MergingCodec.loaded_lines == [[3, 1]]
 
 
 class _Sweep(Spec):
     seed: int
     key: int = 0
-    result_codecs = (_MergingCodec,)
 
     @furu.batched(lambda spec, worker: (spec.key, 100))
-    def create(
-        specs: list[_Sweep], directory: furu.SpecDirectory
-    ) -> list[_CountingValue]:
-        return [_CountingValue(spec.seed) for spec in specs]
+    def create(specs: list[_Sweep], directory: furu.SpecDirectory) -> list[_Merged]:
+        return [_Merged(_CountingValue(spec.seed)) for spec in specs]
 
 
 class _Alone(Spec):
     seed: int
-    result_codecs = (_MergingCodec,)
 
-    def create(self) -> _CountingValue:
-        return _CountingValue(self.seed)
+    def create(self) -> _Merged:
+        return _Merged(_CountingValue(self.seed))
 
 
 def test_load_existing_reads_each_run_once_and_keeps_the_shape_it_was_given() -> None:
@@ -1408,7 +1384,7 @@ def test_load_existing_reads_each_run_once_and_keeps_the_shape_it_was_given() ->
     )
 
     assert {
-        name: type(values)(value.value for value in values)
+        name: type(values)(row.value.value for row in values)
         for name, values in loaded.items()
     } == {"a": (4, 2), "b": [9, 0, 3]}
     # One call per run, with the rows asked for in the order asked.

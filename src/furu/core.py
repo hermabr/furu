@@ -35,7 +35,6 @@ from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
 from furu.resources import Worker
-from furu.result.codec import Codec
 from furu.serializer.artifact import field_fingerprints, is_default
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
@@ -70,9 +69,7 @@ class Missing(Exception):
     pass
 
 
-_SPEC_CLASS_ATTRIBUTES = frozenset(
-    {"migrations", "throttle", "result_codecs", "artifact_serializers"}
-)
+_SPEC_CLASS_ATTRIBUTES = frozenset({"migrations", "throttle", "artifact_serializers"})
 _RESERVED_FIELD_NAMES = frozenset(
     {
         "create",
@@ -83,7 +80,6 @@ _RESERVED_FIELD_NAMES = frozenset(
         "delete",
         "migrations",
         "throttle",
-        "result_codecs",
         "artifact_serializers",
         "runs_on",
     }
@@ -113,9 +109,9 @@ class Spec(_FuruDataclassTransform, ABC):
     checkers; furu never evaluates it. A result with several parts can be a
     dataclass nested in the spec, named ``Result``. Only classes stored in a
     result may be nested, and only directly in a spec. A value in a result is
-    stored with the spec's ``result_codecs``, else a registered codec, else a
-    built-in one; ``Annotated[..., SomeCodec]`` on a field of a result
-    dataclass picks one for that field.
+    stored with a registered codec, else a built-in one;
+    ``Annotated[..., SomeCodec]`` on a field of a result dataclass picks one
+    for that field.
 
     A spec's id is its class, the names of the class's fields and
     ``@furu.dependency`` methods, and a fingerprint of its field values.
@@ -128,7 +124,6 @@ class Spec(_FuruDataclassTransform, ABC):
     _furu_create_hook: ClassVar[Callable[..., Any] | _BatchedHook]
     throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
-    result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
     artifact_serializers: ClassVar[tuple[type[Serializer], ...]] = ()
     # Whether the spec was built from a plan line, which gives it what naming
     # finds. The script that wrote the line named the spec and checked its class.

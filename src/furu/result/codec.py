@@ -66,28 +66,19 @@ class CodecMeta(ABCMeta):
         return auto_registered_codecs, built_in_codecs
 
     @classmethod
-    def find_codec(
-        mcls,
-        value: object,
-        result_codecs: tuple[type[Codec], ...],
-    ) -> type[Codec] | None:
+    def find_codec(mcls, value: object) -> type[Codec] | None:
+        """The registered codec for ``value``, else a built-in one."""
         auto_registered_codecs, built_in_codecs = mcls._default_codec_layers()
-        if codec := _find_single_codec_match(
-            value,
-            result_codecs,
-            layer_name="result codecs",
-        ):
-            return codec
-        if codec := _find_single_codec_match(
-            value,
-            auto_registered_codecs,
-            layer_name="auto-registered codec registry",
-        ):
-            return codec
-        for codec in built_in_codecs:
-            if codec.matches(value):
-                return codec
-        return None
+        matching = [codec for codec in auto_registered_codecs if codec.matches(value)]
+        if len(matching) > 1:
+            raise TypeError(
+                f"{type(value).__name__} matches several registered codecs: "
+                f"{', '.join(codec.__name__ for codec in matching)}; pick one with "
+                "Annotated[..., SomeCodec] on a field of a result dataclass"
+            )
+        if matching:
+            return matching[0]
+        return next((codec for codec in built_in_codecs if codec.matches(value)), None)
 
 
 class Codec[T](ABC, metaclass=CodecMeta):
@@ -277,24 +268,3 @@ class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
         return [
             np.array(stacked[cast(int, metadata["row"]), ...]) for metadata in metadatas
         ]
-
-
-def _find_single_codec_match(
-    value: object,
-    codecs: tuple[type[Codec], ...],
-    *,
-    layer_name: str,
-) -> type[Codec] | None:
-    matching_codec: type[Codec] | None = None
-    for codec in codecs:
-        if not codec.matches(value):
-            continue
-        if matching_codec is None:
-            matching_codec = codec
-            continue
-
-        raise TypeError(
-            f"{layer_name} matched multiple codecs: "
-            f"{matching_codec.__name__}, {codec.__name__}"
-        )
-    return matching_codec
