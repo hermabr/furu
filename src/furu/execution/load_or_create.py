@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, cast, overload
 
 from furu import plan, record, remember
 from furu._batched import _BatchedHook, batch_of
-from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
 from furu.code_trace import (
     LogState,
@@ -443,8 +442,6 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
     cls = type(lead)
     metadata = lead._metadata  # a batch has one Metadata
     label = _group_label(lead._log_label, len(group))
-    # Before create() runs, so an annotation that names nothing fails at once.
-    declared_type = declared_result_type(cls)
     attempt = working_folder(group)
     attempt.mkdir(exist_ok=True)
     with _log_scope(log_path_in(attempt)):
@@ -506,7 +503,6 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
             _save_result_bundle(
                 results,
                 result_dir,
-                declared_type=declared_type,
                 result_codecs=lead.result_codecs,
                 data_dir=data_dir_in(attempt),
                 label=cls.__name__,

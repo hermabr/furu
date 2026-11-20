@@ -184,7 +184,6 @@ if __name__ == "__main__":
     _save_result_bundle(
         [Payload(9)],
         payload_bundle,
-        declared_type=Payload,
         result_codecs=(),
         data_dir=data_dir_in(payload_bundle.parent),
         label="Payload",
@@ -199,7 +198,6 @@ if __name__ == "__main__":
     _save_result_bundle(
         [b"abc"],
         codec_bundle,
-        declared_type=bytes,
         result_codecs=(MainCodec,),
         data_dir=data_dir_in(codec_bundle.parent),
         label="bytes",

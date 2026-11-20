@@ -110,8 +110,12 @@ class Creates[T](Protocol):
 class Spec(_FuruDataclassTransform, ABC):
     """One result, described by its fields; ``create()`` computes it once.
 
-    The result's type is the return annotation of ``create()``. A result with
-    several parts can be a dataclass nested in the spec, named ``Result``.
+    The result's type is the return annotation of ``create()``, for type
+    checkers; furu never evaluates it. A result with several parts can be a
+    dataclass nested in the spec, named ``Result``. A value in a result is
+    stored with the spec's ``result_codecs``, else a registered codec, else a
+    built-in one; ``Annotated[..., SomeCodec]`` on a field of a result
+    dataclass picks one for that field.
 
     A spec's id is its class, the names of the class's fields and
     ``@furu.dependency`` methods, and a fingerprint of its field values.

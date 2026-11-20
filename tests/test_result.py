@@ -38,14 +38,12 @@ def _save_rows(
     values: list[Any],
     bundle_dir: Path,
     *,
-    declared_type: object = Any,
     result_codecs: tuple[type[Codec], ...] = (),
     label: str = "Rows",
 ) -> None:
     _save_result_bundle_impl(
         values,
         bundle_dir,
-        declared_type=declared_type,
         result_codecs=result_codecs,
         data_dir=data_dir_in(bundle_dir.parent),
         label=label,
@@ -62,12 +60,9 @@ def _save_result_bundle(
     value: object,
     bundle_dir: Path,
     *,
-    declared_type: object = Any,
     result_codecs: tuple[type[Codec], ...],
 ) -> None:
-    _save_rows(
-        [value], bundle_dir, declared_type=declared_type, result_codecs=result_codecs
-    )
+    _save_rows([value], bundle_dir, result_codecs=result_codecs)
 
 
 def load_result_bundle(bundle_dir: Path) -> object:
@@ -487,11 +482,6 @@ class RegistryAutoRegisteredValueResult(Spec):
         return _AutoRegisteredValue(10)
 
 
-class AnnotatedAutoRegisteredValueResult(Spec):
-    def create(self) -> Annotated[_AutoRegisteredValue, _CoreRegistryAutoValueCodec]:
-        return _AutoRegisteredValue(11)
-
-
 class _ScratchBackedValue:
     def __init__(self, source: Path) -> None:
         self.source = source
@@ -616,18 +606,6 @@ def test_task_result_codecs_take_priority_over_auto_registered_codec() -> None:
 
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 10
-    artifact_dir = result_dir_in(run_of(obj)) / "rows" / "0" / "root"
-    assert (artifact_dir / "registry.txt").exists()
-    assert not (artifact_dir / "auto.txt").exists()
-
-
-def test_annotated_codec_takes_priority_over_auto_registered_codec() -> None:
-    obj = AnnotatedAutoRegisteredValueResult()
-
-    loaded = obj.create()
-
-    assert isinstance(loaded, _AutoRegisteredValue)
-    assert loaded.value == 11
     artifact_dir = result_dir_in(run_of(obj)) / "rows" / "0" / "root"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
@@ -787,17 +765,6 @@ class AnnotatedArrayResult(Spec):
         return AnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
 
-class GenericAnnotatedArrayBase[T](Spec):
-    def create(self) -> T:
-        return np.arange(3, dtype=np.int64)
-
-
-class GenericAnnotatedArrayResult(
-    GenericAnnotatedArrayBase[Annotated[Any, NumpyNpyCodec]]
-):
-    pass
-
-
 class StrictAnnotatedArrayOutput(BaseModel):
     model_config = ConfigDict(strict=True, arbitrary_types_allowed=True)
 
@@ -816,13 +783,6 @@ def test_annotated_codec_selects_artifact_storage() -> None:
     assert isinstance(loaded, AnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
     assert (result_dir_in(run_of(obj)) / "artifacts" / "weights" / "data.npy").exists()
-
-
-def test_generic_furu_base_with_annotated_result_codec_is_rejected() -> None:
-    obj = GenericAnnotatedArrayResult()
-
-    with pytest.raises(TypeError, match="annotated with a concrete result type"):
-        obj.create()
 
 
 def test_strict_pydantic_annotated_codec_selects_artifact_storage() -> None:
@@ -978,13 +938,13 @@ class SweepWithResult(Spec):
 
 
 class UnresolvableResult(Spec):
-    def create(self) -> NotDefinedAnywhere:  # noqa: F821  # ty: ignore[unresolved-reference]
-        raise AssertionError("create() ran")
+    # Like a name imported under TYPE_CHECKING: there for type checkers only.
+    def create(self: OnlyForTypeCheckers) -> NotDefinedAnywhere:  # noqa: F821  # ty: ignore[unresolved-reference]
+        return 1
 
 
-def test_a_result_type_that_names_nothing_fails_before_create_runs() -> None:
-    with pytest.raises(NameError, match="NotDefinedAnywhere"):
-        UnresolvableResult().create()
+def test_furu_never_evaluates_create_annotations() -> None:
+    assert UnresolvableResult().create() == 1
 
 
 def test_a_result_class_nested_in_its_spec_is_stored_and_loaded() -> None:
@@ -1153,7 +1113,7 @@ def test_arrays_and_tables_of_every_row_share_one_file_per_position(
     bundle_dir = tmp_path / "bundle"
     values = [_loo(seed) for seed in range(6)]
 
-    _save_rows(values, bundle_dir, declared_type=LooResult)
+    _save_rows(values, bundle_dir)
 
     assert _files(bundle_dir) == {
         "manifest.json",

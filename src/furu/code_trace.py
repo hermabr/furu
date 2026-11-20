@@ -871,9 +871,6 @@ class _Collector:
         if (rel := _rel(code.co_filename, self.root)) is None:
             return
         qualname = code.co_qualname.split(".<locals>", 1)[0]
-        if qualname.rpartition(".")[2] == "__annotate__":
-            # Python 3.14+ runs it when anything reads annotations, furu too.
-            return
         with self._lock:
             if rel not in self.hashes:
                 self.record(rel, importing=qualname == "<module>")

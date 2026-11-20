@@ -503,7 +503,6 @@ def _save_result_bundle(
     values: Sequence[object],
     bundle_dir: Path,
     *,
-    declared_type: object,
     result_codecs: tuple[type[Codec], ...],
     data_dir: Path,
     label: str,
@@ -515,7 +514,7 @@ def _save_result_bundle(
     manifest: list[JsonValue] = []
     for row, value in enumerate(values):
         writer.row = row
-        manifest.append(_dump_value(value, declared_type, (), writer))
+        manifest.append(_dump_value(value, Any, (), writer))
     _save_columns(writer.columns, bundle_dir, data_dir=data_dir, label=label)
     # One row per line, so that a row can be found by hand.
     (bundle_dir / MANIFEST_FILE_NAME).write_text(
