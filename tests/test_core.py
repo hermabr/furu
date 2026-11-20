@@ -56,14 +56,14 @@ def _from_line[TSpec: Spec](obj: TSpec) -> TSpec:
     return cast(TSpec, plan.Specs(plan.lines([obj]))[obj.object_id])
 
 
-class Node(Spec[str]):
+class Node(Spec):
     name: str
 
     def create(self) -> str:
         return f"Node({self.name})"
 
 
-class ThrottleIdentityNode(Spec[str]):
+class ThrottleIdentityNode(Spec):
     name: str
     throttle = Throttle(max_running=1)
 
@@ -83,7 +83,7 @@ class CustomStorageNode(Node):
         return Metadata(storage=Path("custom/data/location"))
 
 
-class NodePair(Spec[dict]):
+class NodePair(Spec):
     node1: Node
     node2: WeightedNode
     name: str | int
@@ -96,7 +96,7 @@ class NodePair(Spec[dict]):
         }
 
 
-class RandomObj(Spec[float]):
+class RandomObj(Spec):
     id: int
 
     def create(self) -> float:
@@ -106,7 +106,7 @@ class RandomObj(Spec[float]):
         return random.random()
 
 
-class UserDataWritingValue(Spec[str]):
+class UserDataWritingValue(Spec):
     name: str
 
     def create(self) -> str:
@@ -115,12 +115,12 @@ class UserDataWritingValue(Spec[str]):
         return payload_path.read_text(encoding="utf-8")
 
 
-class DoneProbe(Spec[bool]):
+class DoneProbe(Spec):
     def create(self) -> bool:
         return self.done
 
 
-class DirectoryPeekingValue(Spec[str]):
+class DirectoryPeekingValue(Spec):
     def create(self) -> str:
         assert self.directory.data == self._attempt_dir / "data"
         with pytest.raises(RuntimeError, match=r"only available inside"):
@@ -128,7 +128,7 @@ class DirectoryPeekingValue(Spec[str]):
         return "ok"
 
 
-class BatchedDirectoryValue(Spec[Path]):
+class BatchedDirectoryValue(Spec):
     key: int
 
     def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
@@ -147,7 +147,7 @@ class BatchedDirectoryValue(Spec[Path]):
         return paths
 
 
-class ScratchWritingValue(Spec[str]):
+class ScratchWritingValue(Spec):
     name: str
 
     def create(self) -> str:
@@ -188,7 +188,7 @@ class B[T](Spec):
             "__annotations__": ann,
             "_hidden": 0,
         }
-        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[call-non-callable]
+        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[not-callable]
 
         Hidden = types.new_class(
             cls.__name__,
@@ -209,28 +209,28 @@ class B_priv(B):
         return super().create()
 
 
-class UsesPath(Spec[str]):
+class UsesPath(Spec):
     path: Path
 
     def create(self) -> str:
         return str(self.path)
 
 
-class UsesDatetime(Spec[str]):
+class UsesDatetime(Spec):
     dt: datetime
 
     def create(self) -> str:
         return self.dt.isoformat()
 
 
-class UsesClassValue(Spec[None]):
+class UsesClassValue(Spec):
     node_cls: type[Node]
 
     def create(self) -> None:
         return None
 
 
-class UsesContainers(Spec[None]):
+class UsesContainers(Spec):
     ints: set[int]
     frozen: frozenset[str]
     pair: tuple[Path, int]
@@ -241,7 +241,7 @@ class UsesContainers(Spec[None]):
         return None
 
 
-class LoggedLeaf(Spec[str]):
+class LoggedLeaf(Spec):
     name: str
 
     def create(self) -> str:
@@ -249,7 +249,7 @@ class LoggedLeaf(Spec[str]):
         return f"leaf:{self.name}"
 
 
-class StdlibLoggingLeaf(Spec[str]):
+class StdlibLoggingLeaf(Spec):
     name: str
 
     def create(self) -> str:
@@ -257,7 +257,7 @@ class StdlibLoggingLeaf(Spec[str]):
         return f"stdlib:{self.name}"
 
 
-class LoggedParent(Spec[dict[str, str]]):
+class LoggedParent(Spec):
     child_name: str
 
     def create(self) -> dict[str, str]:
@@ -272,7 +272,7 @@ class PydanticSubclass(BaseModel):
     field1: int
 
 
-class PydanticFields(Spec[None]):
+class PydanticFields(Spec):
     pydantic_obj: PydanticSubclass
 
     def create(self) -> None:
@@ -282,7 +282,7 @@ class PydanticFields(Spec[None]):
 GROUP_EXECUTION_EVENTS: list[tuple[str, tuple[int, ...]]] = []
 
 
-class CountedSingleValue(Spec[str]):
+class CountedSingleValue(Spec):
     key: int
     create_calls: ClassVar[list[int]] = []
 
@@ -292,7 +292,7 @@ class CountedSingleValue(Spec[str]):
         return f"single:{self.key}"
 
 
-class NoWorkerNode(Spec[str]):
+class NoWorkerNode(Spec):
     name: str
     storage_override: ClassVar[Path] = Path("unsatisfiable-root")
 
@@ -306,7 +306,7 @@ class NoWorkerNode(Spec[str]):
         return self.name
 
 
-class ObjectIdStorageValue(Spec[str]):
+class ObjectIdStorageValue(Spec):
     key: int
     storage_override: ClassVar[Path] = Path("object-id-root")
     create_calls: ClassVar[list[int]] = []
@@ -319,11 +319,11 @@ class ObjectIdStorageValue(Spec[str]):
         return f"object-id:{self.key}"
 
 
-class NoCreateHookValue(Spec[str]):
+class NoCreateHookValue(Spec):
     key: int
 
 
-class BatchOnlyValue(furu.Spec[str]):
+class BatchOnlyValue(furu.Spec):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
@@ -343,7 +343,7 @@ class InheritedHookBatchValue(BatchOnlyValue):
     pass
 
 
-class KeyedBatchValue(furu.Spec[str]):
+class KeyedBatchValue(furu.Spec):
     key: int
     group: str
     cap: int = 1024
@@ -362,7 +362,7 @@ class KeyedBatchValue(furu.Spec[str]):
         return [f"keyed:{obj.group}:{obj.key}" for obj in objs]
 
 
-class GroupBatchA(furu.Spec[str]):
+class GroupBatchA(furu.Spec):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
@@ -377,7 +377,7 @@ class GroupBatchA(furu.Spec[str]):
         return [f"group-a:{obj.key}" for obj in objs]
 
 
-class GroupBatchB(furu.Spec[str]):
+class GroupBatchB(furu.Spec):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
@@ -392,7 +392,7 @@ class GroupBatchB(furu.Spec[str]):
         return [f"group-b:{obj.key}" for obj in objs]
 
 
-class LoggedBatchValue(furu.Spec[str]):
+class LoggedBatchValue(furu.Spec):
     key: int
 
     def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
@@ -407,7 +407,7 @@ class LoggedBatchValue(furu.Spec[str]):
         return [f"logged-batch:{obj.key}" for obj in objs]
 
 
-class MixedMetadataValue(furu.Spec[int]):
+class MixedMetadataValue(furu.Spec):
     key: int
 
     def metadata(self) -> Metadata:
@@ -424,7 +424,7 @@ class MixedMetadataValue(furu.Spec[int]):
 BATCH_KEYS: dict[int, object] = {}
 
 
-class KeyedValue(furu.Spec[int]):
+class KeyedValue(furu.Spec):
     n: int
 
     @furu.batched(lambda spec, worker: (BATCH_KEYS[spec.n], 1024))
@@ -432,7 +432,7 @@ class KeyedValue(furu.Spec[int]):
         return [obj.n for obj in objs]
 
 
-class LoggedSingleValue(Spec[str]):
+class LoggedSingleValue(Spec):
     key: int
 
     def create(self) -> str:
@@ -440,7 +440,7 @@ class LoggedSingleValue(Spec[str]):
         return f"logged-single:{self.key}"
 
 
-class FailingBatchValue(furu.Spec[str]):
+class FailingBatchValue(furu.Spec):
     key: int
 
     def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
@@ -454,21 +454,21 @@ class FailingBatchValue(furu.Spec[str]):
         raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
 
 
-class FailingSingleValue(Spec[str]):
+class FailingSingleValue(Spec):
     key: int
 
     def create(self) -> str:
         raise RuntimeError(f"failed single for {self.key}")
 
 
-class InterruptingValue(Spec[str]):
+class InterruptingValue(Spec):
     key: int
 
     def create(self) -> str:
         raise KeyboardInterrupt
 
 
-class MetadataTimingValue(Spec[str]):
+class MetadataTimingValue(Spec):
     key: int
     create_events: ClassVar[list[tuple[int, bool, bool]]] = []
     siblings_by_key: ClassVar[dict[int, "MetadataTimingValue"]] = {}
@@ -492,14 +492,14 @@ class DependencyBundle:
     second: WeightedNode
 
 
-class NestedDependencyParent(Spec[str]):
+class NestedDependencyParent(Spec):
     bundle: DependencyBundle
 
     def create(self) -> str:
         return self.bundle.first.create()
 
 
-class ComputedDependencyParent(Spec[str]):
+class ComputedDependencyParent(Spec):
     name: str
 
     @furu.dependency
@@ -510,7 +510,7 @@ class ComputedDependencyParent(Spec[str]):
         return self.child.create()
 
 
-class TreeDependencyParent(Spec[str]):
+class TreeDependencyParent(Spec):
     names: tuple[str, ...]
 
     @furu.dependency
@@ -523,7 +523,7 @@ class TreeDependencyParent(Spec[str]):
         return ""
 
 
-class CountingDependencyParent(Spec[str]):
+class CountingDependencyParent(Spec):
     name: str
     calls: ClassVar[int] = 0
 
@@ -536,14 +536,14 @@ class CountingDependencyParent(Spec[str]):
         return self.child.create()
 
 
-class LoadsDeclaredDependencyParent(Spec[str]):
+class LoadsDeclaredDependencyParent(Spec):
     child: Node
 
     def create(self) -> str:
         return self.child.load_existing()
 
 
-class BatchDependencyParent(furu.Spec[str]):
+class BatchDependencyParent(furu.Spec):
     key: int
     eager: Node
 
@@ -598,8 +598,8 @@ def test_frozen_dataclass_inheritance():
 def test_reserved_field_name_raises_at_class_creation():
     with pytest.raises(TypeError) as excinfo:
 
-        class DoneField(Spec[int]):
-            done: str  # ty: ignore[override-of-final-method,invalid-property-type-override]
+        class DoneField(Spec):
+            done: str  # ty: ignore[override-of-final-method,incompatible-property-override]
 
             def create(self) -> int:
                 return 0
@@ -625,7 +625,7 @@ def test_unannotated_public_attribute_raises_clear_error():
         TypeError, match="UnannotatedParameter.a must have a type annotation"
     ):
 
-        class UnannotatedParameter(Spec[int]):
+        class UnannotatedParameter(Spec):
             a = 1
 
             def create(self) -> int:
@@ -637,7 +637,7 @@ def test_unannotated_private_attribute_raises_clear_error():
         TypeError, match="UnannotatedPrivate._a must have a type annotation"
     ):
 
-        class UnannotatedPrivate(Spec[int]):
+        class UnannotatedPrivate(Spec):
             _a = 1
 
             def create(self) -> int:
@@ -704,9 +704,9 @@ def test_hashes_and_data_dir():
         )._class_part
     )
 
-    def qualname_alias(cls: type[Spec[object]], *, ret_typ: type) -> type[Spec[object]]:
+    def qualname_alias(cls: type[Spec], *, ret_typ: type) -> type[Spec]:
         namespace: dict[str, object] = {"__module__": cls.__module__}
-        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[call-non-callable]
+        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[not-callable]
         alias = type(ret_typ.__qualname__, (cls,), namespace)
         alias.__qualname__ = ret_typ.__qualname__
         return alias
@@ -946,7 +946,7 @@ def test_a_spec_from_a_line_calls_its_dependency_method_when_the_field_is_read()
 def test_a_dependency_without_a_return_annotation_is_rejected() -> None:
     with pytest.raises(TypeError, match="needs a return annotation"):
 
-        class Untyped(Spec[str]):
+        class Untyped(Spec):
             @furu.dependency
             def child(self):
                 return Node(name="x")
@@ -998,7 +998,7 @@ def test_create_and_load_existing_map_specs_through_pytrees() -> None:
     }
 
 
-class _ParentIgnoringChild(Spec[str]):
+class _ParentIgnoringChild(Spec):
     child: Node
 
     def create(self) -> str:
@@ -1108,7 +1108,7 @@ def test_throttle_defaults_to_none():
 
 
 def test_throttle_can_be_overridden_as_class_attribute():
-    class LimitedNode(Spec[str]):
+    class LimitedNode(Spec):
         name: str
         throttle = Throttle(max_running=5)
 
@@ -1138,7 +1138,7 @@ def test_throttle_does_not_affect_object_identity():
 
 
 def test_runs_on_can_depend_on_fields():
-    class HeavyNode(Spec[str]):
+    class HeavyNode(Spec):
         name: str
         big: bool
 
@@ -1406,9 +1406,9 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
 def test_create_hook_flavor_validation() -> None:
     with pytest.raises(TypeError, match="needs a batch key function"):
 
-        class BareBatchedDecorator(Spec[int]):
+        class BareBatchedDecorator(Spec):
             @furu.batched  # ty: ignore[invalid-argument-type]
-            def create(  # ty: ignore[invalid-attribute-override]
+            def create(  # ty: ignore[incompatible-attribute-override]
                 objs: list["BareBatchedDecorator"],
             ) -> list[int]:
                 return [1 for _ in objs]
@@ -1418,7 +1418,7 @@ def test_create_hook_flavor_validation() -> None:
 
     with pytest.raises(TypeError, match=r"can only decorate create\(\)"):
 
-        class BatchedNonCreateMethod(Spec[int]):
+        class BatchedNonCreateMethod(Spec):
             @furu.batched(lambda _, __: (None, 1))
             def run(
                 objs: list["BatchedNonCreateMethod"], directory: furu.SpecDirectory
@@ -1426,7 +1426,7 @@ def test_create_hook_flavor_validation() -> None:
                 return [1 for _ in objs]
 
     # Abstract intermediate bases defining no hook stay legal.
-    class NoCreateHook(Spec[int]):
+    class NoCreateHook(Spec):
         value: int
 
 
@@ -1435,7 +1435,6 @@ def test_no_create_hook_loads_cached_result() -> None:
     _save_result_bundle(
         ["cached:1"],
         result_dir_in(fixed_run(obj)),
-        declared_type=str,
         result_codecs=(),
         data_dir=data_dir_in(fixed_run(obj)),
         label="NoCreateHookValue",
@@ -1466,7 +1465,6 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
-            declared_type=str,
             result_codecs=(),
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
@@ -1556,7 +1554,7 @@ def test_batch_key_cap_chunks_batched_create_calls() -> None:
     ]
 
 
-class PerGpuBatch(furu.Spec[int]):
+class PerGpuBatch(furu.Spec):
     key: int
 
     @furu.batched(lambda _, worker: (None, worker.gpus))
@@ -1639,7 +1637,6 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
-            declared_type=str,
             result_codecs=(),
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",

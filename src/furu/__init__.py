@@ -1,7 +1,7 @@
 from importlib.metadata import version
 
 from furu._batched import batched
-from furu.core import Missing, Spec
+from furu.core import Creates, Missing, Spec
 from furu.dependencies import dependency
 from furu.execution.load_or_create import build, create, load_existing
 from furu.logging import get_logger
@@ -26,6 +26,7 @@ __version__ = version("furu")
 __all__ = [
     "Added",
     "Codec",
+    "Creates",
     "Metadata",
     "MigrationStep",
     "Missing",

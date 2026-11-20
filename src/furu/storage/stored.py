@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple, cast
+from typing import TYPE_CHECKING, NamedTuple
 
 from furu._batched import is_batched
 from furu.code_trace import versions
@@ -195,14 +195,14 @@ def why_rerun(class_dir: Path, run: str) -> str | None:
     return max(outdated)[1] if outdated else None
 
 
-def load_rows[T](objs: Sequence[Spec[T]], rows: Sequence[Row]) -> list[T]:
+def load_rows(objs: Sequence[Spec], rows: Sequence[Row]) -> list[object]:
     """Each spec's result from its row, reading every run's files once.
 
     Rows of one run are read together, so a codec is handed the rows that
     share a file in one call. Each run counts as loaded by the create() that
     is running.
     """
-    by_run: dict[Path, dict[int, Spec[T]]] = {}
+    by_run: dict[Path, dict[int, Spec]] = {}
     for obj, row in zip(objs, rows, strict=True):
         by_run.setdefault(row.run, {})[row.index] = obj
     values: dict[Row, object] = {}
@@ -212,4 +212,4 @@ def load_rows[T](objs: Sequence[Spec[T]], rows: Sequence[Row]) -> list[T]:
             result_dir_in(run), list(held), data_dir=data_dir_in(run)
         )
         values.update(zip((Row(run, index) for index in held), loaded, strict=True))
-    return [cast(T, values[row]) for row in rows]
+    return [values[row] for row in rows]

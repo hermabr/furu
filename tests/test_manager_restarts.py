@@ -30,7 +30,7 @@ from furu.worker.backends.local import LocalThreadWorkerBackend
 _serve = Manager.serve
 
 
-class GatedLeaf(Spec[int]):
+class GatedLeaf(Spec):
     """Notes each create() call, then waits until the test opens the gate."""
 
     gate: str

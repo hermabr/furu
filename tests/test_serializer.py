@@ -89,14 +89,14 @@ class _RegistrySecretSerializer(_DecimalSecretSerializer):
         return _Secret(field)
 
 
-class _AnnotatedSecretRun(Spec[int]):
+class _AnnotatedSecretRun(Spec):
     secret: Annotated[_Secret, _HexSecretSerializer]
 
     def create(self) -> int:
         return self.secret.value
 
 
-class _RegistrySecretRun(Spec[int]):
+class _RegistrySecretRun(Spec):
     secret: _Secret
     artifact_serializers = (_RegistrySecretSerializer,)
 
@@ -104,7 +104,7 @@ class _RegistrySecretRun(Spec[int]):
         return self.secret.value
 
 
-class _ClassHookSecretRun(Spec[int]):
+class _ClassHookSecretRun(Spec):
     secret: _ClassHookSecret
 
     def create(self) -> int:
@@ -229,14 +229,14 @@ class _Lowered:
     __furu_serializer__ = _LowerSerializer
 
 
-class _AutoRegisteredValueRun(Spec[int]):
+class _AutoRegisteredValueRun(Spec):
     value: _AutoRegisteredValue
 
     def create(self) -> int:
         return self.value.value
 
 
-class _RegistryAutoRegisteredValueRun(Spec[int]):
+class _RegistryAutoRegisteredValueRun(Spec):
     value: _AutoRegisteredValue
     artifact_serializers = (_RegistryAutoRegisteredValueSerializer,)
 
@@ -244,7 +244,7 @@ class _RegistryAutoRegisteredValueRun(Spec[int]):
         return self.value.value
 
 
-class _AnnotatedAutoRegisteredValueRun(Spec[int]):
+class _AnnotatedAutoRegisteredValueRun(Spec):
     value: Annotated[
         _AutoRegisteredValue,
         _RegistryAutoRegisteredValueSerializer,
@@ -294,14 +294,14 @@ class _Name(StrEnum):
     FAST = "fast"
 
 
-class _HoldsValue(Spec[None]):
+class _HoldsValue(Spec):
     value: object
 
     def create(self) -> None:
         return None
 
 
-class _HoldsMode(Spec[str]):
+class _HoldsMode(Spec):
     mode: Literal["fast", "slow"]
 
     def create(self) -> str:

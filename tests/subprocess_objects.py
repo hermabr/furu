@@ -26,7 +26,7 @@ def _pid_and_variable(name: str) -> str:
     return f"{os.getpid()}:{os.environ.get(name)}"
 
 
-class SubprocessEnvLeaf(Spec[str]):
+class SubprocessEnvLeaf(Spec):
     variable_name: str
     variable_value: str | None
     reuse: Reuse = "same_environment"
@@ -44,7 +44,7 @@ class SubprocessEnvLeaf(Spec[str]):
         return _pid_and_variable(self.variable_name)
 
 
-class OtherSubprocessEnvLeaf(Spec[str]):
+class OtherSubprocessEnvLeaf(Spec):
     variable_name: str
     variable_value: str | None
     reuse: Reuse = "same_environment"
@@ -60,7 +60,7 @@ class OtherSubprocessEnvLeaf(Spec[str]):
         return _pid_and_variable(self.variable_name)
 
 
-class SubprocessBatchLeaf(Spec[str]):
+class SubprocessBatchLeaf(Spec):
     value: int
 
     @batched(lambda _, __: (None, 8))
@@ -70,19 +70,19 @@ class SubprocessBatchLeaf(Spec[str]):
         return [f"{os.getpid()}:{obj.value}" for obj in objs]
 
 
-class SubprocessCwdLeaf(Spec[str]):
+class SubprocessCwdLeaf(Spec):
     marker: int = 0
 
     def create(self) -> str:
         return f"{os.getpid()}:{Path.cwd()}\n{furu.submitting_repo_root()}"
 
 
-class SubprocessSnapshotsDirectoryLeaf(Spec[str]):
+class SubprocessSnapshotsDirectoryLeaf(Spec):
     def create(self) -> str:
         return f"{os.getpid()}:{get_config().directories.snapshots}"
 
 
-class SubprocessCrashLeaf(Spec[str]):
+class SubprocessCrashLeaf(Spec):
     marker: int = 0
 
     def create(self) -> str:
@@ -91,21 +91,21 @@ class SubprocessCrashLeaf(Spec[str]):
         return "unreachable"
 
 
-class SubprocessDependencyLeaf(Spec[str]):
+class SubprocessDependencyLeaf(Spec):
     marker: int = 0
 
     def create(self) -> str:
         return "dependency"
 
 
-class SubprocessBlockedParent(Spec[str]):
+class SubprocessBlockedParent(Spec):
     marker: int = 0
 
     def create(self) -> str:
         return SubprocessDependencyLeaf(marker=self.marker).create()
 
 
-class SubprocessChattyLeaf(Spec[str]):
+class SubprocessChattyLeaf(Spec):
     """Writes through every channel a job has: print, stdlib logging, raw fd 2."""
 
     marker: int = 0
@@ -118,7 +118,7 @@ class SubprocessChattyLeaf(Spec[str]):
         return _pid_and_variable("FURU_TEST_VARIABLE")
 
 
-class SubprocessForkingLeaf(Spec[str]):
+class SubprocessForkingLeaf(Spec):
     """Forks a helper that outlives the job, then waits to be cancelled."""
 
     pid_file: str

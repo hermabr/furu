@@ -296,14 +296,14 @@ def _serve(handler: Callable[[ServerConnection], None]) -> Generator[str]:
         thread.join(timeout=5)
 
 
-class RunLeaf(Spec[int]):
+class RunLeaf(Spec):
     value: int
 
     def create(self) -> int:
         return self.value
 
 
-class FlakyRunLeaf(Spec[int]):
+class FlakyRunLeaf(Spec):
     value: int
     attempts_file: str
 
@@ -316,7 +316,7 @@ class FlakyRunLeaf(Spec[int]):
         return self.value
 
 
-class GatedRunLeaf(Spec[int]):
+class GatedRunLeaf(Spec):
     value: int
     release_file: str
 
@@ -329,7 +329,7 @@ class GatedRunLeaf(Spec[int]):
         return self.value
 
 
-class LimitedRunLeaf(Spec[int]):
+class LimitedRunLeaf(Spec):
     value: int
     throttle = Throttle(max_running=2)
 
@@ -337,7 +337,7 @@ class LimitedRunLeaf(Spec[int]):
         return self.value
 
 
-class BatchedRunLeaf(furu.Spec[int]):
+class BatchedRunLeaf(furu.Spec):
     value: int
     group: str = "g"
     cap: int = 10
@@ -352,7 +352,7 @@ class BatchedRunLeaf(furu.Spec[int]):
         return [obj.value for obj in objs]
 
 
-class MixedMetadataLeaf(furu.Spec[int]):
+class MixedMetadataLeaf(furu.Spec):
     value: int
 
     def metadata(self) -> furu.Metadata:
@@ -365,7 +365,7 @@ class MixedMetadataLeaf(furu.Spec[int]):
         return [obj.value for obj in objs]
 
 
-class BatchSizeRunLeaf(furu.Spec[int]):
+class BatchSizeRunLeaf(furu.Spec):
     value: int
 
     @furu.batched(lambda _, __: (None, 10))
@@ -375,14 +375,14 @@ class BatchSizeRunLeaf(furu.Spec[int]):
         return [len(objs)] * len(objs)
 
 
-class OptionalLoadLeaf(furu.Spec[str]):
+class OptionalLoadLeaf(furu.Spec):
     name: str
 
     def create(self) -> str:
         return self.name
 
 
-class OptionalLoadParent(furu.Spec[str]):
+class OptionalLoadParent(furu.Spec):
     name: str
 
     def create(self) -> str:
@@ -392,7 +392,7 @@ class OptionalLoadParent(furu.Spec[str]):
             return "missing"
 
 
-class GpuBatchedLeaf(furu.Spec[int]):
+class GpuBatchedLeaf(furu.Spec):
     value: int
 
     def runs_on(self, worker: Worker) -> bool:
@@ -405,7 +405,7 @@ class GpuBatchedLeaf(furu.Spec[int]):
         return [obj.value for obj in objs]
 
 
-class PerGpuBatchedLeaf(furu.Spec[int]):
+class PerGpuBatchedLeaf(furu.Spec):
     value: int
 
     @furu.batched(lambda _, worker: (None, worker.gpus))
@@ -415,7 +415,7 @@ class PerGpuBatchedLeaf(furu.Spec[int]):
         return [obj.value for obj in objs]
 
 
-class ThrottledBatchedRunLeaf(furu.Spec[int]):
+class ThrottledBatchedRunLeaf(furu.Spec):
     value: int
     throttle = Throttle(max_running=2)
 
@@ -429,21 +429,21 @@ class ThrottledBatchedRunLeaf(furu.Spec[int]):
         return [obj.value for obj in objs]
 
 
-class RunParent(Spec[int]):
+class RunParent(Spec):
     child: RunLeaf
 
     def create(self) -> int:
         return self.child.create() + 1
 
 
-class RunLazyParent(Spec[int]):
+class RunLazyParent(Spec):
     value: int
 
     def create(self) -> int:
         return RunLeaf(value=self.value).create() + 1
 
 
-class GpuLeaf(Spec[int]):
+class GpuLeaf(Spec):
     value: int
 
     def runs_on(self, worker: Worker) -> bool:
@@ -453,14 +453,14 @@ class GpuLeaf(Spec[int]):
         return self.value
 
 
-class CpuOnlyLeaf(Spec[int]):
+class CpuOnlyLeaf(Spec):
     value: int
 
     def create(self) -> int:
         return self.value
 
 
-class MemoryLeaf(Spec[int]):
+class MemoryLeaf(Spec):
     value: int
 
     def runs_on(self, worker: Worker) -> bool:
@@ -470,14 +470,14 @@ class MemoryLeaf(Spec[int]):
         return self.value
 
 
-class DynamicCpuSeed(Spec[int]):
+class DynamicCpuSeed(Spec):
     value: int
 
     def create(self) -> int:
         return self.value
 
 
-class DynamicGpuAfterSeed(Spec[int]):
+class DynamicGpuAfterSeed(Spec):
     parent: DynamicCpuSeed
     value: int
 
@@ -488,7 +488,7 @@ class DynamicGpuAfterSeed(Spec[int]):
         return self.parent.create() + self.value
 
 
-class DynamicCpuAfterGpu(Spec[int]):
+class DynamicCpuAfterGpu(Spec):
     parent: DynamicGpuAfterSeed
     value: int
 
@@ -496,7 +496,7 @@ class DynamicCpuAfterGpu(Spec[int]):
         return self.parent.create() + self.value
 
 
-class DynamicGpuAfterCpu(Spec[int]):
+class DynamicGpuAfterCpu(Spec):
     parent: DynamicCpuAfterGpu
     value: int
 
@@ -507,7 +507,7 @@ class DynamicGpuAfterCpu(Spec[int]):
         return self.parent.create() + self.value
 
 
-class SharesLeaves(Spec[int]):
+class SharesLeaves(Spec):
     name: str
     leaves: tuple[RunLeaf, ...]
 
@@ -515,7 +515,7 @@ class SharesLeaves(Spec[int]):
         return len(self.leaves)
 
 
-class ReturnsLeaves(Spec[int]):
+class ReturnsLeaves(Spec):
     count: int
 
     @furu.dependency
@@ -526,7 +526,7 @@ class ReturnsLeaves(Spec[int]):
         return len(self.leaves)
 
 
-class SweepLeaf(furu.Spec[int]):
+class SweepLeaf(furu.Spec):
     """A batch of these is as large as its worker has CPUs."""
 
     value: int

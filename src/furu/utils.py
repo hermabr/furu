@@ -7,6 +7,7 @@ import sys
 import uuid
 from enum import Enum
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from pydantic import JsonValue  # noqa: F401  (furu's JSON type, imported from here)
@@ -47,7 +48,10 @@ def fully_qualified_name(value: object) -> str:
     if "<locals>" in qualname:
         raise ValueError("Cannot serialize local classes")
     elif "." in qualname:
-        raise ValueError("Cannot serialize nested classes")
+        raise ValueError(
+            f"Cannot serialize nested class {qualname}: only a class stored in a "
+            "result may be nested, and only directly in a spec"
+        )
     elif isinstance(value, type) and issubclass(value, Enum):
         raise ValueError(
             "TODO: support this in the future"
@@ -67,11 +71,18 @@ def fully_qualified_name(value: object) -> str:
 
 
 def resolve_fully_qualified_name(name: str) -> Any:
-    module_name, _, attr_name = name.rpartition(".")
-    if not module_name or not attr_name:
-        raise ValueError(f"Expected fully qualified name, got {name!r}")
+    """What ``fully_qualified_name`` named, read the way Python reads ``a.b.C.D``.
 
-    return getattr(importlib.import_module(module_name), attr_name)
+    Each part is an attribute of the one before it; a submodule that is not
+    an attribute of its package yet is imported.
+    """
+    first, *rest = name.split(".")
+    value = importlib.import_module(first)
+    for i, part in enumerate(rest, 1):
+        if isinstance(value, ModuleType) and not hasattr(value, part):
+            importlib.import_module(".".join([first, *rest[:i]]))
+        value = getattr(value, part)
+    return value
 
 
 def spec_label(fully_qualified_name: str, class_part: str, artifact_hash: str) -> str:

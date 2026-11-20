@@ -30,7 +30,7 @@ def _spec(
     migrations: object = (),
     create: Callable[[Any], int] = lambda self: next(_runs),
     **fields: Any,
-) -> Callable[..., Spec[int]]:
+) -> Callable[..., Spec]:
     """The spec class ``name`` as its source reads at one point in time.
 
     A field is ``name=type`` or ``name=(type, default)``, and a function is a
@@ -50,7 +50,7 @@ def _spec(
             body["__annotations__"][field], body[field] = declared
         else:
             body["__annotations__"][field] = declared
-    return types.new_class(name, (Spec[int],), exec_body=lambda ns: ns.update(body))
+    return types.new_class(name, (Spec,), exec_body=lambda ns: ns.update(body))
 
 
 def _nested(
@@ -155,7 +155,7 @@ def test_a_moved_class_keeps_its_old_name_in_ids_and_folders() -> None:
     assert [path.name for path in storage.iterdir()] == [old_name]
 
 
-class Relocated(Spec[int]):
+class Relocated(Spec):
     migrations = (MovedFrom("old_package.Original"),)
     x: int
 
@@ -314,7 +314,7 @@ def test_a_new_class_folder_records_every_default_before_its_first_result() -> N
     ]
 
 
-class Failing(Spec[int]):
+class Failing(Spec):
     lemma: str
 
     def create(self) -> int:
@@ -333,18 +333,16 @@ def test_a_class_folder_is_recorded_before_its_first_create_runs() -> None:
     assert not after._class_dir.exists()
 
 
-class _Sources:
-    @dataclass(frozen=True)
-    class Vimeo:  # inside another class: refused
-        clip: str
-
-
 def test_a_refused_dataclass_does_not_break_its_holder_for_the_process() -> None:
     clip = _spec("Clip", source=Any)
     youtube = _nested("Youtube", clip=str)
 
-    with pytest.raises(ValueError, match="nested classes"):
-        clip(source=_Sources.Vimeo(clip="b")).create()
+    @dataclass(frozen=True)
+    class Vimeo:  # inside a function: refused
+        clip: str
+
+    with pytest.raises(ValueError, match="local classes"):
+        clip(source=Vimeo(clip="b")).create()
     clip(source=youtube(clip="a")).create()
 
 
@@ -368,7 +366,7 @@ def test_a_nested_default_is_recorded_for_one_class_part_of_the_nested_class() -
 def test_an_edited_default_stops_with_the_step_and_both_values(
     nested: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def video(default: int) -> Spec[int]:
+    def video(default: int) -> Spec:
         step = Added("fps", default=default)
         if nested:
             source = _nested(clip=str, fps=(int, default), migrations=(step,))
@@ -393,7 +391,7 @@ def test_an_edited_default_stops_with_the_step_and_both_values(
 
 
 def test_a_default_another_checkout_recorded_after_a_lookup_stops_the_next() -> None:
-    def merge(default: float) -> Spec[int]:
+    def merge(default: float) -> Spec:
         step = Added("min_overlap", default=default)
         return _spec(lemma=str, min_overlap=(float, default), migrations=(step,))(
             lemma="comer"
@@ -464,17 +462,17 @@ def test_a_names_line_cut_short_is_written_again() -> None:
     assert path.read_text() == '{"names":["le\n{"names":["lemma"]}\n'
 
 
-def _in_process(spec: Spec[int]) -> int:
+def _in_process(spec: Spec) -> int:
     return spec.create()
 
 
-def _on_workers(spec: Spec[int]) -> int:
+def _on_workers(spec: Spec) -> int:
     return furu.create(spec, on=[LocalThreadWorkerBackend()])
 
 
 @pytest.mark.parametrize("launch", [_in_process, _on_workers])
 def test_a_launch_asks_before_it_leaves_stored_results_behind(
-    launch: Callable[[Spec[int]], int],
+    launch: Callable[[Spec], int],
 ) -> None:
     old = _spec(lemma=str)(lemma="comer")
     old.create()
@@ -626,7 +624,7 @@ def test_a_spec_built_inside_a_create_is_checked_where_it_is_built(
     old.create()
     tok = _spec("Tok", v=int, extra=(int, 0))
 
-    def a_tok(self: Any) -> Spec[int]:
+    def a_tok(self: Any) -> Spec:
         return tok(v=int(self.peak))
 
     # The class that changed is under the spec the create() asks for.

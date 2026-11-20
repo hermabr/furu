@@ -32,14 +32,14 @@ from furu.storage._layout import (
 )
 
 
-class Leaf(Spec[int]):
+class Leaf(Spec):
     n: int
 
     def create(self) -> int:
         return self.n
 
 
-class Train(Spec[float]):
+class Train(Spec):
     seed: int
 
     @furu.batched(lambda spec, worker: (None, 100))
@@ -47,7 +47,7 @@ class Train(Spec[float]):
         return [spec.seed / 10 for spec in specs]
 
 
-class Weights(Spec[Any]):
+class Weights(Spec):
     seed: int
     locks: ClassVar[list[str]] = []
 
@@ -58,14 +58,14 @@ class Weights(Spec[Any]):
         return [np.full(3, spec.seed) for spec in specs]
 
 
-class Merge(Spec[int]):
+class Merge(Spec):
     n: int
 
     def create(self) -> int:
         return self.n
 
 
-class BatchedMerge(Spec[int]):
+class BatchedMerge(Spec):
     """Merge once it has the decorator: the same class as far as ids go."""
 
     n: int
@@ -89,7 +89,7 @@ def _compute_again(specs: Sequence[Spec], monkeypatch: pytest.MonkeyPatch) -> No
         load_or_create._ensure_group_result(specs)
 
 
-class FailsAsABatch(Spec[int]):
+class FailsAsABatch(Spec):
     n: int
 
     @furu.batched(lambda spec, worker: (None, 100))
@@ -101,14 +101,14 @@ class FailsAsABatch(Spec[int]):
         return [spec.n for spec in specs]
 
 
-class LosesItsLock(Spec[int]):
+class LosesItsLock(Spec):
     def create(self) -> int:
         # As if paused past the stale window, so that a successor took over.
         lock_path_in(self._class_dir, self._artifact_hash).unlink()
         return 1
 
 
-class BlocksThenFailsOnce(Spec[int]):
+class BlocksThenFailsOnce(Spec):
     def create(self) -> int:
         value = Leaf(n=7).create()
         failed = self.directory.scratch / "failed"

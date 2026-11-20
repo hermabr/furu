@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, assert_type
 
 import furu
 
 
-class TypingChild(furu.Spec[int]):
+class TypingChild(furu.Spec):
     def create(self) -> int:
         return 1
 
 
-class TypingParent(furu.Spec[str]):
+class TypingParent(furu.Spec):
     def create(self) -> str:
         return str(
             self.cached_child.create() + sum(child.create() for child in self.children)
@@ -26,7 +27,7 @@ class TypingParent(furu.Spec[str]):
         return [TypingChild()]
 
 
-class TypingBatched(furu.Spec[str]):
+class TypingBatched(furu.Spec):
     key: int
 
     def batch_key(self, worker: furu.Worker) -> tuple[int, int]:
@@ -40,6 +41,19 @@ class TypingBatched(furu.Spec[str]):
 @dataclass(frozen=True)
 class TypingOutput:
     weights: list[int]
+
+
+class TypingTrain(furu.Spec):
+    @dataclass(frozen=True)
+    class Result:
+        loss: float
+
+    def create(self) -> Result:
+        return self.Result(loss=1.0)
+
+
+def typing_create_all[T](specs: Sequence[furu.Creates[T]]) -> list[T]:
+    return furu.create(specs)
 
 
 if TYPE_CHECKING:
@@ -63,7 +77,17 @@ if TYPE_CHECKING:
     assert_type(furu.create({"a": child}), dict[str, int])
     assert_type(furu.load_existing(child), int)
     assert_type(furu.load_existing((child, batched)), tuple[int, str])
-    # Shapes Python's type system cannot map Spec[T] -> T through are Any.
+    train = TypingTrain()
+    assert_type(train.create(), TypingTrain.Result)
+    assert_type(train.load_existing(), TypingTrain.Result)
+    assert_type(batched.load_existing(), str)
+    assert_type(furu.create(train).loss, float)
+    assert_type(furu.create([train, train]), list[TypingTrain.Result])
+    any_int: furu.Creates[int] = child
+    assert_type(typing_create_all([child, any_int]), list[int])
+    assert_type(any_int.load_existing(), int)
+    assert_type(any_int.done, bool)
+    # Shapes Python's type system cannot map Creates[T] -> T through are Any.
     assert_type(furu.create([[child]]), Any)
     assert_type(furu.create({"a": [child]}), Any)
     assert_type(furu.create(TypingOutput(weights=[1])), dict[str, Any])

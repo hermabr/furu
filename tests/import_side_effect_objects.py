@@ -16,6 +16,6 @@ if _marker_dir := os.environ.get("FURU_TEST_IMPORT_MARKER_DIR"):
     (Path(_marker_dir) / str(os.getpid())).touch()
 
 
-class ImportSideEffectLeaf(Spec[int]):
+class ImportSideEffectLeaf(Spec):
     def create(self) -> int:
         return os.getpid()

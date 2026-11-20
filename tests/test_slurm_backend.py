@@ -780,7 +780,7 @@ def test_slurm_pool_keeps_scaling_after_a_scale_tick_fails(
 # --- end to end --------------------------------------------------------------------
 
 
-class SlurmEndToEndLeaf(furu.Spec[str]):
+class SlurmEndToEndLeaf(furu.Spec):
     value: int
 
     def create(self) -> str:

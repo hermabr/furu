@@ -77,7 +77,7 @@ def _run(slot: ChildSlot, obj: Spec) -> JobResult:
     return slot.run(_job([obj]), cancelled=threading.Event())
 
 
-def _pid_and_value(obj: Spec[str]) -> tuple[int, str]:
+def _pid_and_value(obj: furu.Creates[str]) -> tuple[int, str]:
     pid, _, value = obj.load_existing().partition(":")
     return int(pid), value
 

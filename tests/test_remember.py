@@ -23,14 +23,14 @@ from furu.worker.backends.local import LocalThreadWorkerBackend
 _calls: list[int] = []
 
 
-class Cifar(Spec[int]):
+class Cifar(Spec):
     split: str
 
     def create(self) -> int:
         return 1
 
 
-class Train(Spec[int]):
+class Train(Spec):
     data: Cifar
     seed: int
 
@@ -38,7 +38,7 @@ class Train(Spec[int]):
         return self.seed
 
 
-class LooTable(Spec[int]):
+class LooTable(Spec):
     data: Cifar
     seeds: int
 
@@ -51,7 +51,7 @@ class LooTable(Spec[int]):
         return sum(furu.load_existing(self.runs))
 
 
-class InfluenceReport(Spec[int]):
+class InfluenceReport(Spec):
     table: LooTable
     top_k: int
 
@@ -59,14 +59,14 @@ class InfluenceReport(Spec[int]):
         return self.table.create() + self.top_k
 
 
-class Shortlist(Spec[int]):
+class Shortlist(Spec):
     table: LooTable
 
     def create(self) -> int:
         return len(self.table.runs)
 
 
-class EnvSweep(Spec[int]):
+class EnvSweep(Spec):
     name: str
 
     @furu.dependency(remember=True)
@@ -77,7 +77,7 @@ class EnvSweep(Spec[int]):
         return len(self.runs)
 
 
-class Scaled(Spec[int]):
+class Scaled(Spec):
     name: str
     scale: InitVar[int]
     size: int = field(init=False)
@@ -96,7 +96,7 @@ class Scaled(Spec[int]):
 SCALED = Scaled(name="s", scale=2)
 
 
-class StoredSplits(Spec[int]):
+class StoredSplits(Spec):
     name: str
 
     @furu.dependency(remember=True)
@@ -112,7 +112,7 @@ class StoredSplits(Spec[int]):
         return len(self.runs)
 
 
-class ScaledSweep(Spec[int]):
+class ScaledSweep(Spec):
     name: str
 
     @furu.dependency(remember=True)
@@ -295,7 +295,7 @@ def unused():
     return 1
 
 
-class Subset(furu.Spec[int]):
+class Subset(furu.Spec):
     count: int
 
     def metadata(self) -> furu.Metadata:
@@ -305,14 +305,14 @@ class Subset(furu.Spec[int]):
         return self.count
 
 
-class Train(furu.Spec[int]):
+class Train(furu.Spec):
     seed: int
 
     def create(self) -> int:
         return self.seed
 
 
-class Table(furu.Spec[int]):
+class Table(furu.Spec):
     count: int
 
     @furu.dependency(remember=True)
@@ -332,7 +332,7 @@ class TracedTable(Table):
         return len(self.runs) * 10
 
 
-class Articles(furu.Spec[int]):
+class Articles(furu.Spec):
     count: int
 
     @furu.dependency(remember=True)
@@ -454,7 +454,7 @@ def split_name():
     return "a"
 
 
-class Ref(furu.Spec[int]):
+class Ref(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -462,14 +462,14 @@ class Ref(furu.Spec[int]):
         return 0
 
 
-class Data(furu.Spec[int]):
+class Data(furu.Spec):
     split: str
 
     def create(self) -> int:
         return 1
 
 
-class Count(furu.Spec[int]):
+class Count(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -477,7 +477,7 @@ class Count(furu.Spec[int]):
         return len(READ.parts)
 
 
-class Pre(furu.Spec[int]):
+class Pre(furu.Spec):
     name: str
 
     @furu.dependency
@@ -491,14 +491,14 @@ class Pre(furu.Spec[int]):
         return 7
 
 
-class Wrap(furu.Spec[int]):
+class Wrap(furu.Spec):
     inner: Pre
 
     def create(self) -> int:
         return 1
 
 
-class Train(furu.Spec[int]):
+class Train(furu.Spec):
     base: Pre | Wrap | Data
     seed: int
 
@@ -514,7 +514,7 @@ NAMED = {
 }
 
 
-class Sweep(furu.Spec[int]):
+class Sweep(furu.Spec):
     use: str
     seed: int = 0
     held: Wrap | None = None

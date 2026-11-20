@@ -50,7 +50,7 @@ def unused_helper(x):
     return x - 1
 
 
-class LossPlot(furu.Spec[str]):
+class LossPlot(furu.Spec):
     name: str
     title: ClassVar[str] = "loss"
 
@@ -62,7 +62,7 @@ class LossPlot(furu.Spec[str]):
         return f"{self.title}:{values}"
 
 
-class Sibling(furu.Spec[str]):
+class Sibling(furu.Spec):
     lr: ClassVar[float] = 0.1
 
     def create(self) -> str:
@@ -296,7 +296,7 @@ import furu
 SCALE = 2
 
 
-class Sweep(furu.Spec[int]):
+class Sweep(furu.Spec):
     seed: int
 
     def metadata(self) -> furu.Metadata:
@@ -399,7 +399,7 @@ def parent_helper():
     return 100
 
 
-class TracedParent(furu.Spec[int]):
+class TracedParent(furu.Spec):
     n: int
 
     def metadata(self) -> furu.Metadata:
@@ -409,21 +409,21 @@ class TracedParent(furu.Spec[int]):
         return Child(n=self.n).create() + parent_helper()
 
 
-class FixedParent(furu.Spec[int]):
+class FixedParent(furu.Spec):
     n: int
 
     def create(self) -> int:
         return FixedChild(n=self.n).create() * 10
 
 
-class FixedOnTraced(furu.Spec[int]):
+class FixedOnTraced(furu.Spec):
     n: int
 
     def create(self) -> int:
         return Child(n=self.n).create()
 
 
-class Loader(furu.Spec[int]):
+class Loader(furu.Spec):
     n: int
     through_spec: bool
 
@@ -445,7 +445,7 @@ def child_helper(n):
     return n + 1
 
 
-class Child(furu.Spec[int]):
+class Child(furu.Spec):
     n: int
 
     def metadata(self) -> furu.Metadata:
@@ -455,7 +455,7 @@ class Child(furu.Spec[int]):
         return child_helper(self.n)
 
 
-class FixedChild(furu.Spec[int]):
+class FixedChild(furu.Spec):
     n: int
 
     def create(self) -> int:
@@ -601,7 +601,7 @@ def load():
     return 1
 
 
-class Audio(furu.Spec[int]):
+class Audio(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -609,7 +609,7 @@ class Audio(furu.Spec[int]):
         return load()
 
 
-class Train(furu.Spec[int]):
+class Train(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -617,7 +617,7 @@ class Train(furu.Spec[int]):
         return Audio().create() + 10
 
 
-class Plot(furu.Spec[int]):
+class Plot(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -700,7 +700,7 @@ import furu
 from PKG.child import Child, FixedChild
 
 
-class TracedParent(furu.Spec[int]):
+class TracedParent(furu.Spec):
     n: int
 
     def metadata(self) -> furu.Metadata:
@@ -714,7 +714,7 @@ class TracedParent(furu.Spec[int]):
         return self.child.create() * 10
 
 
-class FixedParent(furu.Spec[int]):
+class FixedParent(furu.Spec):
     n: int
 
     @furu.dependency
@@ -725,14 +725,14 @@ class FixedParent(furu.Spec[int]):
         return self.child.create() * 10
 
 
-class Holder(furu.Spec[int]):
+class Holder(furu.Spec):
     parent: FixedParent
 
     def create(self) -> int:
         return self.parent.create() + 1
 
 
-class Search(furu.Spec[int]):
+class Search(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -834,7 +834,7 @@ def literal():
     return getattr(Config, "lr")
 
 
-class Dynamic(furu.Spec[int]):
+class Dynamic(furu.Spec):
     key: str
 
     def metadata(self) -> furu.Metadata:
@@ -844,7 +844,7 @@ class Dynamic(furu.Spec[int]):
         return by_name("SETTINGS")[self.key] + literal()
 
 
-class Literal(furu.Spec[int]):
+class Literal(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -898,7 +898,7 @@ from pathlib import Path
 import furu
 
 
-class ReadsConfig(furu.Spec[str]):
+class ReadsConfig(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -910,7 +910,7 @@ class ReadsConfig(furu.Spec[str]):
         return (here / "config.yaml").read_text()
 
 
-class ReadsEnv(furu.Spec[str]):
+class ReadsEnv(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -968,7 +968,7 @@ def test_star_import_uses_every_name_in_the_module(repo: Repo) -> None:
     repo.write(
         "star.py",
         "import furu\n\nfrom PKG.consts import *\n\n\n"
-        "class Star(furu.Spec[int]):\n"
+        "class Star(furu.Spec):\n"
         "    def metadata(self) -> furu.Metadata:\n"
         '        return furu.Metadata(code_version="traced")\n\n'
         "    def create(self) -> int:\n"
@@ -1019,7 +1019,7 @@ def main():
 
 
 @tag
-class Scaled(furu.Spec[str]):
+class Scaled(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -1146,7 +1146,7 @@ def step_two():
     return 2
 
 
-class Resumable(furu.Spec[str]):
+class Resumable(furu.Spec):
     name: str
 
     def metadata(self) -> furu.Metadata:
@@ -1293,7 +1293,7 @@ def in_thread(out):
     out.append(1)
 
 
-class Threaded(furu.Spec[int]):
+class Threaded(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 
@@ -1330,7 +1330,7 @@ def helper():
     return 2
 
 
-class A(furu.Spec[int]):
+class A(furu.Spec):
     def metadata(self) -> furu.Metadata:
         return furu.Metadata(code_version="traced")
 

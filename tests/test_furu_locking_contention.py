@@ -31,7 +31,7 @@ def _fast_lock_polling(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(locking_module, "DEFAULT_ACQUIRE_POLL_INTERVAL_S", 0.005)
 
 
-class SlowProbe(Spec[int]):
+class SlowProbe(Spec):
     key: int
     marker_dir: str
 
@@ -43,7 +43,7 @@ class SlowProbe(Spec[int]):
         return 42
 
 
-class SlowBatchProbe(furu.Spec[int]):
+class SlowBatchProbe(furu.Spec):
     key: int
     marker_dir: str
 
@@ -64,7 +64,7 @@ class SlowBatchProbe(furu.Spec[int]):
         return [obj.key * 10 for obj in objs]
 
 
-class MidRunTakeoverProbe(Spec[int]):
+class MidRunTakeoverProbe(Spec):
     key: int
     entered_path: str
     release_path: str

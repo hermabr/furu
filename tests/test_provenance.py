@@ -146,7 +146,7 @@ def test_require_uv_missing_uv_binary_raises(monkeypatch: pytest.MonkeyPatch) ->
         provenance._require_uv()
 
 
-class _EnforcementNode(Spec[str]):
+class _EnforcementNode(Spec):
     name: str
 
     def create(self) -> str:

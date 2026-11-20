@@ -18,7 +18,7 @@ def _reset_calls() -> None:
     CALLS.clear()
 
 
-class Leaf(Spec[int]):
+class Leaf(Spec):
     n: int
     fail: bool = False
 
@@ -29,7 +29,7 @@ class Leaf(Spec[int]):
         return self.n
 
 
-class SumOfLeaves(Spec[int]):
+class SumOfLeaves(Spec):
     count: int
 
     def create(self) -> int:
@@ -37,22 +37,22 @@ class SumOfLeaves(Spec[int]):
         return sum(Leaf(n=n).create() for n in range(self.count))
 
 
-class LoadsFailingLeaf(Spec[int]):
+class LoadsFailingLeaf(Spec):
     def create(self) -> int:
         return Leaf(n=99, fail=True).create()
 
 
-class CycleA(Spec[int]):
+class CycleA(Spec):
     def create(self) -> int:
         return CycleB().create()
 
 
-class CycleB(Spec[int]):
+class CycleB(Spec):
     def create(self) -> int:
         return CycleA().create()
 
 
-class LosesItsLeaf(Spec[int]):
+class LosesItsLeaf(Spec):
     def create(self) -> int:
         CALLS.append("loses")
         leaf = Leaf(n=7)
@@ -60,7 +60,7 @@ class LosesItsLeaf(Spec[int]):
         return leaf.create()
 
 
-class CannotSeeItsLeaf(Spec[int]):
+class CannotSeeItsLeaf(Spec):
     """Its create() keeps finding Leaf(n=8) missing, like code reading elsewhere."""
 
     def create(self) -> int:
@@ -70,7 +70,7 @@ class CannotSeeItsLeaf(Spec[int]):
         raise _DependencyNotReady([Leaf(n=8)], plan.listing())
 
 
-class MissesEachLeafOnce(Spec[int]):
+class MissesEachLeafOnce(Spec):
     """Finds each leaf missing once, as if another run published it meanwhile."""
 
     count: int
@@ -83,21 +83,21 @@ class MissesEachLeafOnce(Spec[int]):
         return sum(Leaf(n=n).create() for n in range(self.count))
 
 
-class AddsOne(Spec[int]):
+class AddsOne(Spec):
     leaf: Leaf
 
     def create(self) -> int:
         return self.leaf.create() + 1
 
 
-class LazyParent(Spec[int]):
+class LazyParent(Spec):
     n: int
 
     def create(self) -> int:
         return AddsOne(leaf=Leaf(n=self.n)).create()
 
 
-class BatchedParent(furu.Spec[int]):
+class BatchedParent(furu.Spec):
     key: int
 
     def batch_key(self, worker: furu.Worker) -> tuple[None, int]:

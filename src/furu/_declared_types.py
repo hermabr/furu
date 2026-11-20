@@ -4,17 +4,12 @@ from collections.abc import Iterator, Mapping
 from functools import cache
 from itertools import chain, repeat
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
-    TypeVar,
     get_args,
     get_origin,
     get_type_hints,
 )
-
-if TYPE_CHECKING:
-    from furu.core import Spec
 
 
 @cache
@@ -57,26 +52,3 @@ def item_declared_types(declared_type: object) -> Iterator[object]:
     if get_origin(declared_type) is tuple and args and args[1:] != (Ellipsis,):
         return chain(args, repeat(Any))
     return repeat(child_declared_type(declared_type, 0))
-
-
-@cache
-def declared_result_type(spec_type: type[Spec]) -> object:
-    from furu.core import Spec
-
-    declared: object = Any
-    for cls in spec_type.__mro__:
-        for base in getattr(cls, "__orig_bases__", ()):
-            if get_origin(base) is Spec:
-                declared = get_args(base)[0]
-                break
-        else:
-            continue
-        break
-
-    if isinstance(declared, TypeVar) or any(
-        isinstance(arg, TypeVar) for arg in get_args(declared)
-    ):
-        raise TypeError(
-            f"{spec_type.__name__} must declare its concrete result type directly as Spec[...]"
-        )
-    return declared
