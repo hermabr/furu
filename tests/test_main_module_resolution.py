@@ -216,7 +216,6 @@ if __name__ == "__main__":
         [Payload(9)],
         payload_bundle,
         spec_classes=[Adder],
-        result_codecs=(),
         data_dir=data_dir_in(payload_bundle.parent),
         label="Payload",
     )
@@ -232,7 +231,6 @@ if __name__ == "__main__":
         [b"abc"],
         codec_bundle,
         spec_classes=[Adder],
-        result_codecs=(MainCodec,),
         data_dir=data_dir_in(codec_bundle.parent),
         label="bytes",
     )

@@ -65,7 +65,6 @@ class _Cell(NamedTuple):
 class _Writer:
     """Sets aside the codec values of every row, by their position in the result."""
 
-    result_codecs: tuple[type[Codec], ...]
     data_dir: Path
     row: int = 0
     # The class of the row's spec.
@@ -144,7 +143,7 @@ def _dump_value(
         case None | bool() | int() | float() | str():
             return value
         case datetime():
-            if codec := CodecMeta.find_codec(value, writer.result_codecs):
+            if codec := CodecMeta.find_codec(value):
                 return _dump_artifact(value, codec, value_path, writer)
             encoded = value.isoformat()
             loaded = datetime.fromisoformat(encoded)
@@ -226,7 +225,7 @@ def _dump_value(
             names = [field.name for field in dataclasses.fields(value)]
             return _dump_fields("dataclass", value, names, value_path, writer)
         case _:
-            if codec := CodecMeta.find_codec(value, writer.result_codecs):
+            if codec := CodecMeta.find_codec(value):
                 return _dump_artifact(value, codec, value_path, writer)
 
     raise ValueError(
@@ -540,7 +539,6 @@ def _save_result_bundle(
     bundle_dir: Path,
     *,
     spec_classes: Sequence[type],
-    result_codecs: tuple[type[Codec], ...],
     data_dir: Path,
     label: str,
 ) -> None:
@@ -550,7 +548,7 @@ def _save_result_bundle(
     """
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
-    writer = _Writer(result_codecs, data_dir)
+    writer = _Writer(data_dir)
     manifest: list[JsonValue] = []
     for row, (spec_cls, value) in enumerate(zip(spec_classes, values, strict=True)):
         writer.row = row
