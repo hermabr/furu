@@ -27,7 +27,12 @@ from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.logging import get_logger
 from furu.result.codec import Codec, CodecMeta
 from furu.storage._layout import scratch_dir_in
-from furu.utils import fully_qualified_name, parse_json, resolve_fully_qualified_name
+from furu.utils import (
+    fully_qualified_name,
+    json_strings,
+    parse_json,
+    resolve_fully_qualified_name,
+)
 
 WRAPPER_KEY: Final = "$furu"
 # artifacts/<position>: what a codec merged for every row with a value there.
@@ -398,10 +403,9 @@ def _encode_codec_metadata_value(
 def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
     match node:
         case dict() if isinstance(body := node.get(WRAPPER_KEY), dict):
-            match body:
-                case {"value": str(relative)}:
-                    return data_dir / relative
-            raise ValueError(f"malformed codec metadata: {node}")
+            relative = body["value"]
+            assert isinstance(relative, str)
+            return data_dir / relative
         case dict():
             return {
                 key: _decode_codec_metadata_value(child, data_dir=data_dir)
@@ -433,27 +437,15 @@ def _read_artifacts(
     bodies: Sequence[dict[str, JsonValue]], *, bundle_dir: Path, data_dir: Path
 ) -> Sequence[object]:
     """Read codec values stored in one directory, in the order given."""
-    match bodies[0]:
-        case {"codec": str(name), "path": str(relative)}:
-            pass
-        case first:
-            raise ValueError(f"malformed result manifest entry: {first}")
+    name, relative = json_strings([bodies[0]["codec"], bodies[0]["path"]])
     codec = resolve_fully_qualified_name(name)
-    if not (isinstance(codec, type) and issubclass(codec, Codec)):
-        raise TypeError(f"{name} is not a furu Codec")
+    assert isinstance(codec, type) and issubclass(codec, Codec)
     path = Path(relative)
-    metadatas: list[dict[str, object]] = []
+    metadatas = []
     for body in bodies:
-        match body:
-            case {"metadata": dict(metadata)}:
-                metadatas.append(
-                    {
-                        key: _decode_codec_metadata_value(child, data_dir=data_dir)
-                        for key, child in metadata.items()
-                    }
-                )
-            case _:
-                raise ValueError(f"malformed result manifest entry: {body}")
+        metadata = _decode_codec_metadata_value(body["metadata"], data_dir=data_dir)
+        assert isinstance(metadata, dict)
+        metadatas.append(metadata)
     if path.parts[0] == ROWS_DIR_NAME:
         return [codec.load(metadata, bundle_dir / path) for metadata in metadatas]
     return codec.load_many(metadatas, bundle_dir / path)
@@ -470,22 +462,19 @@ def _load_wrapper(body: dict[str, JsonValue], reader: _Reader) -> object:
                 reader.values.update(zip(map(id, bodies), values, strict=True))
             return reader.values[id(body)]
         case {
-            constants.KINDMARKER: "dataclass" | "pydantic" as kind,
+            constants.KINDMARKER: "dataclass" | "pydantic",
             constants.TYPEMARKER: str(name),
             constants.FIELDSMARKER: dict(written),
         }:
             cls = resolve_fully_qualified_name(name)
             fields = {key: _load_value(child, reader) for key, child in written.items()}
-            if not isinstance(cls, type):
-                raise TypeError(f"{name} is not a class")
-            if kind == "pydantic" and issubclass(cls, pydantic.BaseModel):
+            if isinstance(cls, type) and issubclass(cls, pydantic.BaseModel):
                 return cls.model_validate(fields)
-            if kind == "dataclass" and dataclasses.is_dataclass(cls):
-                for field in dataclasses.fields(cls):
-                    if not field.init:
-                        fields.pop(field.name, None)
-                return cls(**fields)
-            raise TypeError(f"{name} is not a {kind}")
+            assert isinstance(cls, type) and dataclasses.is_dataclass(cls)
+            for field in dataclasses.fields(cls):
+                if not field.init:
+                    fields.pop(field.name, None)
+            return cls(**fields)
         case {constants.KINDMARKER: "datetime", "value": str(value)}:
             return datetime.fromisoformat(value)
         case {constants.KINDMARKER: "path", "value": str(value)}:
@@ -510,11 +499,9 @@ def _collect_artifacts(
             _collect_artifacts(child, bodies)
     elif isinstance(node, dict):
         body = node.get(WRAPPER_KEY)
-        if (
-            isinstance(body, dict)
-            and body.get(KINDMARKER) == "artifact"
-            and isinstance(path := body.get("path"), str)
-        ):
+        if isinstance(body, dict) and body.get(KINDMARKER) == "artifact":
+            path = body["path"]
+            assert isinstance(path, str)
             bodies.setdefault(path, []).append(body)
         else:
             for child in node.values():
@@ -554,8 +541,7 @@ def load_result_bundle(
 ) -> list[object]:
     """Load the rows asked for, in the order asked."""
     manifest = parse_json((bundle_dir / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
-    if not isinstance(manifest, list):
-        raise TypeError(f"the manifest in {bundle_dir} is not a list")
+    assert isinstance(manifest, list)
     reader = _Reader(bundle_dir, data_dir)
     for row in rows:
         _collect_artifacts(manifest[row], reader.bodies)

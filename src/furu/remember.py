@@ -26,7 +26,12 @@ from pathlib import Path
 
 from furu.code_trace import Trace, why_trace_outdated
 from furu.storage._layout import remembered_dir_in
-from furu.utils import _stable_json_dump, atomic_write_text, parse_json_object
+from furu.utils import (
+    _stable_json_dump,
+    atomic_write_text,
+    json_strings,
+    parse_json_object,
+)
 
 # The method's name and the fingerprint of the spec's other fields.
 type _Key = tuple[str, str]
@@ -62,16 +67,9 @@ def lookup(class_dir: Path, method: str, fields: str, storage_root: Path) -> str
         holds: dict[str, bool] = {}
         for text in texts:
             for line in map(parse_json_object, text.splitlines()):
-                match line:
-                    case {
-                        "method": str(called),
-                        "fields": str(named),
-                        "returned": str(returned),
-                        "trace": str(trace),
-                    }:
-                        pass
-                    case _:
-                        raise ValueError(f"malformed line in {folder}: {line}")
+                called, named, returned, trace = json_strings(
+                    [line["method"], line["fields"], line["returned"], line["trace"]]
+                )
                 if trace not in holds:
                     path = _trace_path(class_dir, trace)
                     holds[trace] = why_trace_outdated(path, storage_root) is None

@@ -141,8 +141,8 @@ def _connect_to_manager() -> ClientConnection:
     while True:
         try:
             published = parse_json_object(address.read_text(encoding="utf-8"))
-            if not isinstance(url := published["url"], str):
-                raise TypeError(f"{address} holds no url: {published}")
+            url = published["url"]
+            assert isinstance(url, str)
             return connect(url, max_size=None)
         except (OSError, ValueError, InvalidHandshake) as exc:  # not up yet
             if not waiting:

@@ -105,15 +105,10 @@ def _recorded_defaults(lines: list[dict[str, JsonValue]]) -> dict[_Step, JsonVal
     recorded: dict[_Step, JsonValue] = {}
     for line in lines:
         match line:
-            case {
-                "added": str(name),
-                "default": default,
-                "nested": str(nested),
-                "class_part": str(part),
-            }:
-                recorded[nested, part, name] = default
-            case {"added": str(name), "default": default}:
-                recorded[None, None, name] = default
+            case {"added": str(name), "nested": str(nested), "class_part": str(part)}:
+                recorded[nested, part, name] = line["default"]
+            case {"added": str(name)}:
+                recorded[None, None, name] = line["default"]
     return recorded
 
 

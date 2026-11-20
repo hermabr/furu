@@ -232,12 +232,10 @@ class Specs:
     def _build(self, spec_id: str) -> Spec:
         line = self._lines[spec_id]
         written, noted = line["fields"], line.get("left_out", {})
-        if not (isinstance(written, dict) and isinstance(noted, dict)):
-            raise TypeError(f"the line of {spec_id} is malformed: {dump(line)}")
+        assert isinstance(written, dict) and isinstance(noted, dict)
         stored, _, artifact_hash = spec_id.split(":")
-        cls = resolve_fully_qualified_name(name := self._moved.get(stored, stored))
-        if not (isinstance(cls, type) and issubclass(cls, Spec)):
-            raise TypeError(f"{name} is not a furu.Spec")
+        cls = resolve_fully_qualified_name(self._moved.get(stored, stored))
+        assert isinstance(cls, type) and issubclass(cls, Spec)
         # The steps forwards: the line fits only a class with the same names.
         check_names(cls, written)
         hints = cached_type_hints(cls)
@@ -405,6 +403,5 @@ def save_found(found: Sequence[Line]) -> Path:
     folder = get_config().directories.anchored().plans / launch()
     if (file := _own.get(folder)) is None:
         file = _own[folder] = File.new(folder, ".plan")
-    asked: Line = {"asked_by": [*sorted(specs_under_creation())]}
-    file.add([asked, *found])
+    file.add([{"asked_by": [*sorted(specs_under_creation())]}, *found])
     return file.path

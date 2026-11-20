@@ -348,11 +348,6 @@ def _calls(node: ast.AST, calls: set[str]) -> None:
 _FACTS: dict[int, _Facts] = {}  # keyed by id(node); _PARSED keeps the nodes alive
 
 
-def _line(node: ast.AST) -> int:
-    """The line ``node`` starts on; 0 for the kinds of node that have none."""
-    return line if isinstance(line := getattr(node, "lineno", 0), int) else 0
-
-
 def _facts(node: ast.AST) -> _Facts:
     """Mentions, imports and dynamic lookups of kept code, computed once per node."""
     if (facts := _FACTS.get(id(node))) is None:
@@ -370,9 +365,9 @@ def _facts(node: ast.AST) -> _Facts:
             elif isinstance(child, (*_DEFS, ast.ClassDef)):
                 _strip_docstring(child)
             if (what := _dynamic(child, mentions)) and dynamic is None:
-                dynamic = (what, _line(child))
+                dynamic = (what, int(getattr(child, "lineno", 0)))
             if (what := _untraced(child)) and untraced is None:
-                untraced = (what, _line(child))
+                untraced = (what, int(getattr(child, "lineno", 0)))
         facts = _FACTS[id(node)] = _Facts(
             frozenset(mentions), tuple(imports), dynamic, untraced
         )
