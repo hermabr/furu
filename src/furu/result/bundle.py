@@ -25,6 +25,7 @@ import pydantic
 from furu._declared_types import cached_type_hints, child_declared_type
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.logging import get_logger
+from furu.migration.steps import stored_name
 from furu.result.codec import Codec, CodecMeta
 from furu.storage._layout import scratch_dir_in
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
@@ -77,6 +78,8 @@ class _Reader:
 
     bundle_dir: Path
     data_dir: Path
+    # The class of the specs whose results these are.
+    spec_cls: type
     # The manifest entries of the codec values, by the directory they are in,
     # and the values read so far, by the id() of their entry.
     bodies: dict[str, list[dict[str, Any]]] = dataclasses.field(default_factory=dict)
@@ -257,7 +260,8 @@ def _result_class_name(cls: type) -> str:
     """A class in a result: at module level, or nested directly in a spec, like ``Train.Result``.
 
     Only here may a class be nested: a result's class names are not part of
-    any id, so they are free to follow their spec's name.
+    any id. A nested one is named under its spec's stored name, which a move
+    does not change, and is loaded through the spec's class.
     """
     from furu.core import Spec  # furu.core loads results through this module
 
@@ -269,7 +273,7 @@ def _result_class_name(cls: type) -> str:
         and not issubclass(cls, Spec)
         and vars(outer).get(name) is cls
     ):
-        return f"{fully_qualified_name(outer)}.{name}"
+        return f"{stored_name(outer)}.{name}"
     return fully_qualified_name(cls)
 
 
@@ -447,7 +451,12 @@ def _load_value(node: JsonValue, reader: _Reader) -> object:
 def _load_fields(
     body: dict[str, Any], reader: _Reader
 ) -> tuple[Any, dict[str, object]]:
-    cls = resolve_fully_qualified_name(body[TYPEMARKER])
+    name: str = body[TYPEMARKER]
+    nested = name.removeprefix(f"{stored_name(reader.spec_cls)}.")
+    if nested != name:
+        cls = getattr(reader.spec_cls, nested)
+    else:
+        cls = resolve_fully_qualified_name(name)
     return cls, {
         name: _load_value(child, reader) for name, child in body[FIELDSMARKER].items()
     }
@@ -549,10 +558,11 @@ def load_result_bundle(
     rows: Sequence[int],
     *,
     data_dir: Path,
+    spec_cls: type,
 ) -> list[object]:
-    """Load the rows asked for, in the order asked."""
+    """Load the rows asked for, in the order asked, of results of ``spec_cls``."""
     manifest = json.loads((bundle_dir / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
-    reader = _Reader(bundle_dir, data_dir)
+    reader = _Reader(bundle_dir, data_dir, spec_cls)
     for row in rows:
         _collect_artifacts(manifest[row], reader.bodies)
     return [_load_value(manifest[row], reader) for row in rows]

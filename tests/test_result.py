@@ -50,9 +50,15 @@ def _save_rows(
     )
 
 
+class Rows(Spec):
+    """The spec whose results the bundles these tests store by hand are."""
+
+    def create(self) -> object: ...
+
+
 def _load_rows(bundle_dir: Path, rows: list[int]) -> list[Any]:
     return load_result_bundle_impl(
-        bundle_dir, rows, data_dir=data_dir_in(bundle_dir.parent)
+        bundle_dir, rows, data_dir=data_dir_in(bundle_dir.parent), spec_cls=Rows
     )
 
 

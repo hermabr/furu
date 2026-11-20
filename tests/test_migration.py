@@ -2,6 +2,7 @@ import inspect
 import itertools
 import json
 import logging
+import sys
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -171,6 +172,54 @@ def test_a_moved_class_is_built_from_a_line_that_holds_its_old_name() -> None:
     assert spec.object_id.startswith("old_package.Original:")
     assert table == {"moved": {"old_package.Original": f"{__name__}.Relocated"}}
     assert plan.Specs([line, table])[spec.object_id] == spec
+
+
+class Training(Spec):
+    lr: float
+
+    @dataclass(frozen=True)
+    class Result:
+        loss: float
+
+    def create(self) -> Result:
+        return self.Result(self.lr)
+
+
+class Fitting(Spec):
+    migrations = (MovedFrom(f"{__name__}.Training"),)
+    lr: float
+
+    @dataclass(frozen=True)
+    class Result:
+        loss: float
+
+    def create(self) -> Result:
+        return self.Result(self.lr)
+
+
+class Fit(Spec):
+    migrations = (MovedFrom(f"{__name__}.Training"),)
+    lr: float
+
+    @dataclass(frozen=True)
+    class Result:
+        loss: float
+
+    def create(self) -> Result:
+        return self.Result(self.lr)
+
+
+def test_a_moved_spec_loads_its_nested_result_class_by_its_name_now(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Training is renamed to Fitting, and Fitting to Fit; each old class is gone.
+    Training(lr=1.0).create()
+    monkeypatch.delattr(sys.modules[__name__], "Training")
+    Fitting(lr=2.0).create()
+    monkeypatch.delattr(sys.modules[__name__], "Fitting")
+
+    assert Fit(lr=1.0).load_existing() == Fit.Result(1.0)
+    assert Fit(lr=2.0).load_existing() == Fit.Result(2.0)
 
 
 def test_a_breaking_step_is_a_fresh_start() -> None:

@@ -223,6 +223,7 @@ if __name__ == "__main__":
         payload_bundle,
         [0],
         data_dir=data_dir_in(payload_bundle.parent),
+        spec_cls=Adder,
     )
 
     codec_bundle = Path("codec-bundle")
@@ -237,6 +238,7 @@ if __name__ == "__main__":
         codec_bundle,
         [0],
         data_dir=data_dir_in(codec_bundle.parent),
+        spec_cls=Adder,
     )
 
     print(
