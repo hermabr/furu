@@ -44,6 +44,7 @@ def _save_rows(
     _save_result_bundle_impl(
         values,
         bundle_dir,
+        spec_classes=[Rows] * len(values),
         result_codecs=result_codecs,
         data_dir=data_dir_in(bundle_dir.parent),
         label=label,
@@ -58,7 +59,10 @@ class Rows(Spec):
 
 def _load_rows(bundle_dir: Path, rows: list[int]) -> list[Any]:
     return load_result_bundle_impl(
-        bundle_dir, rows, data_dir=data_dir_in(bundle_dir.parent), spec_cls=Rows
+        bundle_dir,
+        rows,
+        data_dir=data_dir_in(bundle_dir.parent),
+        spec_classes=[Rows] * len(rows),
     )
 
 

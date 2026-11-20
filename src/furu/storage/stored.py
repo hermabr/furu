@@ -212,8 +212,7 @@ def load_rows(objs: Sequence[Spec], rows: Sequence[Row]) -> list[object]:
             result_dir_in(run),
             list(held),
             data_dir=data_dir_in(run),
-            # A run holds results of one class.
-            spec_cls=type(next(iter(held.values()))),
+            spec_classes=[type(obj) for obj in held.values()],
         )
         values.update(zip((Row(run, index) for index in held), loaded, strict=True))
     return [values[row] for row in rows]

@@ -1435,6 +1435,7 @@ def test_no_create_hook_loads_cached_result() -> None:
     _save_result_bundle(
         ["cached:1"],
         result_dir_in(fixed_run(obj)),
+        spec_classes=[NoCreateHookValue],
         result_codecs=(),
         data_dir=data_dir_in(fixed_run(obj)),
         label="NoCreateHookValue",
@@ -1465,6 +1466,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
+            spec_classes=[NoCreateHookValue],
             result_codecs=(),
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
@@ -1637,6 +1639,7 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
+            spec_classes=[CountedSingleValue],
             result_codecs=(),
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",

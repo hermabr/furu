@@ -503,6 +503,7 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
             _save_result_bundle(
                 results,
                 result_dir,
+                spec_classes=[type(obj) for obj in group],
                 result_codecs=lead.result_codecs,
                 data_dir=data_dir_in(attempt),
                 label=cls.__name__,

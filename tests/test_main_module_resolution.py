@@ -215,6 +215,7 @@ if __name__ == "__main__":
     _save_result_bundle(
         [Payload(9)],
         payload_bundle,
+        spec_classes=[Adder],
         result_codecs=(),
         data_dir=data_dir_in(payload_bundle.parent),
         label="Payload",
@@ -223,13 +224,14 @@ if __name__ == "__main__":
         payload_bundle,
         [0],
         data_dir=data_dir_in(payload_bundle.parent),
-        spec_cls=Adder,
+        spec_classes=[Adder],
     )
 
     codec_bundle = Path("codec-bundle")
     _save_result_bundle(
         [b"abc"],
         codec_bundle,
+        spec_classes=[Adder],
         result_codecs=(MainCodec,),
         data_dir=data_dir_in(codec_bundle.parent),
         label="bytes",
@@ -238,7 +240,7 @@ if __name__ == "__main__":
         codec_bundle,
         [0],
         data_dir=data_dir_in(codec_bundle.parent),
-        spec_cls=Adder,
+        spec_classes=[Adder],
     )
 
     print(

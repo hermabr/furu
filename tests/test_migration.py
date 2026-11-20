@@ -222,6 +222,58 @@ def test_a_moved_spec_loads_its_nested_result_class_by_its_name_now(
     assert Fit(lr=2.0).load_existing() == Fit.Result(2.0)
 
 
+class FastFit(Fit):
+    migrations = ()
+
+
+def test_a_spec_loads_the_nested_result_class_it_inherits_from_a_moved_spec() -> None:
+    FastFit(lr=1.0).create()
+
+    assert FastFit(lr=1.0).load_existing() == Fit.Result(1.0)
+
+
+class Report(Spec):
+    lr: float
+
+    def create(self) -> Fit.Result:
+        return Fit.Result(self.lr)
+
+
+def test_a_result_holding_another_specs_nested_class_names_it_as_it_is_now() -> None:
+    # Fit's first name, Training, is a class too, with a Result of the same shape.
+    Report(lr=3.0).create()
+
+    assert Report(lr=3.0).load_existing() == Fit.Result(3.0)
+
+
+class Batch(Spec):
+    x: int
+
+    @dataclass(frozen=True)
+    class Result:
+        x: int
+
+    @furu.batched(lambda spec, worker: (None, 10))
+    def create(specs: "list[Batch]", directory: furu.SpecDirectory) -> list[Result]:
+        return [spec.Result(spec.x) for spec in specs]
+
+
+class Rebatch(Batch):
+    migrations = (MovedFrom(f"{__name__}.Batch"),)
+
+    @dataclass(frozen=True)
+    class Result(Batch.Result):
+        pass
+
+
+def test_each_row_of_a_run_is_named_and_loaded_by_its_own_spec() -> None:
+    batch, rebatch = Batch(x=1), Rebatch(x=2)
+    furu.create([batch, rebatch])
+
+    assert run_of(batch) == run_of(rebatch)
+    assert furu.load_existing([batch, rebatch]) == [Batch.Result(1), Rebatch.Result(2)]
+
+
 def test_a_breaking_step_is_a_fresh_start() -> None:
     steps = (
         Added("order", default="random"),

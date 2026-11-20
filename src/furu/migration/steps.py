@@ -54,7 +54,7 @@ class Renamed:
 
 @dataclass(frozen=True, slots=True)
 class MovedFrom:
-    """A renamed or moved class: ids, folders and the classes nested in it keep the old name in storage, for new results too."""
+    """A renamed or moved class: ids and folders keep the old name, for new results too."""
 
     fully_qualified_name: str
     _: dataclasses.KW_ONLY
