@@ -112,7 +112,8 @@ class Spec(_FuruDataclassTransform, ABC):
 
     The result's type is the return annotation of ``create()``, for type
     checkers; furu never evaluates it. A result with several parts can be a
-    dataclass nested in the spec, named ``Result``. A value in a result is
+    dataclass nested in the spec, named ``Result``. Only classes stored in a
+    result may be nested, and only directly in a spec. A value in a result is
     stored with the spec's ``result_codecs``, else a registered codec, else a
     built-in one; ``Annotated[..., SomeCodec]`` on a field of a result
     dataclass picks one for that field.

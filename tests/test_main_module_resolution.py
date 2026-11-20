@@ -132,7 +132,7 @@ def test_resolve_reads_a_name_the_way_python_does(
     assert deep.__qualname__ == "Train.Result"
 
     outer_result = importlib.import_module("furu_resolve_pkg").Outer.Result
-    assert resolve_fully_qualified_name(fully_qualified_name(outer_result)) is (
+    assert resolve_fully_qualified_name("furu_resolve_pkg.Outer.Result") is (
         outer_result
     )
     assert "furu_resolve_pkg.Outer" not in sys.modules

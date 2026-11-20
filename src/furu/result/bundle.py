@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
@@ -248,8 +249,28 @@ def _dump_fields(
         for name in names
     }
     return _wrap(
-        kind, **{TYPEMARKER: fully_qualified_name(type(value)), FIELDSMARKER: fields}
+        kind, **{TYPEMARKER: _result_class_name(type(value)), FIELDSMARKER: fields}
     )
+
+
+def _result_class_name(cls: type) -> str:
+    """A class in a result: at module level, or nested directly in a spec, like ``Train.Result``.
+
+    Only here may a class be nested: a result's class names are not part of
+    any id, so they are free to follow their spec's name.
+    """
+    from furu.core import Spec  # furu.core loads results through this module
+
+    outer_name, _, name = cls.__qualname__.rpartition(".")
+    outer = vars(sys.modules[cls.__module__]).get(outer_name)
+    if (
+        isinstance(outer, type)
+        and issubclass(outer, Spec)
+        and not issubclass(cls, Spec)
+        and vars(outer).get(name) is cls
+    ):
+        return f"{fully_qualified_name(outer)}.{name}"
+    return fully_qualified_name(cls)
 
 
 def _dump_items(

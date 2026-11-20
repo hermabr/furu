@@ -47,6 +47,11 @@ def fully_qualified_name(value: object) -> str:
 
     if "<locals>" in qualname:
         raise ValueError("Cannot serialize local classes")
+    elif "." in qualname:
+        raise ValueError(
+            f"Cannot serialize nested class {qualname}: only a class stored in a "
+            "result may be nested, and only directly in a spec"
+        )
     elif isinstance(value, type) and issubclass(value, Enum):
         raise ValueError(
             "TODO: support this in the future"

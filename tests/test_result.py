@@ -913,14 +913,19 @@ class TrainWithResult(Spec):
     lr: float
 
     @dataclass(frozen=True)
+    class Stats:
+        steps: int
+
+    @dataclass(frozen=True)
     class Result:
         loss: float
         weights: Path
+        stats: TrainWithResult.Stats
 
     def create(self) -> Result:
         weights = self.directory.data / "weights.txt"
         weights.write_text("w", encoding="utf-8")
-        return self.Result(loss=self.lr * 2, weights=weights)
+        return self.Result(loss=self.lr * 2, weights=weights, stats=self.Stats(3))
 
 
 class SweepWithResult(Spec):
@@ -954,6 +959,7 @@ def test_a_result_class_nested_in_its_spec_is_stored_and_loaded() -> None:
 
     assert type(loaded) is TrainWithResult.Result
     assert loaded.loss == 1.0
+    assert loaded.stats == TrainWithResult.Stats(3)
     assert loaded.weights.read_text(encoding="utf-8") == "w"
 
     sweep = [SweepWithResult(seed=seed) for seed in range(3)]
@@ -961,6 +967,46 @@ def test_a_result_class_nested_in_its_spec_is_stored_and_loaded() -> None:
     assert furu.load_existing(sweep) == [
         SweepWithResult.Result(seed=seed) for seed in range(3)
     ]
+
+
+class Group:
+    class NestedSpec(Spec):
+        def create(self) -> int:
+            return 1
+
+
+class WithNestedConfig(Spec):
+    @dataclass(frozen=True)
+    class Config:
+        depth: int
+
+    config: Config
+
+    def create(self) -> int:
+        return self.config.depth
+
+
+class DeeplyNestedResult(Spec):
+    class Result:
+        @dataclass(frozen=True)
+        class Inner:
+            x: int
+
+    def create(self) -> Result.Inner:
+        return self.Result.Inner(x=1)
+
+
+def test_only_a_result_class_may_be_nested_and_only_directly_in_a_spec() -> None:
+    # A spec's class and its field values name its id, so they stay at
+    # module level: a renamed spec would otherwise change its fields' names.
+    with pytest.raises(ValueError, match=r"nested class Group\.NestedSpec"):
+        Group.NestedSpec().create()
+    with pytest.raises(ValueError, match=r"nested class WithNestedConfig\.Config"):
+        WithNestedConfig(config=WithNestedConfig.Config(depth=2)).create()
+    with pytest.raises(
+        ValueError, match=r"nested class DeeplyNestedResult\.Result\.Inner"
+    ):
+        DeeplyNestedResult().create()
 
 
 class NestedPydanticOuter(BaseModel):
