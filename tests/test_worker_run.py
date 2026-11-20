@@ -580,7 +580,7 @@ def test_a_failed_attempt_reruns_until_its_retries_run_out(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     leaf = RunLeaf(value=1)
-    ids, label = [leaf.object_id], leaf._log_label
+    ids, label = [leaf.object_id], leaf.object_id
     run, _ = _new_run([leaf], max_retries_per_object=3)
     errors = [
         "Traceback (most recent call last):\n  File a\nValueError: bad shape\n",
@@ -657,11 +657,11 @@ def test_the_runs_error_lists_each_spec_it_gave_up_on_and_each_that_waits_for_on
     assert str(excinfo.value).splitlines() == [
         "2 specs failed, 1 blocked",
         *(
-            f"  {obj._log_label} · 1 attempt · ValueError: {obj.value} → "
+            f"  {obj.object_id} · 1 attempt · ValueError: {obj.value} → "
             f"{_display_path(log_path_in(obj._attempt_dir))}"
             for obj in (first, second)
         ),
-        f"  {parent._log_label} · blocked",
+        f"  {parent.object_id} · blocked",
     ]
 
 
@@ -773,7 +773,7 @@ def test_a_spec_that_keeps_missing_a_built_dependency_is_given_up_on_after_the_g
 
     assert gave_up == _gave_up(
         [lazy],
-        f"still finds {dependency._log_label} missing for 2m05s, though this "
+        f"still finds {dependency.object_id} missing for 2m05s, though this "
         "run sees it built; its worker may not see the storage it was written "
         "to, or may be running different code than this run",
     )
@@ -796,7 +796,7 @@ def test_the_grace_is_per_dependency(dag_clock: list[float]) -> None:
     dag_clock[0] = Run.unseen_grace_s + 1
     assert _rerun(run, lazy, _blocked(fresh)) == []
     (gave_up,) = _rerun(run, lazy, _blocked(first))
-    assert first._log_label in cast(GaveUpMessage, gave_up).error
+    assert first.object_id in cast(GaveUpMessage, gave_up).error
 
 
 @pytest.mark.parametrize("progress", ["found a missing spec", "failed"])
@@ -834,7 +834,7 @@ def test_a_spec_blocked_on_nothing_or_on_a_spec_the_run_gave_up_on_is_given_up_o
     run.gave_up(cast(GaveUpMessage, gave_up))
     assert run.result(_result([lazy], _blocked(leaf))) == [
         _gave_up(
-            [lazy], f"needs {leaf._log_label}, which this run gave up on", attempts=2
+            [lazy], f"needs {leaf.object_id}, which this run gave up on", attempts=2
         )
     ]
 
@@ -1120,8 +1120,8 @@ def test_a_blocked_attempt_reruns_once_what_it_found_is_built() -> None:
     manager._rerun(script, RerunMessage(specs=_ids([cycle]), after=_ids([lazy])))
     assert _sent(manager) == [
         ErrorMessage(
-            reason=f"dependency cycle: {cycle._log_label} asks for "
-            f"{lazy._log_label}, which already waits for it"
+            reason=f"dependency cycle: {cycle.object_id} asks for "
+            f"{lazy.object_id}, which already waits for it"
         )
     ]
 
@@ -1492,16 +1492,16 @@ def test_run_writes_log_to_its_execution_dir() -> None:
     assert any(f" planned exec {executor_dir.name[:5]} · " in line for line in lines)
     assert any(
         line.endswith(
-            f" leased {leaf._log_label} to w0 → {log_path_in(leaf._attempt_dir)}"
+            f" leased {leaf.object_id} to w0 → {log_path_in(leaf._attempt_dir)}"
         )
         for line in lines
     )
     assert any(" D w0    spawned child " in line for line in lines)
-    assert any(f" completed {leaf._log_label} ok · " in line for line in lines)
+    assert any(f" completed {leaf.object_id} ok · " in line for line in lines)
     assert any(line.endswith(" progress 1/1") for line in lines)
     assert any(line.endswith(" run finished ok") for line in lines)
     log_text = "\n".join(lines)
-    assert f"creating {leaf._log_label}" not in log_text
+    assert f"creating {leaf.object_id}" not in log_text
     assert "received" not in log_text
 
 
@@ -1643,7 +1643,7 @@ def test_worker_with_its_own_log_notes_what_it_ran_there(
     ]
     assert worker_records == [
         (logging.INFO, "serving exec e1", job.execution_log),
-        (logging.INFO, f"running {leaf._log_label} ×2", job.log),
+        (logging.INFO, f"running {leaf.object_id} ×2", job.log),
         (logging.INFO, "manager closed the connection; exiting", None),
     ]
 
@@ -1715,7 +1715,6 @@ def test_worker_finishes_its_job_after_losing_the_manager_then_exits(
 
     assert leaf.done
     assert (
-        f"lost the manager; finishing {leaf._log_label}, then exiting"
-        in caplog.messages
+        f"lost the manager; finishing {leaf.object_id}, then exiting" in caplog.messages
     )
     assert "manager closed the connection; exiting" in caplog.messages

@@ -2,6 +2,7 @@ import inspect
 import itertools
 import json
 import logging
+import sys
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -171,6 +172,106 @@ def test_a_moved_class_is_built_from_a_line_that_holds_its_old_name() -> None:
     assert spec.object_id.startswith("old_package.Original:")
     assert table == {"moved": {"old_package.Original": f"{__name__}.Relocated"}}
     assert plan.Specs([line, table])[spec.object_id] == spec
+
+
+class Training(Spec):
+    lr: float
+
+    @dataclass(frozen=True)
+    class Result:
+        loss: float
+
+    def create(self) -> Result:
+        return self.Result(self.lr)
+
+
+class Fitting(Spec):
+    migrations = (MovedFrom(f"{__name__}.Training"),)
+    lr: float
+
+    @dataclass(frozen=True)
+    class Result:
+        loss: float
+
+    def create(self) -> Result:
+        return self.Result(self.lr)
+
+
+class Fit(Spec):
+    migrations = (MovedFrom(f"{__name__}.Training"),)
+    lr: float
+
+    @dataclass(frozen=True)
+    class Result:
+        loss: float
+
+    def create(self) -> Result:
+        return self.Result(self.lr)
+
+
+def test_a_moved_spec_loads_its_nested_result_class_by_its_name_now(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Training is renamed to Fitting, and Fitting to Fit; each old class is gone.
+    Training(lr=1.0).create()
+    monkeypatch.delattr(sys.modules[__name__], "Training")
+    Fitting(lr=2.0).create()
+    monkeypatch.delattr(sys.modules[__name__], "Fitting")
+
+    assert Fit(lr=1.0).load_existing() == Fit.Result(1.0)
+    assert Fit(lr=2.0).load_existing() == Fit.Result(2.0)
+
+
+class FastFit(Fit):
+    migrations = ()
+
+
+def test_a_spec_loads_the_nested_result_class_it_inherits_from_a_moved_spec() -> None:
+    FastFit(lr=1.0).create()
+
+    assert FastFit(lr=1.0).load_existing() == Fit.Result(1.0)
+
+
+class Report(Spec):
+    lr: float
+
+    def create(self) -> Fit.Result:
+        return Fit.Result(self.lr)
+
+
+def test_a_result_holding_another_specs_nested_class_names_it_as_it_is_now() -> None:
+    # Fit's first name, Training, is a class too, with a Result of the same shape.
+    Report(lr=3.0).create()
+
+    assert Report(lr=3.0).load_existing() == Fit.Result(3.0)
+
+
+class Batch(Spec):
+    x: int
+
+    @dataclass(frozen=True)
+    class Result:
+        x: int
+
+    @furu.batched(lambda spec, worker: (None, 10))
+    def create(specs: "list[Batch]", directory: furu.SpecDirectory) -> list[Result]:
+        return [spec.Result(spec.x) for spec in specs]
+
+
+class Rebatch(Batch):
+    migrations = (MovedFrom(f"{__name__}.Batch"),)
+
+    @dataclass(frozen=True)
+    class Result(Batch.Result):
+        pass
+
+
+def test_each_row_of_a_run_is_named_and_loaded_by_its_own_spec() -> None:
+    batch, rebatch = Batch(x=1), Rebatch(x=2)
+    furu.create([batch, rebatch])
+
+    assert run_of(batch) == run_of(rebatch)
+    assert furu.load_existing([batch, rebatch]) == [Batch.Result(1), Rebatch.Result(2)]
 
 
 def test_a_breaking_step_is_a_fresh_start() -> None:
@@ -477,14 +578,15 @@ def test_a_launch_asks_before_it_leaves_stored_results_behind(
     old = _spec(lemma=str)(lemma="comer")
     old.create()
     new = _spec(lemma=str, min_overlap=(float, 0.5))(lemma="comer")
-    table = "    stage   missing\n    Merge         1\n"
+    table = "    stage                  missing\n    test_migration.Merge         1\n"
 
     with pytest.raises(MigrationError) as asks:
         launch(new)
     message = str(asks.value)
     assert table in message
     assert (
-        f"Merge: {old._class_dir} was stored without the field 'min_overlap'" in message
+        f"test_migration.Merge: {old._class_dir} was stored without the field "
+        "'min_overlap'" in message
     )
     assert message.index("Added(name, default=...)") < message.index("breaking=True")
     assert message.endswith(
@@ -524,7 +626,7 @@ def test_the_variable_names_the_folders_one_launch_leaves_behind(
     )
     second(lemma="comer").create()
     assert (
-        f"ignoring stored results · Merge: {first._class_dir} was stored "
+        f"ignoring stored results · test_migration.Merge: {first._class_dir} was stored "
         "without the field 'min_overlap', and this launch stores in "
         f"{second(lemma='comer')._class_dir}"
     ) in caplog.messages
@@ -652,9 +754,9 @@ def test_the_launch_table_has_a_row_for_each_stage_with_specs_missing() -> None:
     assert stage_table(
         [report(top_k=20), *(train(seed=seed) for seed in range(12))]
     ) == (
-        "stage             missing\n"
-        "InfluenceReport         1\n"
-        "Train                  12"
+        "stage                            missing\n"
+        "test_migration.InfluenceReport         1\n"
+        "test_migration.Train                  12"
     )
 
 

@@ -878,8 +878,8 @@ def test_declared_dependencies_are_created_before_the_create_hook(
     log_text = log_path.read_text(encoding="utf-8")
     # Every spec actually built is announced, dependencies included.
     for obj in (parent.child, parent):
-        assert f" I creating {obj._log_label} → " in log_text
-        assert f" I finished {obj._log_label} ok · " in log_text
+        assert f" I creating {obj.object_id} → " in log_text
+        assert f" I finished {obj.object_id} ok · " in log_text
 
 
 def test_a_dependency_is_planned() -> None:
@@ -959,7 +959,7 @@ def test_load_existing_missing_result_explains_how_to_compute() -> None:
     with pytest.raises(
         furu.Missing,
         match=(
-            r"Node:[a-f0-9]{5}:[a-f0-9]{5}\.load_existing\(\) could not find a result\. "
+            r"test_core\.Node:[a-f0-9]{20}:[a-f0-9]{20}\.load_existing\(\) could not find a result\. "
             r"load_existing\(\) only loads existing results; use create\(\) to "
             r"compute missing results\."
         ),
@@ -1053,7 +1053,7 @@ def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> N
     ]
     assert len(info_lines) == 1
     assert info_lines[0].endswith(
-        f" I loaded 2 furu objects including {nodes[0]._log_label}"
+        f" I loaded 2 furu objects including {nodes[0].object_id}"
     )
 
 
@@ -1354,14 +1354,14 @@ def test_nested_create_blocks_the_parent_and_logs_the_child_on_its_own(
         {"outcome": "blocked", "waiting_on": [child.object_id]},
         {"outcome": "ok"},
     ]
-    assert f"creating {child._log_label}" not in parent_log
+    assert f"creating {child.object_id}" not in parent_log
     assert "leaf detail for child" not in parent_log
     assert "leaf detail for child" in child_log
     # What furu has to say goes to the terminal, not into a run's log.
-    assert f"cached {child._log_label}" not in parent_log
-    assert f"cached {child._log_label}" in top_log
-    assert f"blocked {parent._log_label} · 1 missing dependency" in top_log
-    assert f"finished {child._log_label} ok" in top_log
+    assert f"cached {child.object_id}" not in parent_log
+    assert f"cached {child.object_id}" in top_log
+    assert f"blocked {parent.object_id} · 1 missing dependency" in top_log
+    assert f"finished {child.object_id} ok" in top_log
 
 
 def test_cached_create_logs_only_cache_hit_info(
@@ -1381,7 +1381,7 @@ def test_cached_create_logs_only_cache_hit_info(
     assert "creating " not in log_text
     assert "finished " not in log_text
     (line,) = [line for line in log_text.splitlines() if " I " in line]
-    assert line.endswith(f" I cached {obj._log_label}")
+    assert line.endswith(f" I cached {obj.object_id}")
 
 
 def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
@@ -1398,7 +1398,7 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
         assert _load_or_create([cached, missing]) == ["object-id:1", "object-id:2"]
 
     assert (
-        f"building {missing._log_label}, cached {cached._log_label}"
+        f"building {missing.object_id}, cached {cached.object_id}"
         in log_path.read_text(encoding="utf-8")
     )
 
@@ -1435,6 +1435,7 @@ def test_no_create_hook_loads_cached_result() -> None:
     _save_result_bundle(
         ["cached:1"],
         result_dir_in(fixed_run(obj)),
+        spec_classes=[NoCreateHookValue],
         result_codecs=(),
         data_dir=data_dir_in(fixed_run(obj)),
         label="NoCreateHookValue",
@@ -1465,6 +1466,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
+            spec_classes=[NoCreateHookValue],
             result_codecs=(),
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
@@ -1637,6 +1639,7 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
+            spec_classes=[CountedSingleValue],
             result_codecs=(),
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",
@@ -1762,7 +1765,7 @@ def test_two_metadata_under_one_batch_key_stop_the_launch() -> None:
         furu.create([first, alone, second])
 
     assert str(error.value).startswith(
-        f"{first._log_label} and {second._log_label} have the same batch key and "
+        f"{first.object_id} and {second.object_id} have the same batch key and "
         "differ in Metadata reuse ('same_environment' and 'never')."
     )
     assert not first.done
@@ -1826,7 +1829,7 @@ def test_a_failed_create_logs_the_traceback_once() -> None:
         obj.create()
 
     lines = log_of(obj).splitlines()
-    assert re.match(rf"^\S+ E create failed for {re.escape(obj._log_label)}$", lines[0])
+    assert re.match(rf"^\S+ E create failed for {re.escape(obj.object_id)}$", lines[0])
     assert lines[1] == "    Traceback (most recent call last):"
     assert lines.count("    RuntimeError: failed single for 1") == 1
     assert "Stack (most recent call last):" not in "\n".join(lines)

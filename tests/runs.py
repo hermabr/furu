@@ -14,7 +14,7 @@ from furu.storage.stored import stored_row
 def run_of(spec: Spec) -> Path:
     """The published run that holds spec's result."""
     row = stored_row(spec)
-    assert row is not None, f"{spec._log_label} has no stored result"
+    assert row is not None, f"{spec.object_id} has no stored result"
     return row.run
 
 

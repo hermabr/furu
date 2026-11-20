@@ -85,11 +85,6 @@ def resolve_fully_qualified_name(name: str) -> Any:
     return value
 
 
-def spec_label(fully_qualified_name: str, class_part: str, artifact_hash: str) -> str:
-    class_name = fully_qualified_name.rpartition(".")[2]
-    return f"{class_name}:{class_part[:5]}:{artifact_hash[:5]}"
-
-
 # Built once: json.dumps makes a new encoder on every call.
 _stable_json_dump = json.JSONEncoder(sort_keys=True, separators=(",", ":")).encode
 

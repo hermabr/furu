@@ -103,7 +103,7 @@ class Run:
                 if can_run(backend, obj)
             )
             if not pools:
-                nowhere.append(obj._log_label)
+                nowhere.append(obj.object_id)
             metadata = obj._metadata
             how = (
                 obj._class_dir,
@@ -208,7 +208,7 @@ class Run:
                     self.unseen.pop(spec, None)
                     logger.info(
                         "completed %s ok · %s",
-                        self.specs[spec]._log_label,
+                        self.specs[spec].object_id,
                         format_duration(message.seconds),
                     )
                 replies = []
@@ -219,7 +219,7 @@ class Run:
                     self.logs[spec] = log
                     logger.info(
                         "blocked %s · %s",
-                        self.specs[spec]._log_label,
+                        self.specs[spec].object_id,
                         missing_dependencies(len(blocked.dependencies)),
                     )
                 try:
@@ -250,7 +250,7 @@ class Run:
             logger.log(
                 logging.WARNING if will_retry else logging.ERROR,
                 "failed %s · attempt %d/%d · %s",
-                self.specs[spec]._log_label,
+                self.specs[spec].object_id,
                 len(errors),
                 self.max_retries_per_object + 1,
                 summary,
@@ -287,7 +287,7 @@ class Run:
             and dependency.object_id not in self.left
         ]
         if ended:
-            why = f"needs {ended[0]._log_label}, which this run gave up on"
+            why = f"needs {ended[0].object_id}, which this run gave up on"
         else:
             # Each spec of the batch has its own clocks, which say the same.
             (why, *_) = [
@@ -309,7 +309,7 @@ class Run:
                 self.failures.setdefault(spec, []).append(why)
                 logger.error(
                     "failed %s · %s",
-                    self.specs[spec]._log_label,
+                    self.specs[spec].object_id,
                     why,
                     extra={"path": self.logs[spec]},
                 )
@@ -354,7 +354,7 @@ class Run:
                     self.logs[spec] = message.log
                     logger.error(
                         "failed %s · %s",
-                        self.specs[spec]._log_label,
+                        self.specs[spec].object_id,
                         error_summary(message.error),
                         extra={"path": message.log},
                     )
@@ -398,12 +398,12 @@ class Run:
         lines = [f"{plural(len(failed))} failed, {len(self.blocked)} blocked"]
         for obj, errors in failed:
             lines.append(
-                f"  {obj._log_label} · {len(errors)} attempt"
+                f"  {obj.object_id} · {len(errors)} attempt"
                 f"{'' if len(errors) == 1 else 's'} · "
                 f"{error_summary(errors[-1])} → "
                 f"{_display_path(self.logs[obj.object_id])}"
             )
-        lines += [f"  {self.specs[spec]._log_label} · blocked" for spec in self.blocked]
+        lines += [f"  {self.specs[spec].object_id} · blocked" for spec in self.blocked]
 
         headline = ["run failed"]
         if failed:
@@ -412,6 +412,6 @@ class Run:
             headline.append(f"{plural(len(self.blocked))} blocked")
         if len(failed) == 1:
             ((obj, errors),) = failed
-            headline += [obj._log_label, error_summary(errors[-1])]
+            headline += [obj.object_id, error_summary(errors[-1])]
         logger.error(" · ".join(headline), extra={"path": self.launch.execution_log})
         raise RuntimeError("\n".join(lines))

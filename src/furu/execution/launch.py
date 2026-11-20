@@ -100,16 +100,11 @@ def missing(objs: Sequence[Spec], dag: Dag | None = None) -> list[Spec]:
     return new
 
 
-def _stage(cls: type) -> str:
-    """A class as its ids and folders name it, without the module."""
-    return stored_name(cls).rpartition(".")[2]
-
-
 def stage_table(missing: Iterable[Spec]) -> str:
     """One row per class that has specs missing, in the order the launch reached them."""
     counts = Counter(map(type, missing))
     rows = [("stage", "missing")] + [
-        (_stage(cls), str(count)) for cls, count in counts.items()
+        (stored_name(cls), str(count)) for cls, count in counts.items()
     ]
     stage_width, count_width = (max(map(len, column)) for column in zip(*rows))
     return "\n".join(
@@ -182,7 +177,7 @@ def _check_batch_folders(missing: Sequence[Spec]) -> None:
             held[type(obj)][row.run] = None
     if held:
         lines = [
-            f"  {_stage(cls)}: {', '.join(map(str, [*runs][:3]))}"
+            f"  {stored_name(cls)}: {', '.join(map(str, [*runs][:3]))}"
             + (f" and {len(runs) - 3} more" if len(runs) > 3 else "")
             for cls, runs in held.items()
         ]
@@ -237,7 +232,7 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
             if os.listdir(path) == [REMEMBERED]:
                 continue  # what dependency methods returned, and no result
             unexplained[f"{stored_name(cls)}:{folder}"].append(
-                f"{_stage(cls)}: {path} was {_stored(cls, schema.stored_names(path))}"
+                f"{stored_name(cls)}: {path} was {_stored(cls, schema.stored_names(path))}"
                 f", and this launch stores in {class_dir}"
             )
         held_here = holds.get(class_dir, {})
@@ -246,7 +241,7 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
             seen = recorded.get(stored_name(nested), set())
             for names in seen - explained_names(nested):
                 unexplained[f"{stored_name(cls)}:{class_dir.name}"].append(
-                    f"{_stage(cls)}: {nested.__name__} at {'.'.join(at)} was "
+                    f"{stored_name(cls)}: {nested.__name__} at {'.'.join(at)} was "
                     f"{_stored(nested, names)} in {class_dir}, where this launch "
                     "stores too"
                 )

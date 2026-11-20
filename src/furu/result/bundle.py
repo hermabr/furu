@@ -68,6 +68,8 @@ class _Writer:
     result_codecs: tuple[type[Codec], ...]
     data_dir: Path
     row: int = 0
+    # The class of the row's spec.
+    spec_cls: type = object
     columns: dict[ValuePath, list[_Cell]] = dataclasses.field(default_factory=dict)
 
 
@@ -77,6 +79,8 @@ class _Reader:
 
     bundle_dir: Path
     data_dir: Path
+    # The class of the spec of the row being read.
+    spec_cls: type = object
     # The manifest entries of the codec values, by the directory they are in,
     # and the values read so far, by the id() of their entry.
     bodies: dict[str, list[dict[str, Any]]] = dataclasses.field(default_factory=dict)
@@ -249,15 +253,20 @@ def _dump_fields(
         for name in names
     }
     return _wrap(
-        kind, **{TYPEMARKER: _result_class_name(type(value)), FIELDSMARKER: fields}
+        kind,
+        **{
+            TYPEMARKER: _result_class_name(type(value), writer.spec_cls),
+            FIELDSMARKER: fields,
+        },
     )
 
 
-def _result_class_name(cls: type) -> str:
+def _result_class_name(cls: type, spec_cls: type) -> str:
     """A class in a result: at module level, or nested directly in a spec, like ``Train.Result``.
 
     Only here may a class be nested: a result's class names are not part of
-    any id, so they are free to follow their spec's name.
+    any id. A class the row's spec has as an attribute is named relative to
+    it, ``.Result``, so renaming or moving the spec leaves the name as it is.
     """
     from furu.core import Spec  # furu.core loads results through this module
 
@@ -269,6 +278,8 @@ def _result_class_name(cls: type) -> str:
         and not issubclass(cls, Spec)
         and vars(outer).get(name) is cls
     ):
+        if getattr(spec_cls, name, None) is cls:
+            return f".{name}"
         return f"{fully_qualified_name(outer)}.{name}"
     return fully_qualified_name(cls)
 
@@ -447,7 +458,11 @@ def _load_value(node: JsonValue, reader: _Reader) -> object:
 def _load_fields(
     body: dict[str, Any], reader: _Reader
 ) -> tuple[Any, dict[str, object]]:
-    cls = resolve_fully_qualified_name(body[TYPEMARKER])
+    name: str = body[TYPEMARKER]
+    if name.startswith("."):
+        cls = getattr(reader.spec_cls, name[1:])
+    else:
+        cls = resolve_fully_qualified_name(name)
     return cls, {
         name: _load_value(child, reader) for name, child in body[FIELDSMARKER].items()
     }
@@ -524,17 +539,22 @@ def _save_result_bundle(
     values: Sequence[object],
     bundle_dir: Path,
     *,
+    spec_classes: Sequence[type],
     result_codecs: tuple[type[Codec], ...],
     data_dir: Path,
     label: str,
 ) -> None:
-    """Store one result per row. ``label`` names the results in a warning."""
+    """Store one result per row, of a spec of the class at its index in ``spec_classes``.
+
+    ``label`` names the results in a warning.
+    """
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
     writer = _Writer(result_codecs, data_dir)
     manifest: list[JsonValue] = []
-    for row, value in enumerate(values):
+    for row, (spec_cls, value) in enumerate(zip(spec_classes, values, strict=True)):
         writer.row = row
+        writer.spec_cls = spec_cls
         manifest.append(_dump_value(value, Any, (), writer))
     _save_columns(writer.columns, bundle_dir, data_dir=data_dir, label=label)
     # One row per line, so that a row can be found by hand.
@@ -549,10 +569,15 @@ def load_result_bundle(
     rows: Sequence[int],
     *,
     data_dir: Path,
+    spec_classes: Sequence[type],
 ) -> list[object]:
-    """Load the rows asked for, in the order asked."""
+    """Load the rows asked for, in the order asked, each of a spec of the class at its index in ``spec_classes``."""
     manifest = json.loads((bundle_dir / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
     reader = _Reader(bundle_dir, data_dir)
     for row in rows:
         _collect_artifacts(manifest[row], reader.bodies)
-    return [_load_value(manifest[row], reader) for row in rows]
+    values = []
+    for row, spec_cls in zip(rows, spec_classes, strict=True):
+        reader.spec_cls = spec_cls
+        values.append(_load_value(manifest[row], reader))
+    return values

@@ -144,7 +144,7 @@ def test_dependency_failure_propagates_and_names_the_parent() -> None:
         parent.create()
 
     assert exc_info.value.__notes__ == [
-        f"while building dependencies of {parent._log_label}"
+        f"while building dependencies of {parent.object_id}"
     ]
     # It only blocked: the failure is its leaf's.
     assert ends_of(parent) == [
@@ -159,7 +159,7 @@ def test_dependency_cycle_raises_instead_of_looping() -> None:
         a.create()
 
     assert str(exc_info.value) == (
-        f"dependency cycle: {b._log_label} asks for {a._log_label}, "
+        f"dependency cycle: {b.object_id} asks for {a.object_id}, "
         "which already waits for it"
     )
 
@@ -171,7 +171,7 @@ def test_dependency_still_missing_after_it_was_built_raises() -> None:
         parent.create()
 
     assert str(exc_info.value) == (
-        f"{parent._log_label} still finds {Leaf(n=7)._log_label} missing after a "
+        f"{parent.object_id} still finds {Leaf(n=7).object_id} missing after a "
         "rerun, though this run sees it built"
     )
     # Built here, then one rerun in case the create raced a publish.
@@ -210,7 +210,7 @@ def test_create_blocked_without_naming_a_dependency_raises(
     with pytest.raises(RuntimeError) as exc_info:
         parent.create()
     assert str(exc_info.value) == (
-        f"{parent._log_label} reported itself blocked without naming a missing "
+        f"{parent.object_id} reported itself blocked without naming a missing "
         "dependency"
     )
 

@@ -159,7 +159,10 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     assert len(manifest_paths) == 1
     bundle_dir = manifest_paths[0].parent
     assert load_result_bundle(
-        bundle_dir, [0], data_dir=data_dir_in(bundle_dir.parent)
+        bundle_dir,
+        [0],
+        data_dir=data_dir_in(bundle_dir.parent),
+        spec_classes=[SlowProbe],
     ) == [42]
 
 

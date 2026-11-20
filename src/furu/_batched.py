@@ -58,7 +58,7 @@ def batch_of(
         if getattr(first._metadata, f.name) != getattr(obj._metadata, f.name)
     ]:
         raise ValueError(
-            f"{first._log_label} and {obj._log_label} have the same batch "
+            f"{first.object_id} and {obj.object_id} have the same batch "
             f"key and differ in Metadata {', '.join(differs)}. A batch is "
             "one create() call that publishes one folder, so it has one "
             "Metadata: give the specs different batch keys or the same "

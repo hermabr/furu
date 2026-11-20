@@ -16,7 +16,6 @@ from furu.logging import _group_label
 from furu.snapshot import CodeLocation
 from furu.spec_metadata import Metadata, Reuse
 from furu.storage._layout import attempt_dir_in, log_path_in, run_name
-from furu.utils import spec_label
 
 
 class _Message(BaseModel):
@@ -68,7 +67,7 @@ class Job(Launch):
 
     @property
     def label(self) -> str:
-        return _group_label(spec_label(*self.specs[0].split(":")), len(self.specs))
+        return _group_label(self.specs[0], len(self.specs))
 
     @property
     def log(self) -> Path:

@@ -145,7 +145,7 @@ class Returned:
             finally:
                 _on_load.reset(loads)
             if found != (known := obj._returned[self.name]):
-                label = f"{obj._log_label}.{self.name}"
+                label = f"{obj.object_id}.{self.name}"
                 if not self.remember:
                     raise RuntimeError(
                         f"{label} returned something else than when the launch "
