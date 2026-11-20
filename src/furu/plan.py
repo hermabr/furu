@@ -355,8 +355,8 @@ def write(
 
 def listing() -> Path:
     """The plan file that lists the specs whose create() runs in this context."""
-    listed = creation().plan
-    assert listed is not None
+    if (listed := creation().plan) is None:
+        raise RuntimeError("only the create() of specs that a plan lists has a listing")
     return listed
 
 

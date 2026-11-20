@@ -320,9 +320,11 @@ class Creation:
     on_load: OnLoad = _ignore_loads
 
 
-# TODO: results loaded in threads a create() starts aren't recorded (ContextVar
-# state doesn't reach them). Workaround: submit the work with
-# contextvars.copy_context().run. Check with a human before adding such threads.
+# TODO: a thread a create() starts sees Creation(), as if no create() ran
+# (ContextVar state doesn't reach it): its loads aren't recorded, a create() in it
+# starts a launch instead of blocking, and .directory raises. Workaround: submit
+# the work with contextvars.copy_context().run. Check with a human before adding
+# such threads.
 _creation: ContextVar[Creation] = ContextVar(
     "furu_creation",
     default=Creation(),  # noqa: B039 -- frozen
