@@ -10,11 +10,11 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from runs import run_of
+from runs import plan_lines, run_of
 from tracedrepo import Repo, fresh_process
 
 import furu
-from furu import Spec, plan
+from furu import Spec
 from furu.config import get_config
 from furu.storage._layout import remembered_dir_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
@@ -175,7 +175,7 @@ def test_a_launch_names_a_finished_spec_without_calling_its_method() -> None:
     report = InfluenceReport(table=LooTable(data=data, seeds=3), top_k=20)
     assert furu.create(report) == 23
     assert _calls == [3]
-    assert plan.read(_plans()[-1])[2]["fields"]["runs"] == {
+    assert plan_lines(_plans()[-1])[2]["fields"]["runs"] == {
         "|kind": "returned",
         "|value": table._returned["runs"],
     }

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from gitrepo import commit_and_push, git
-from runs import events_of, run_of
+from runs import events_of, plan_lines, run_of
 
 import furu
 from furu import Metadata, Spec, plan, provenance, record
@@ -91,7 +91,7 @@ def _pointer(fingerprint: str) -> dict[str, Any]:
 def _recorded(spec: Spec) -> tuple[dict[str, Any], dict[str, Any]]:
     """The line about the process that ran spec's run, and the run's line in its file."""
     _, start, end = events_of(spec)[-3:]
-    worker, *lines = plan.read(Path(start["provenance"]))
+    worker, *lines = plan_lines(Path(start["provenance"]))
     (line,) = [line for line in lines if line.get("run") == run_of(spec).name]
     assert (line["start"], line["end"]) == (start["at"], end["at"])
     return worker["worker"], line
@@ -110,7 +110,7 @@ def test_a_launch_writes_what_its_runs_point_to_and_each_run_gets_a_line(
 
     directories = get_config().directories.anchored()
     (launch,) = directories.plans.glob("*.plan")
-    facts, *shared = plan.read(directories.provenance / f"launch-{launch.stem}")
+    facts, *shared = plan_lines(directories.provenance / f"launch-{launch.stem}")
     assert facts.keys() == {
         *("launch", "git", "environment", "submitted", "ignore_stored")
     }

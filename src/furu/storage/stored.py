@@ -31,6 +31,7 @@ from furu.storage._layout import (
     runs_dir_in,
 )
 from furu.storage.events import parse_events
+from furu.utils import json_strings
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -56,7 +57,7 @@ _READERS = 16
 
 def _events(runs: Sequence[Path]) -> list[bytes]:
     """The events.jsonl of each run; empty for one deleted after it was listed."""
-    texts = []
+    texts: list[bytes] = []
     for run in runs:
         try:
             # Unbuffered: each system call hands the interpreter to another
@@ -107,12 +108,14 @@ def _listed(version: Path, batches: bool) -> dict[str, _First]:
             texts = list(pool.map(_events, shares))
         for run, text in zip(chain(*shares), chain(*texts)):
             events = parse_events(text)
-            ended = [event["at"] for event in events if event.get("outcome") == "ok"]
+            ended = json_strings(
+                [event["at"] for event in events if event.get("outcome") == "ok"]
+            )
             if not ended:
                 continue
             name = run.name
             read.add(name)
-            for index, spec in enumerate(events[0]["specs"]):
+            for index, spec in enumerate(json_strings(events[0]["specs"])):
                 row = (ended[-1], name, index, run)
                 if first.setdefault(spec, row) > row:
                     first[spec] = row

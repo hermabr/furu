@@ -14,7 +14,6 @@ from typing import (
     Literal,
     NamedTuple,
     assert_never,
-    cast,
     get_args,
     get_origin,
 )
@@ -22,12 +21,18 @@ from typing import (
 import pydantic
 from pydantic import JsonValue
 
+from furu import constants
 from furu._declared_types import cached_type_hints, child_declared_type
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.logging import get_logger
 from furu.result.codec import Codec, CodecMeta
 from furu.storage._layout import scratch_dir_in
-from furu.utils import fully_qualified_name, resolve_fully_qualified_name
+from furu.utils import (
+    fully_qualified_name,
+    json_strings,
+    parse_json,
+    resolve_fully_qualified_name,
+)
 
 WRAPPER_KEY: Final = "$furu"
 # artifacts/<position>: what a codec merged for every row with a value there.
@@ -79,7 +84,9 @@ class _Reader:
     data_dir: Path
     # The manifest entries of the codec values, by the directory they are in,
     # and the values read so far, by the id() of their entry.
-    bodies: dict[str, list[dict[str, Any]]] = dataclasses.field(default_factory=dict)
+    bodies: dict[str, list[dict[str, JsonValue]]] = dataclasses.field(
+        default_factory=dict
+    )
     values: dict[int, object] = dataclasses.field(default_factory=dict)
 
 
@@ -395,8 +402,10 @@ def _encode_codec_metadata_value(
 
 def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
     match node:
-        case dict() if WRAPPER_KEY in node:
-            return data_dir / cast(dict[str, Any], node[WRAPPER_KEY])["value"]
+        case dict() if isinstance(body := node.get(WRAPPER_KEY), dict):
+            relative = body["value"]
+            assert isinstance(relative, str)
+            return data_dir / relative
         case dict():
             return {
                 key: _decode_codec_metadata_value(child, data_dir=data_dir)
@@ -416,76 +425,73 @@ def _load_value(node: JsonValue, reader: _Reader) -> object:
             return node
         case list():
             return [_load_value(child, reader) for child in node]
-        case dict() if WRAPPER_KEY in node:
-            return _load_wrapper(cast(dict[str, Any], node[WRAPPER_KEY]), reader)
+        case dict() if isinstance(body := node.get(WRAPPER_KEY), dict):
+            return _load_wrapper(body, reader)
         case dict():
             return {key: _load_value(child, reader) for key, child in node.items()}
         case _:
             assert_never(node)
 
 
-def _load_fields(
-    body: dict[str, Any], reader: _Reader
-) -> tuple[Any, dict[str, object]]:
-    cls = resolve_fully_qualified_name(body[TYPEMARKER])
-    return cls, {
-        name: _load_value(child, reader) for name, child in body[FIELDSMARKER].items()
-    }
-
-
 def _read_artifacts(
-    bodies: Sequence[dict[str, Any]], *, bundle_dir: Path, data_dir: Path
+    bodies: Sequence[dict[str, JsonValue]], *, bundle_dir: Path, data_dir: Path
 ) -> Sequence[object]:
     """Read codec values stored in one directory, in the order given."""
-    codec: type[Codec] = resolve_fully_qualified_name(bodies[0]["codec"])
-    path = Path(bodies[0]["path"])
-    metadatas = [
-        cast(
-            dict[str, object],
-            _decode_codec_metadata_value(body["metadata"], data_dir=data_dir),
-        )
-        for body in bodies
-    ]
+    name, relative = json_strings([bodies[0]["codec"], bodies[0]["path"]])
+    codec = resolve_fully_qualified_name(name)
+    assert isinstance(codec, type) and issubclass(codec, Codec)
+    path = Path(relative)
+    metadatas = []
+    for body in bodies:
+        metadata = _decode_codec_metadata_value(body["metadata"], data_dir=data_dir)
+        assert isinstance(metadata, dict)
+        metadatas.append(metadata)
     if path.parts[0] == ROWS_DIR_NAME:
         return [codec.load(metadata, bundle_dir / path) for metadata in metadatas]
     return codec.load_many(metadatas, bundle_dir / path)
 
 
-def _load_wrapper(body: dict[str, Any], reader: _Reader) -> object:
-    kind: WrapperKind = body[KINDMARKER]
-    match kind:
-        case "artifact":
+def _load_wrapper(body: dict[str, JsonValue], reader: _Reader) -> object:
+    match body:
+        case {constants.KINDMARKER: "artifact", "path": str(path)}:
             if id(body) not in reader.values:
-                bodies = reader.bodies[body["path"]]
+                bodies = reader.bodies[path]
                 values = _read_artifacts(
                     bodies, bundle_dir=reader.bundle_dir, data_dir=reader.data_dir
                 )
                 reader.values.update(zip(map(id, bodies), values, strict=True))
             return reader.values[id(body)]
-        case "dataclass":
-            cls, fields = _load_fields(body, reader)
+        case {
+            constants.KINDMARKER: "dataclass" | "pydantic",
+            constants.TYPEMARKER: str(name),
+            constants.FIELDSMARKER: dict(written),
+        }:
+            cls = resolve_fully_qualified_name(name)
+            fields = {key: _load_value(child, reader) for key, child in written.items()}
+            if isinstance(cls, type) and issubclass(cls, pydantic.BaseModel):
+                return cls.model_validate(fields)
+            assert isinstance(cls, type) and dataclasses.is_dataclass(cls)
             for field in dataclasses.fields(cls):
                 if not field.init:
                     fields.pop(field.name, None)
             return cls(**fields)
-        case "datetime":
-            return datetime.fromisoformat(body["value"])
-        case "path":
-            return Path(body["value"])
-        case "data_path":
-            return reader.data_dir / body["value"]
-        case "tuple" | "set" | "frozenset":
-            items = [_load_value(child, reader) for child in body["items"]]
-            return {"tuple": tuple, "set": set, "frozenset": frozenset}[kind](items)
-        case "pydantic":
-            cls, fields = _load_fields(body, reader)
-            return cls.model_validate(fields)
-        case _:
-            assert_never(kind)
+        case {constants.KINDMARKER: "datetime", "value": str(value)}:
+            return datetime.fromisoformat(value)
+        case {constants.KINDMARKER: "path", "value": str(value)}:
+            return Path(value)
+        case {constants.KINDMARKER: "data_path", "value": str(value)}:
+            return reader.data_dir / value
+        case {constants.KINDMARKER: "tuple", "items": list(items)}:
+            return tuple(_load_value(child, reader) for child in items)
+        case {constants.KINDMARKER: "set", "items": list(items)}:
+            return {_load_value(child, reader) for child in items}
+        case {constants.KINDMARKER: "frozenset", "items": list(items)}:
+            return frozenset(_load_value(child, reader) for child in items)
+    raise ValueError(f"malformed result manifest entry: {body}")
 
 
 def _collect_artifacts(
-    node: JsonValue, bodies: dict[str, list[dict[str, Any]]]
+    node: JsonValue, bodies: dict[str, list[dict[str, JsonValue]]]
 ) -> None:
     """Group the codec values under ``node`` by the directory they are stored in."""
     if isinstance(node, list):
@@ -494,7 +500,9 @@ def _collect_artifacts(
     elif isinstance(node, dict):
         body = node.get(WRAPPER_KEY)
         if isinstance(body, dict) and body.get(KINDMARKER) == "artifact":
-            bodies.setdefault(cast(str, body["path"]), []).append(body)
+            path = body["path"]
+            assert isinstance(path, str)
+            bodies.setdefault(path, []).append(body)
         else:
             for child in node.values():
                 _collect_artifacts(child, bodies)
@@ -532,7 +540,8 @@ def load_result_bundle(
     data_dir: Path,
 ) -> list[object]:
     """Load the rows asked for, in the order asked."""
-    manifest = json.loads((bundle_dir / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
+    manifest = parse_json((bundle_dir / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
+    assert isinstance(manifest, list)
     reader = _Reader(bundle_dir, data_dir)
     for row in rows:
         _collect_artifacts(manifest[row], reader.bodies)

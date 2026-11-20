@@ -7,7 +7,9 @@ import sys
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import cast
+
+from pydantic import JsonValue, TypeAdapter
 
 
 def _running_main_module_name() -> str | None:
@@ -64,7 +66,7 @@ def fully_qualified_name(value: object) -> str:
     return f"{mod}.{qualname}"
 
 
-def resolve_fully_qualified_name(name: str) -> Any:
+def resolve_fully_qualified_name(name: str) -> object:
     module_name, _, attr_name = name.rpartition(".")
     if not module_name or not attr_name:
         raise ValueError(f"Expected fully qualified name, got {name!r}")
@@ -79,6 +81,26 @@ def spec_label(fully_qualified_name: str, class_part: str, artifact_hash: str) -
 
 # Built once: json.dumps makes a new encoder on every call.
 _stable_json_dump = json.JSONEncoder(sort_keys=True, separators=(",", ":")).encode
+
+
+def parse_json(text: str | bytes) -> JsonValue:
+    """``json.loads``, typed: what it returns is always JSON."""
+    return cast(JsonValue, json.loads(text))
+
+
+def parse_json_object(text: str | bytes) -> dict[str, JsonValue]:
+    """A JSON object; anything else raises ValueError, as text that is not JSON does."""
+    if isinstance(value := parse_json(text), dict):
+        return value
+    raise ValueError(f"not a JSON object: {text[:80]!r}")
+
+
+_STRINGS = TypeAdapter(list[str])
+
+
+def json_strings(value: JsonValue) -> list[str]:
+    """A JSON list of strings; anything else raises ValueError."""
+    return _STRINGS.validate_python(value, strict=True)
 
 
 def _fingerprint(written: str) -> str:

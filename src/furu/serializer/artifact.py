@@ -12,6 +12,7 @@ from typing import Any, cast, get_args
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import JsonValue
 
+from furu import constants
 from furu._declared_types import (
     cached_type_hints,
     child_declared_type,
@@ -214,10 +215,11 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     if (tp in _PLAIN or tp is list or tp is tuple) and not _serializer_may_apply(
         declared_type, artifact_serializers
     ):
+        # The checks of type(obj) are exact, which ty does not narrow on.
         if tp in _PLAIN:
-            return obj
+            return cast(JsonValue, obj)
         if _PLAIN.issuperset(map(type, obj)):
-            items = list(obj)
+            items = cast(list[JsonValue], list(obj))
             return items if tp is list else {KINDMARKER: "tuple", VALUEMARKER: items}
     if _is_spec(obj):
         from furu.dependencies import fresh
@@ -393,34 +395,43 @@ def from_json(
         ]
     if not isinstance(value, dict):
         return value
-    match value.get(KINDMARKER):
-        case None:
+    match value:
+        case dict() if KINDMARKER not in value:
             return {
                 key: read(child, child_declared_type(declared_type, key))
                 for key, child in value.items()
             }
-        case "spec":
-            return spec(cast(str, value[VALUEMARKER]))
-        case "custom":
-            return _load_custom_value(cast(dict[str, Any], value), declared_type)
-        case "path":
-            return Path(cast(str, value[VALUEMARKER]))
-        case "datetime":
-            return datetime.fromisoformat(cast(str, value[VALUEMARKER]))
-        case "tuple" | "set" | "frozenset" as kind:
+        case {constants.KINDMARKER: "spec", constants.VALUEMARKER: str(spec_id)}:
+            return spec(spec_id)
+        case {
+            constants.KINDMARKER: "custom",
+            constants.SERIALIZERMARKER: str(serializer_id),
+            constants.VALUEMARKER: _,
+        }:
+            return _load_custom_value(serializer_id, value[VALUEMARKER], declared_type)
+        case {constants.KINDMARKER: "path", constants.VALUEMARKER: str(path)}:
+            return Path(path)
+        case {constants.KINDMARKER: "datetime", constants.VALUEMARKER: str(when)}:
+            return datetime.fromisoformat(when)
+        case {
+            constants.KINDMARKER: "tuple" | "set" | "frozenset" as kind,
+            constants.VALUEMARKER: list(written),
+        }:
             items = [
                 read(item, child_declared_type(declared_type, i))
-                for i, item in enumerate(cast(list[JsonValue], value[VALUEMARKER]))
+                for i, item in enumerate(written)
             ]
             if kind == "tuple":
                 return tuple(items)
             return set(items) if kind == "set" else frozenset(items)
-        case "type_ref":
-            return _resolve_serialized_type(cast(str, value[CLASSMARKER]))
-        case "instance":
-            name = cast(str, value[CLASSMARKER])
+        case {constants.KINDMARKER: "type_ref", constants.CLASSMARKER: str(name)}:
+            return _resolve_serialized_type(name)
+        case {
+            constants.KINDMARKER: "instance",
+            constants.CLASSMARKER: str(name),
+            constants.FIELDSMARKER: dict(written),
+        }:
             cls = _resolve_serialized_type(moved.get(name, name))
-            written = cast(dict[str, JsonValue], value[FIELDSMARKER])
             hints = cached_type_hints(cls)
             if not is_dataclass(cls):
                 return cls(
@@ -432,32 +443,27 @@ def from_json(
             nested.add(cls)
             check_names(cls, written)
             takes = {f.name for f in fields(cls) if f.init}
-            return cls(
-                **{
-                    attribute: read(written[name], hints.get(attribute, Any))
-                    if name in written
-                    else cast(Any, added).default
-                    for attribute, name, added in naming(cls).fields
-                    if attribute in takes
-                }
-            )
-        case kind:
-            raise TypeError(f"Cannot read a written value of kind {kind!r}")
+            values: dict[str, object] = {}
+            for attribute, name, added in naming(cls).fields:
+                if attribute not in takes:
+                    continue
+                if name in written:
+                    values[attribute] = read(written[name], hints.get(attribute, Any))
+                else:
+                    # check_names let it be left out, so a step added it.
+                    assert added is not None
+                    values[attribute] = added.default
+            return cls(**values)
+    raise TypeError(f"Cannot read the written value {value!r}")
 
 
-def _load_custom_value(value: dict[str, Any], expected_type: object) -> Any:
-    serializer_id = value[SERIALIZERMARKER]
-    if not isinstance(serializer_id, str):
-        raise TypeError(
-            f"Expected custom serializer id to be a string: {serializer_id}"
-        )
+def _load_custom_value(
+    serializer_id: str, written: JsonValue, expected_type: object
+) -> object:
     serializer = resolve_fully_qualified_name(serializer_id)
     if not (isinstance(serializer, type) and issubclass(serializer, Serializer)):
         raise TypeError(f"{serializer_id} is not a Serializer")
-    return serializer.load(
-        cast(JsonValue, value[VALUEMARKER]),
-        declared_type=strip_annotated(expected_type),
-    )
+    return serializer.load(written, declared_type=strip_annotated(expected_type))
 
 
 def _resolve_serialized_type(class_name: str) -> type:

@@ -6,6 +6,7 @@ from typing import Annotated, Any, ClassVar, Literal
 import numpy as np
 import pytest
 from pydantic import JsonValue
+from runs import lines_of
 
 from furu import Serializer, Spec, plan
 from furu.constants import (
@@ -267,7 +268,7 @@ def _custom_artifact(
 
 def _field(obj: Spec, name: str) -> Any:
     """How the plan line of obj holds a field."""
-    (line,) = plan.lines([obj])
+    (line,) = lines_of([obj])
     return line["fields"][name]
 
 

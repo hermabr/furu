@@ -13,7 +13,7 @@ from getpass import getuser
 from importlib.metadata import version
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
@@ -212,15 +212,15 @@ _require_pushed_code: bool = True
 _submitted_repo_root: Path | None = None
 # What the worker that started this process says about it: how it runs
 # create() calls, and the output file of its Slurm job.
-_started_as: dict[str, str | None] = {"backend": "local", "output": None}
+_started_as: dict[str, JsonValue] = {"backend": "local", "output": None}
 
 
-def worker() -> dict[str, object]:
+def worker() -> dict[str, JsonValue]:
     """Where this process runs create() calls: what its file in provenance/ begins with."""
     return {
         "host": socket.gethostname(),
         "cpus": getattr(os, "process_cpu_count", os.cpu_count)() or 0,
-        "gpus": list(_probe_accelerators()),
+        "gpus": [*_probe_accelerators()],
         "slurm_job": os.environ.get("SLURM_JOB_ID"),
         "pid": os.getpid(),
         **_started_as,

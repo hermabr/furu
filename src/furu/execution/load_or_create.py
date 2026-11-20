@@ -7,7 +7,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast, overload
+from typing import TYPE_CHECKING, Any, overload
 
 from furu import plan, record, remember
 from furu._batched import _BatchedHook, batch_of
@@ -58,7 +58,7 @@ from furu.storage._layout import (
     trace_path_in,
 )
 from furu.storage.directory import SpecDirectory
-from furu.storage.stored import Row, Stored, load_rows, stored_row, why_rerun
+from furu.storage.stored import Stored, load_rows, stored_row, why_rerun
 from furu.utils import atomic_write_text, format_duration
 
 if TYPE_CHECKING:
@@ -301,7 +301,7 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         # starts is still described.
         raise _DependencyNotReady(missing, *record.found(running))
 
-    found = cast(list[Row], rows)
+    found = [row for row in rows if row is not None]
     if load:
         return load_rows(objs, found)
     for obj, row in zip(objs, found):

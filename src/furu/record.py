@@ -33,6 +33,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import fields
 from itertools import chain
 from pathlib import Path
+from typing import cast
 
 from furu import plan
 from furu._tree import specs_in
@@ -77,12 +78,13 @@ def _described(running: Sequence[Spec], shared: list[Line]) -> Iterator[Line]:
     # The value lines that no spec that runs has pointed to yet.
     values: dict[str, Line] = {}
     for line in plan.lines(running, {obj.object_id for obj in running}):
-        if "value" in line:
-            values[line["value"]] = line
-        elif line.get("runs"):
-            for fingerprint in map(plan.pointer, line["fields"].values()):
-                if fingerprint in values:
-                    shared.append(values.pop(fingerprint))
+        match line:
+            case {"value": str(fingerprint)}:
+                values[fingerprint] = line
+            case {"runs": True, "fields": dict(written)}:
+                for fingerprint in map(plan.pointer, written.values()):
+                    if fingerprint in values:
+                        shared.append(values.pop(fingerprint))
         yield line
 
 
@@ -98,7 +100,11 @@ def launch(
     """
     shared: list[Line] = []
     lines = plan.write(plan_path, asked, _described(running, shared), facts)
-    header: Line = {"launch": plan_path.stem, **facts.model_dump(mode="json")}
+    # mode="json" gives JSON, which pydantic types as Any.
+    header: Line = {
+        "launch": plan_path.stem,
+        **cast(Line, facts.model_dump(mode="json")),
+    }
     if ignore := os.environ.get(IGNORE_STORED):
         header["ignore_stored"] = ignore
     folder = get_config().directories.anchored().provenance

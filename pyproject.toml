@@ -50,3 +50,17 @@ filterwarnings = [
     # Lock tests fork children that only touch files; xdist's threads are harmless.
     "ignore:This process .* is multi-threaded, use of fork\\(\\) may lead to deadlocks:DeprecationWarning",
 ]
+
+[tool.ty.rules]
+unsound-return = "error"
+unsound-assignment = "error"
+disjoint-cast = "error"
+
+# Tests compare numpy arrays and pass stand-ins, where Any is the honest type.
+[[tool.ty.overrides]]
+include = ["tests/**"]
+
+[tool.ty.overrides.rules]
+unsound-return = "ignore"
+unsound-assignment = "ignore"
+disjoint-cast = "ignore"

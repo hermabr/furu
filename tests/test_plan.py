@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from runs import events_of
+from runs import events_of, lines_of, plan_lines
 
 import furu
 from furu import Added, MovedFrom, Renamed, Spec, plan
@@ -106,7 +106,7 @@ def _plans() -> set[Path]:
 
 def test_a_line_holds_a_spec_as_it_was_hashed_and_notes_what_it_left_out() -> None:
     spec = Video(source=Vimeo(clip="x"))
-    line, moved = plan.lines([spec])
+    line, moved = lines_of([spec])
 
     # Old names, and nothing for a field at its declared default.
     assert line == {
@@ -180,7 +180,7 @@ def test_a_value_over_1_kb_is_one_line_that_the_specs_holding_it_point_to(
     assert len(written_out) == 1
 
     (launch,) = _plans()
-    lines = plan.read(launch)[1:]
+    lines = plan_lines(launch)[1:]
     (value,) = [line for line in lines if "value" in line]
     assert value["is"] == {"|kind": "tuple", "|value": [_ref(m) for m in merges]}
     pointer = {"|kind": "value", "|value": value["value"]}
@@ -224,7 +224,7 @@ def test_a_launch_writes_what_it_runs_and_what_that_reaches_before_it_runs(
     assert furu.create(report, on=on) == 23
     (first,) = _plans()
     assert Path(events_of(report)[1]["plan"]) == first
-    header, *lines = plan.read(first)
+    header, *lines = plan_lines(first)
     assert header["asked"] == [report.object_id]
     assert header["code"].keys() == {"repository", "commit", "lock"}
     returned = {

@@ -9,6 +9,8 @@ from functools import cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, overload
 
+from pydantic import JsonValue
+
 from furu import remember
 from furu._declared_types import cached_type_hints
 from furu._tree import specs_in
@@ -363,7 +365,7 @@ class _DependencyNotReady(BaseException):
         self,
         dependencies: Sequence[Spec],
         plan: Path,
-        lines: Sequence[dict[str, Any]] = (),
+        lines: Sequence[dict[str, JsonValue]] = (),
     ):
         self.dependencies = tuple(dependencies)
         self.plan = plan

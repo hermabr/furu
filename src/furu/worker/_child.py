@@ -1,5 +1,4 @@
 import io
-import json
 import os
 import sys
 import traceback
@@ -11,6 +10,7 @@ from furu.dependencies import _DependencyNotReady
 from furu.execution.launch import asked
 from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import _configure_child_logging
+from furu.utils import parse_json_object
 from furu.worker.messages import (
     Job,
     JobBlockedResult,
@@ -23,7 +23,7 @@ from furu.worker.messages import (
 def _execute(job: Job) -> JobResult:
     provenance._set_submitted_repo_root(job.code.checkout)
     try:
-        specs = plan.Specs(map(json.loads, job.lines))
+        specs = plan.Specs(map(parse_json_object, job.lines))
         with plan.listed_in(job.plan), asked(job.asked):
             _ensure_group_result([specs[spec] for spec in job.specs])
         return JobCompletedResult()
@@ -51,7 +51,7 @@ def main() -> int:
     sys.stdout.reconfigure(line_buffering=True)
 
     _set_config(_Config.model_validate_json(sys.stdin.readline()))
-    provenance._started_as.update(json.loads(sys.stdin.readline()))
+    provenance._started_as.update(parse_json_object(sys.stdin.readline()))
     _configure_child_logging(worker_stderr)
 
     for line in sys.stdin:

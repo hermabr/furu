@@ -27,7 +27,6 @@ builds the spec from its line calls the method and compares.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import socket
@@ -38,9 +37,9 @@ from contextvars import ContextVar
 from dataclasses import fields
 from itertools import chain
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
 
 from furu._declared_types import cached_type_hints
 from furu._tree import specs_in
@@ -64,24 +63,34 @@ from furu.utils import (
     _hash_dict_deterministically,
     _stable_json_dump,
     fully_qualified_name,
+    parse_json_object,
     resolve_fully_qualified_name,
 )
 
-type Line = dict[str, Any]
+type Line = dict[str, JsonValue]
+
+_MOVED = TypeAdapter(dict[str, str])
 
 dump = _stable_json_dump
 
 
 def pointer(value: JsonValue) -> str | None:
     """The fingerprint of the value line that a written field value points to, if it does."""
-    if isinstance(value, dict) and value.get(KINDMARKER) in ("value", "returned"):
-        return cast(str, value[VALUEMARKER])
+    if (
+        isinstance(value, dict)
+        and value.get(KINDMARKER) in ("value", "returned")
+        and isinstance(points_to := value[VALUEMARKER], str)
+    ):
+        return points_to
     return None
 
 
 def key(line: Line) -> str:
     """What other lines call this one: a spec's id, a value's fingerprint."""
-    return line.get("spec") or line.get("value") or "moved"
+    match line:
+        case {"spec": str(named)} | {"value": str(named)}:
+            return named
+    return "moved"
 
 
 # How a dumped line names a spec or a value line. A string never matches:
@@ -184,12 +193,13 @@ def lines(
         if spec_id in runs:
             line["runs"] = True
         yield line
-    if moved := {
+    moved: dict[str, JsonValue] = {
         old: fully_qualified_name(moved_cls)
         for cls in classes
         for moved_cls in (cls, *held[cls])
         if (old := naming(moved_cls).moved_from) is not None
-    }:
+    }
+    if moved:
         yield {"moved": moved}
 
 
@@ -207,12 +217,12 @@ class Specs:
         self._built: dict[str, Spec] = {}
         for line in lines:
             match line:
-                case {"spec": spec_id}:
+                case {"spec": str(spec_id)}:
                     self._lines[spec_id] = line
-                case {"value": fingerprint, "is": value}:
+                case {"value": str(fingerprint), "is": value}:
                     self._values[fingerprint] = value
                 case {"moved": moved}:
-                    self._moved |= moved
+                    self._moved |= _MOVED.validate_python(moved)
 
     def __getitem__(self, spec_id: str) -> Spec:
         if spec_id not in self._built:
@@ -221,17 +231,16 @@ class Specs:
 
     def _build(self, spec_id: str) -> Spec:
         line = self._lines[spec_id]
-        written: dict[str, JsonValue] = line["fields"]
-        noted: dict[str, JsonValue] = line.get("left_out", {})
+        written, noted = line["fields"], line.get("left_out", {})
+        assert isinstance(written, dict) and isinstance(noted, dict)
         stored, _, artifact_hash = spec_id.split(":")
-        cls = cast(
-            type[Spec], resolve_fully_qualified_name(self._moved.get(stored, stored))
-        )
+        cls = resolve_fully_qualified_name(self._moved.get(stored, stored))
+        assert isinstance(cls, type) and issubclass(cls, Spec)
         # The steps forwards: the line fits only a class with the same names.
         check_names(cls, written)
         hints = cached_type_hints(cls)
         takes = {f.name for f in fields(cls) if f.init}
-        values: dict[str, Any] = {}
+        values: dict[str, object] = {}
         returned: dict[str, str] = {}
         for attribute, name, added in naming(cls).fields:
             declared = hints.get(attribute, Any)
@@ -327,7 +336,7 @@ def read(path: Path) -> list[Line]:
     lines = []
     for line in text.splitlines():
         try:
-            lines.append(json.loads(line))
+            lines.append(parse_json_object(line))
         except ValueError:  # cut short when its writer was killed
             continue
     return lines
@@ -394,5 +403,5 @@ def save_found(found: Sequence[Line]) -> Path:
     folder = get_config().directories.anchored().plans / launch()
     if (file := _own.get(folder)) is None:
         file = _own[folder] = File.new(folder, ".plan")
-    file.add([{"asked_by": sorted(specs_under_creation())}, *found])
+    file.add([{"asked_by": [*sorted(specs_under_creation())]}, *found])
     return file.path
