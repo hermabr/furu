@@ -7,6 +7,7 @@ import sys
 import uuid
 from enum import Enum
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from pydantic import JsonValue  # noqa: F401  (furu's JSON type, imported from here)
@@ -65,22 +66,18 @@ def fully_qualified_name(value: object) -> str:
 
 
 def resolve_fully_qualified_name(name: str) -> Any:
-    """What ``fully_qualified_name`` named: ``module.Class``, or ``module.Class.Result``."""
-    parts = name.split(".")
-    for split in range(len(parts) - 1, 0, -1):
-        module_name = ".".join(parts[:split])
-        try:
-            value = importlib.import_module(module_name)
-        except ModuleNotFoundError as exc:
-            # Not a module, so the next part is a class in a shorter one; a
-            # module that fails to import a module of its own still raises.
-            if exc.name is None or (module_name + ".").startswith(exc.name + "."):
-                continue
-            raise
-        for attr_name in parts[split:]:
-            value = getattr(value, attr_name)
-        return value
-    raise ValueError(f"Expected fully qualified name, got {name!r}")
+    """What ``fully_qualified_name`` named, read the way Python reads ``a.b.C.D``.
+
+    Each part is an attribute of the one before it; a submodule that is not
+    an attribute of its package yet is imported.
+    """
+    first, *rest = name.split(".")
+    value = importlib.import_module(first)
+    for i, part in enumerate(rest, 1):
+        if isinstance(value, ModuleType) and not hasattr(value, part):
+            importlib.import_module(".".join([first, *rest[:i]]))
+        value = getattr(value, part)
+    return value
 
 
 def spec_label(fully_qualified_name: str, class_part: str, artifact_hash: str) -> str:

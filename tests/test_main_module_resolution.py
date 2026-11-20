@@ -114,6 +114,37 @@ def test_fully_qualified_name_rejects_local_classes() -> None:
         fully_qualified_name(LocalThing)
 
 
+def test_resolve_reads_a_name_the_way_python_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "furu_resolve_pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("class Outer:\n    class Result: ...\n")
+    # Shares the name of the class above; the class is what the name means.
+    (package / "Outer.py").write_text("class Result: ...\n")
+    (package / "deep.py").write_text("class Train:\n    class Result: ...\n")
+    (package / "broken.py").write_text("import furu_resolve_missing_dependency\n")
+    monkeypatch.syspath_prepend(tmp_path)
+    for name in [m for m in sys.modules if m.startswith("furu_resolve_pkg")]:
+        monkeypatch.delitem(sys.modules, name)
+
+    deep = resolve_fully_qualified_name("furu_resolve_pkg.deep.Train.Result")
+    assert deep.__qualname__ == "Train.Result"
+
+    outer_result = importlib.import_module("furu_resolve_pkg").Outer.Result
+    assert resolve_fully_qualified_name(fully_qualified_name(outer_result)) is (
+        outer_result
+    )
+    assert "furu_resolve_pkg.Outer" not in sys.modules
+
+    with pytest.raises(ModuleNotFoundError, match="'furu_resolve_not_installed'"):
+        resolve_fully_qualified_name("furu_resolve_not_installed.mod.Thing")
+    with pytest.raises(ModuleNotFoundError, match="furu_resolve_missing_dependency"):
+        resolve_fully_qualified_name("furu_resolve_pkg.broken.Thing")
+    with pytest.raises(AttributeError, match="Gone"):
+        resolve_fully_qualified_name("furu_resolve_pkg.deep.Train.Gone")
+
+
 def test_python_m_main_objects_resolve_to_main_identity(tmp_path: Path) -> None:
     _write_uv_project(tmp_path)
     package_dir = tmp_path / "my_lib"
