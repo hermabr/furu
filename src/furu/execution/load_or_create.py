@@ -97,7 +97,7 @@ def _recording(
                 # Its result would be kept after the traced one is replaced.
                 cls = type(group[0]).__qualname__
                 raise RuntimeError(
-                    f"{group[0]._log_label} loaded {traced[0]._log_label}, whose "
+                    f"{group[0].object_id} loaded {traced[0].object_id}, whose "
                     f"class traces its code. {cls} does not, so its result would "
                     f"not follow that code. Trace {cls} too: def metadata(self): "
                     'return furu.Metadata(code_version="traced")'
@@ -150,7 +150,7 @@ def _ensure_group_result(objs: Sequence[Spec]) -> None:
     look = Stored()
     if all(look.row(obj) is not None for obj in objs):
         objs[0].logger.info(
-            "cache hit for %s", _group_label(objs[0]._log_label, len(objs))
+            "cache hit for %s", _group_label(objs[0].object_id, len(objs))
         )
         return
 
@@ -244,7 +244,7 @@ def load_existing(tree: object, /) -> Any:
     loaded = _load(objs)
     if objs:
         get_logger().info(
-            "loaded %d furu objects including %s", len(objs), objs[0]._log_label
+            "loaded %d furu objects including %s", len(objs), objs[0].object_id
         )
     else:
         get_logger().info("loaded 0 furu objects")
@@ -266,7 +266,7 @@ def _load(objs: Sequence[Spec]) -> dict[str, Any]:
         if (row := look.row(obj)) is None:
             checked("caught furu.Missing")
             raise Missing(
-                f"{obj._log_label}.load_existing() could not find a result. "
+                f"{obj.object_id}.load_existing() could not find a result. "
                 "load_existing() only loads existing results; use create() to "
                 "compute missing results."
             )
@@ -278,7 +278,7 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     def fmt(objs: list[Spec]) -> str:
         if len(cached) + len(to_build) > 5:
             return str(len(objs))
-        return ", ".join(o._log_label for o in objs)
+        return ", ".join(o.object_id for o in objs)
 
     msg = f"cached {fmt(cached)}"
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
@@ -385,7 +385,7 @@ def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> Non
             with plan.listed_in(plans[lead]):
                 _create_in_process(objs)
         except _DependencyNotReady as exc:
-            label = _group_label(objs[0]._log_label, len(objs))
+            label = _group_label(objs[0].object_id, len(objs))
             objs[0].logger.info(
                 "blocked %s · %s", label, missing_dependencies(len(exc.dependencies))
             )
@@ -403,13 +403,13 @@ def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> Non
                 # rerun settles.
                 why = why_stuck(unseen.setdefault(spec, {}), found, bool(unbuilt), 0.0)
                 if why is not None:
-                    raise RuntimeError(f"{specs[spec]._log_label} {why}") from None
+                    raise RuntimeError(f"{specs[spec].object_id} {why}") from None
                 dag.block(spec, [dep.object_id for dep in unbuilt])
             continue
         except Exception as exc:
             if dependents := dag.waiting_for([lead])[:1]:
                 exc.add_note(
-                    "while building dependencies of " + specs[dependents[0]]._log_label
+                    "while building dependencies of " + specs[dependents[0]].object_id
                 )
             raise
         for spec in group:
@@ -420,7 +420,7 @@ def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> Non
 def _create_in_process(group: list[Spec]) -> None:
     """Create one group in this process, announced on the terminal."""
     lead = group[0]
-    label = _group_label(lead._log_label, len(group))
+    label = _group_label(lead.object_id, len(group))
     lead.logger.info(
         "creating %s", label, extra={"path": log_path_in(working_folder(group))}
     )
@@ -441,7 +441,7 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
     lead = group[0]
     cls = type(lead)
     metadata = lead._metadata  # a batch has one Metadata
-    label = _group_label(lead._log_label, len(group))
+    label = _group_label(lead.object_id, len(group))
     attempt = working_folder(group)
     attempt.mkdir(exist_ok=True)
     with _log_scope(log_path_in(attempt)):

@@ -207,7 +207,7 @@ def test_a_remembered_list_that_differs_stops_whoever_reads_it(
 
     with pytest.raises(RuntimeError, match="remember=True reads something") as stopped:
         _ = sweep.runs
-    assert f"{sweep._log_label}.runs returned something else" in str(stopped.value)
+    assert f"{sweep.object_id}.runs returned something else" in str(stopped.value)
 
 
 def test_a_method_that_checks_whether_a_result_is_stored_is_warned_about(

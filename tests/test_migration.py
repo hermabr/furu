@@ -477,14 +477,15 @@ def test_a_launch_asks_before_it_leaves_stored_results_behind(
     old = _spec(lemma=str)(lemma="comer")
     old.create()
     new = _spec(lemma=str, min_overlap=(float, 0.5))(lemma="comer")
-    table = "    stage   missing\n    Merge         1\n"
+    table = "    stage                  missing\n    test_migration.Merge         1\n"
 
     with pytest.raises(MigrationError) as asks:
         launch(new)
     message = str(asks.value)
     assert table in message
     assert (
-        f"Merge: {old._class_dir} was stored without the field 'min_overlap'" in message
+        f"test_migration.Merge: {old._class_dir} was stored without the field "
+        "'min_overlap'" in message
     )
     assert message.index("Added(name, default=...)") < message.index("breaking=True")
     assert message.endswith(
@@ -524,7 +525,7 @@ def test_the_variable_names_the_folders_one_launch_leaves_behind(
     )
     second(lemma="comer").create()
     assert (
-        f"ignoring stored results · Merge: {first._class_dir} was stored "
+        f"ignoring stored results · test_migration.Merge: {first._class_dir} was stored "
         "without the field 'min_overlap', and this launch stores in "
         f"{second(lemma='comer')._class_dir}"
     ) in caplog.messages
@@ -652,9 +653,9 @@ def test_the_launch_table_has_a_row_for_each_stage_with_specs_missing() -> None:
     assert stage_table(
         [report(top_k=20), *(train(seed=seed) for seed in range(12))]
     ) == (
-        "stage             missing\n"
-        "InfluenceReport         1\n"
-        "Train                  12"
+        "stage                            missing\n"
+        "test_migration.InfluenceReport         1\n"
+        "test_migration.Train                  12"
     )
 
 

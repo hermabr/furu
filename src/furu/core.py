@@ -52,7 +52,6 @@ from furu.storage.stored import Stored, load_rows, stored_row
 from furu.utils import (
     _hash_dict_deterministically,
     nfs_safe_unique_name,
-    spec_label,
 )
 
 if TYPE_CHECKING:
@@ -227,7 +226,7 @@ class Spec(_FuruDataclassTransform, ABC):
     def directory(self) -> SpecDirectory:
         if not is_under_creation(self):
             raise RuntimeError(
-                f"{self._log_label}.directory is only available inside this "
+                f"{self.object_id}.directory is only available inside this "
                 "spec's own create() hook. To use files another spec produced, "
                 "include their paths in its result and go through "
                 "create()/load_existing() so the dependency is recorded. If "
@@ -236,7 +235,7 @@ class Spec(_FuruDataclassTransform, ABC):
             )
         if is_batched(type(self)):
             raise RuntimeError(
-                f"{self._log_label}.directory: a batch has one directory, which "
+                f"{self.object_id}.directory: a batch has one directory, which "
                 "its create() gets as the second argument: "
                 "create(specs, directory). Name the files you write per spec by "
                 "the spec's fields, since the same spec can land in another batch."
@@ -257,7 +256,7 @@ class Spec(_FuruDataclassTransform, ABC):
         # A spec without the decorator is not looked for in batch folders.
         row = None if is_batched(type(self)) else Stored().listed(self, batches=True)
         raise Missing(
-            f"{self._log_label}.load_existing() could not find a result. "
+            f"{self.object_id}.load_existing() could not find a result. "
             + (
                 f"Its result is in the batch folder {row.run}, stored when its "
                 "class had @furu.batched. Put the decorator back to load it."
@@ -288,7 +287,7 @@ class Spec(_FuruDataclassTransform, ABC):
         if is_batched(type(self)):
             row = stored_row(self)
             raise RuntimeError(
-                f"{self._log_label}.delete(): a spec with @furu.batched has no "
+                f"{self.object_id}.delete(): a spec with @furu.batched has no "
                 "folder of its own. "
                 + (
                     "It has no stored result."
@@ -384,11 +383,6 @@ class Spec(_FuruDataclassTransform, ABC):
     @property
     def _attempt_dir(self) -> Path:
         return working_folder([self])
-
-    @final
-    @cached_property
-    def _log_label(self) -> str:
-        return spec_label(self._stored_name, self._class_part, self._artifact_hash)
 
 
 def working_folder(specs: Sequence[Spec]) -> Path:

@@ -10,7 +10,7 @@ import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from furu.utils import format_duration, spec_label
+from furu.utils import format_duration
 
 
 @dataclass(eq=False, slots=True)
@@ -69,8 +69,8 @@ class Dag:
                 continue
             if held == key or held in self.waiting_for([key]):
                 raise RuntimeError(
-                    f"dependency cycle: {spec_label(*key.split(':'))} asks for "
-                    f"{spec_label(*held.split(':'))}, which already waits for it"
+                    f"dependency cycle: {key} asks for "
+                    f"{held}, which already waits for it"
                 )
             self._wait(node, held)
         self._settle(node)
@@ -134,7 +134,7 @@ def why_stuck(
         if waited > grace_s:
             span = f"for {format_duration(waited)}" if grace_s else "after a rerun"
             return (
-                f"still finds {spec_label(*dependency.split(':'))} missing {span}, "
+                f"still finds {dependency} missing {span}, "
                 "though this run sees it built"
             )
     return None

@@ -338,7 +338,7 @@ def test_rerun_names_the_changed_file(
 
     plot.create()
 
-    why = f"rerunning {plot._log_label}: {repo.package}/common.py changed"
+    why = f"rerunning {plot.object_id}: {repo.package}/common.py changed"
     assert why in caplog.text
 
 
@@ -1244,7 +1244,7 @@ def test_code_edited_after_import_is_not_published(
     plot = repo.load("plots").LossPlot(name="b")
     assert plot.create() == "loss:[16, 4, 99, 1]"
     assert (
-        f"starting {plot._log_label} over: {repo.package}/common.py changed"
+        f"starting {plot.object_id} over: {repo.package}/common.py changed"
         in caplog.text
     )
 
@@ -1279,7 +1279,7 @@ def test_a_python_upgrade_reruns_and_says_so(
     plot.create()
 
     assert _version(plot) != before
-    assert f"rerunning {plot._log_label}: Python " in caplog.text
+    assert f"rerunning {plot.object_id}: Python " in caplog.text
     assert "→ 3.99" in caplog.text
 
 

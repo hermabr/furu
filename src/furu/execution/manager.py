@@ -43,7 +43,6 @@ from furu.storage._layout import (
     run_name,
 )
 from furu.storage.events import read_events
-from furu.utils import spec_label
 from furu.worker.backends.local import LocalThreadPool
 from furu.worker.backends.protocol import WorkerPool
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -744,7 +743,7 @@ class Manager:
         if not specs:
             return specs
         script = self.asked_by[specs[0]][0]
-        label = _group_label(spec_label(*specs[0].split(":")), len(specs))
+        label = _group_label(specs[0], len(specs))
         run = run_name([spec.rpartition(":")[2] for spec in specs])
         for stopped in used:
             if stopped.run != run:
