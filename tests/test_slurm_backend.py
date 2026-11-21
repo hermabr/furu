@@ -473,6 +473,16 @@ def test_slurm_pool_ignores_untracked_array_siblings_from_sacct(
     assert not any("unexpected slurm job id" in message for message in caplog.messages)
 
 
+def test_slurm_pool_keeps_an_accounting_state_over_a_line_without_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = _pool(tmp_path, monkeypatch, _StubManager(1))
+    pool._job_ids[:] = ["100_1"]
+    monkeypatch.setattr(pool_module, "_slurm", lambda *_: "100_1|FAILED\n100_1\n")
+
+    assert pool._task_states() == {"100_1": "FAILED"}
+
+
 def test_slurm_pool_replaces_vanished_array_workers_as_one_array(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -744,10 +754,10 @@ def test_slurm_pool_retries_an_sbatch_timeout_without_failing_scripts(
     manager = _StubManager(1)
     pool = _pool(tmp_path, monkeypatch, manager)
 
-    def slurm(*argv: str) -> subprocess.CompletedProcess[str]:
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(argv, 60.0)
 
-    monkeypatch.setattr(pool_module, "_slurm", slurm)
+    monkeypatch.setattr(pool_module.subprocess, "run", run)
     pool._scale_once()
 
     assert manager.notes == []
