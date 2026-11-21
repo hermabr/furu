@@ -7,14 +7,14 @@ from runs import ends_of, log_of
 
 import furu
 from furu import Spec
+from furu.backends.local import LocalThreadWorkerBackend
 from furu.config import get_config
 from furu.dag import Dag
 from furu.execution.launch import missing
 from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
-from furu.storage._layout import attempts_dir_in, lock_path_in
+from furu.protocol.layout import attempts_dir_in, lock_path_in
 from furu.testing import override_config
-from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
 class Leaf(Spec):

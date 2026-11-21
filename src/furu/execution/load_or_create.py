@@ -37,12 +37,8 @@ from furu.execution.launch import missing as missing_under
 from furu.locking import lock
 from furu.logging import _group_label, _log_scope, get_logger
 from furu.migration.schema import check_defaults, record_nested_names
-from furu.provenance import _require_uv, capture_submit_provenance
-from furu.resources import Worker
-from furu.result.bundle import _save_result_bundle
-from furu.serializer.artifact import remembering
-from furu.storage import events
-from furu.storage._layout import (
+from furu.protocol import events
+from furu.protocol.layout import (
     FIXED,
     attempts_dir_in,
     data_dir_in,
@@ -55,6 +51,10 @@ from furu.storage._layout import (
     trace_log_path_in,
     trace_path_in,
 )
+from furu.provenance import _require_uv, capture_submit_provenance
+from furu.resources import Worker
+from furu.result.bundle import _save_result_bundle
+from furu.serializer.artifact import remembering
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Row, Stored, load_rows, stored_row, why_rerun
 from furu.utils import atomic_write_text, format_duration
@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from _typeshed import DataclassInstance
     from pydantic import BaseModel
 
-    from furu.worker.backends.protocol import WorkerBackend
+    from furu.backends.protocol import WorkerBackend
 
 type HasLock = Callable[[], bool]
 

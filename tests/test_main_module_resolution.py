@@ -161,7 +161,7 @@ from pathlib import Path
 from collections.abc import Mapping
 
 from furu import Metadata, Spec, plan
-from furu.storage._layout import data_dir_in
+from furu.protocol.layout import data_dir_in
 from furu.result.bundle import load_result_bundle, _save_result_bundle
 from furu.result.codec import Codec
 

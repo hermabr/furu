@@ -17,12 +17,28 @@ from typing import Any, cast
 import pytest
 from gitrepo import init_repo
 from websockets.sync.client import connect
+from websockets.sync.server import ServerConnection
 
 import furu
 import furu.execution.run_on_workers as run_module
-import furu.worker.backends.slurm.pool as pool_module
+import furu.manager.slurm_pool as pool_module
+from furu.backends.slurm.backend import SlurmExport, SlurmWorkerBackend
+from furu.backends.slurm.resources import (
+    MemoryPerCpu,
+    MemoryPerGpu,
+    MemoryPerNode,
+    SlurmResources,
+)
 from furu.config import get_config
-from furu.execution.manager import Manager
+from furu.manager.manager import Manager, _Script
+from furu.manager.slurm_pool import SlurmWorkerPool
+from furu.protocol.messages import (
+    CodeLocation,
+    ErrorMessage,
+    Launch,
+    SubmitMessage,
+    WarningMessage,
+)
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -30,22 +46,8 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.resources import Worker
-from furu.snapshot import CodeLocation
+from furu.snapshot import code_here
 from furu.worker import _cli
-from furu.worker.backends.slurm.backend import SlurmExport, SlurmWorkerBackend
-from furu.worker.backends.slurm.pool import SlurmWorkerPool
-from furu.worker.backends.slurm.resources import (
-    MemoryPerCpu,
-    MemoryPerGpu,
-    MemoryPerNode,
-    SlurmResources,
-)
-from furu.worker.messages import (
-    ErrorMessage,
-    Launch,
-    SubmitMessage,
-    WarningMessage,
-)
 
 _URL = "ws://furu:secret-token@manager.cluster:1234"
 
@@ -792,7 +794,7 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     monkeypatch.setenv("FURU_FAKE_SLURM_LAUNCH", "1")
-    monkeypatch.setattr(run_module, "_prepare_snapshot", lambda _: CodeLocation.here())
+    monkeypatch.setattr(run_module, "_prepare_snapshot", lambda _: code_here())
     backend = _slurm_backend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
@@ -829,15 +831,15 @@ def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
     tmp_path: Path, override: dict[str, Any]
 ) -> None:
     manager = Manager(url=_URL, manager_dir=tmp_path)
-    sent: list[ErrorMessage] = []
-    script = cast(Any, SimpleNamespace(send=sent.append, plans={}))
+    sent: list[str] = []
+    script = _Script(cast(ServerConnection, SimpleNamespace(send=sent.append)))
     key = _slurm_backend().pool_key
 
     launch = Launch(
         plan=tmp_path / "launch.plan",
         execution_log=tmp_path / "execution.log",
         config=get_config(),
-        code=CodeLocation.here(),
+        code=code_here(),
     )
     for overrides in ({}, {"max_workers": 9}, override):
         pool = _slurm_backend(**overrides).pool()
@@ -847,7 +849,7 @@ def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
         )
     manager.pools[key].stop()
 
-    (refusal,) = sent  # resizing the pool was fine
+    (refusal,) = map(ErrorMessage.model_validate_json, sent)  # resizing was fine
     assert f"'{next(iter(override))}': " in refusal.reason
     assert manager.pools[key].definition == _slurm_backend().pool()
 

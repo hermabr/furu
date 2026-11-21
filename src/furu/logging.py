@@ -9,7 +9,7 @@ Three kinds of file exist:
   output there while the working folder is held. In-process,
   ``_RunLogHandler`` (on the ``furu`` and root loggers) writes the log records
   there; ``print`` stays on your terminal. In a worker child
-  (``worker/_child.py``) fds 1 and 2 point at it, so prints, logging and C
+  (``execution/_child.py``) fds 1 and 2 point at it, so prints, logging and C
   output all land there, including those of processes the job starts.
 - ``executions/<id>/execution.log``: a worker run's story, written by a
   ``FileHandler`` on the ``furu`` logger for the life of ``run_on_workers``.

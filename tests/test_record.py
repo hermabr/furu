@@ -13,9 +13,10 @@ from runs import events_of, run_of
 
 import furu
 from furu import Metadata, Spec, plan, provenance, record
+from furu.backends.local import LocalThreadWorkerBackend
 from furu.config import get_config
 from furu.dependencies import creating
-from furu.worker.backends.local import LocalThreadWorkerBackend
+from furu.protocol import plan_text
 
 
 class Cifar(Spec):
@@ -92,7 +93,7 @@ def _pointer(fingerprint: str) -> dict[str, Any]:
 def _recorded(spec: Spec) -> tuple[dict[str, Any], dict[str, Any]]:
     """The line about the process that ran spec's run, and the run's line in its file."""
     _, start, end = events_of(spec)[-3:]
-    worker, *lines = plan.read(Path(start["provenance"]))
+    worker, *lines = plan_text.read(Path(start["provenance"]))
     (line,) = [line for line in lines if line.get("run") == run_of(spec).name]
     assert (line["start"], line["end"]) == (start["at"], end["at"])
     return worker["worker"], line
@@ -111,7 +112,7 @@ def test_a_launch_writes_what_its_runs_point_to_and_each_run_gets_a_line(
 
     directories = get_config().directories.anchored()
     (launch,) = directories.plans.glob("*.plan")
-    facts, *shared = plan.read(directories.provenance / f"launch-{launch.stem}")
+    facts, *shared = plan_text.read(directories.provenance / f"launch-{launch.stem}")
     assert facts.keys() == {
         *("launch", "git", "environment", "submitted", "ignore_stored")
     }
@@ -126,7 +127,9 @@ def test_a_launch_writes_what_its_runs_point_to_and_each_run_gets_a_line(
     assert values[runs] == [_ref(run) for run in table.runs]
     assert values[notes]["|value"] == list(table.notes)
     metadata = {
-        plan.dump(line["is"]): line["metadata"] for line in shared if "metadata" in line
+        plan_text.dump(line["is"]): line["metadata"]
+        for line in shared
+        if "metadata" in line
     }
     default = {
         "environment": {},
@@ -137,7 +140,7 @@ def test_a_launch_writes_what_its_runs_point_to_and_each_run_gets_a_line(
         "environment": {"OMP_NUM_THREADS": "1"},
         "required_environment_variables": ["HOME"],
     }
-    assert metadata.keys() == {plan.dump(default), plan.dump(threads)}
+    assert metadata.keys() == {plan_text.dump(default), plan_text.dump(threads)}
 
     worker, line = _recorded(table)
     assert worker["host"] == socket.gethostname()
@@ -150,7 +153,7 @@ def test_a_launch_writes_what_its_runs_point_to_and_each_run_gets_a_line(
         "storage": str(directories.objects),
         "version": "fixed",
         "launch": launch.stem,
-        "metadata": metadata[plan.dump(default)],
+        "metadata": metadata[plan_text.dump(default)],
         "start": line["start"],
         "end": line["end"],
         "specs": [
@@ -166,7 +169,7 @@ def test_a_launch_writes_what_its_runs_point_to_and_each_run_gets_a_line(
     }
     # A batch is one line, with a spec line per row.
     _, batch = _recorded(table.runs[0])
-    assert batch["metadata"] == metadata[plan.dump(threads)]
+    assert batch["metadata"] == metadata[plan_text.dump(threads)]
     assert sorted(batch["specs"], key=lambda spec: spec["fields"]["seed"]) == [
         {"spec": run.object_id, "fields": {"data": _ref(data), "seed": run.seed}}
         for run in table.runs
@@ -188,8 +191,8 @@ def test_found_specs_have_their_values_recorded_first_and_are_listed_as_loaded(
     }
     seen = []
 
-    def save_found(lines: list[plan.Line]) -> Path:
-        seen.append(returned in plan.read(record.own().path))
+    def save_found(lines: list[plan_text.Line]) -> Path:
+        seen.append(returned in plan_text.read(record.own().path))
         return real(lines)
 
     real = plan.save_found
@@ -234,19 +237,19 @@ def test_a_process_creates_its_own_file_and_a_killed_writer_costs_one_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-    notebook = plan.File.new(tmp_path)
+    notebook = plan_text.File.new(tmp_path)
     assert notebook.path.name == f"{socket.gethostname()}-pid-{os.getpid()}"
 
     # A restarted Slurm job keeps its id, and never adds to the file it finds.
     monkeypatch.setenv("SLURM_JOB_ID", "18389503")
-    first, second = plan.File.new(tmp_path), plan.File.new(tmp_path)
+    first, second = plan_text.File.new(tmp_path), plan_text.File.new(tmp_path)
     assert [first.path.name, second.path.name] == ["job-18389503", "job-18389503-2"]
 
     first.add([{"run": "b81e"}])
     first.add([{"run": "41d7"}])
-    assert plan.read(first.path) == [{"run": "b81e"}, {"run": "41d7"}]
+    assert plan_text.read(first.path) == [{"run": "b81e"}, {"run": "41d7"}]
     first.path.write_bytes(first.path.read_bytes()[:-8])
-    assert plan.read(first.path) == [{"run": "b81e"}]
+    assert plan_text.read(first.path) == [{"run": "b81e"}]
 
 
 _created: list[int] = []
@@ -275,7 +278,7 @@ def test_a_launch_needs_pushed_code_and_loading_does_not(
 
     assert furu.create(_Node(value=1)) == 2
     (launch,) = get_config().directories.anchored().provenance.glob("launch-*")
-    assert plan.read(launch)[0]["git"] == {
+    assert plan_text.read(launch)[0]["git"] == {
         "commit": git(git_repo, "rev-parse", "origin/main"),
         "branch": "main",
         "remote": str(git_repo.parent / "repo-origin.git"),

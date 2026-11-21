@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furu.logging import get_logger
+from furu.protocol.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
-from furu.worker.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
-    from furu.execution.manager import Manager
+    from furu.manager.manager import Manager
 
 logger = get_logger("slurm")
 

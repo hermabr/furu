@@ -51,12 +51,12 @@ from pydantic import BaseModel, ConfigDict
 
 from furu.config import get_config
 from furu.logging import get_logger
-from furu.storage._layout import FIXED, trace_path_in, version_dirs_in
+from furu.protocol.layout import FIXED, trace_path_in, version_dirs_in
+from furu.protocol.messages import REPO_ROOT_ENV_VAR
 from furu.utils import _hash_dict_deterministically
 
 _PROCESS_START_NS = time.time_ns()
 _PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
-_REPO_ROOT_ENV_VAR = "_FURU_REPO_ROOT"
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _IMPORTS = (ast.Import, ast.ImportFrom)
 _KEEPS_OLD_RESULT = (
@@ -75,7 +75,7 @@ class StaleCodeError(RuntimeError):
 
 def repo_root() -> Path:
     """The tree trace paths are relative to: the git worktree, or the snapshot."""
-    if root := os.environ.get(_REPO_ROOT_ENV_VAR):
+    if root := os.environ.get(REPO_ROOT_ENV_VAR):
         return Path(_realpath(root))
     return _git_toplevel(os.getcwd())
 

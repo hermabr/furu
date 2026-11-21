@@ -10,11 +10,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
-from furu.code_trace import _REPO_ROOT_ENV_VAR
 from furu.config import _Config
 from furu.logging import get_logger
-from furu.snapshot import CodeLocation
-from furu.worker.messages import Job, JobFailedResult, JobResult, job_result_adapter
+from furu.protocol.messages import (
+    REPO_ROOT_ENV_VAR,
+    CodeLocation,
+    Job,
+    JobFailedResult,
+    JobResult,
+    job_result_adapter,
+)
 
 _LOG_TAIL_BYTES = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0
@@ -135,11 +140,11 @@ class ChildSlot:
         # and anything written outside one lands in this worker's own output.
         # Its own process group lets a kill reach what the job started.
         process = subprocess.Popen(
-            [str(job.code.python), "-m", "furu.worker._child"],
+            [str(job.code.python), "-m", "furu.execution._child"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             cwd=job.code.cwd,
-            env=environment | {_REPO_ROOT_ENV_VAR: str(job.code.repo_root)},
+            env=environment | {REPO_ROOT_ENV_VAR: str(job.code.repo_root)},
             text=True,
             process_group=0,
         )

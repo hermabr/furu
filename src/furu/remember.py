@@ -26,7 +26,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from furu.code_trace import Trace, why_trace_outdated
-from furu.storage._layout import remembered_dir_in
+from furu.protocol.layout import remembered_dir_in
 from furu.utils import _stable_json_dump, atomic_write_text
 
 # The method's name and the fingerprint of the spec's other fields.

@@ -7,8 +7,8 @@ from runs import ends_of, fixed_run
 
 import furu
 from furu import Spec, plan
+from furu.backends.local import LocalThreadWorkerBackend
 from furu.dependencies import _DependencyNotReady
-from furu.worker.backends.local import LocalThreadWorkerBackend
 
 CALLS: list[str] = []
 

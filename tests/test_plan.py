@@ -10,12 +10,13 @@ from runs import events_of
 
 import furu
 from furu import Added, MovedFrom, Renamed, Spec, plan
+from furu.backends.local import LocalThreadWorkerBackend
 from furu.config import get_config
 from furu.migration import schema
 from furu.migration.steps import MigrationError
+from furu.protocol import plan_text
+from furu.protocol.layout import schema_path_in
 from furu.serializer import artifact
-from furu.storage._layout import schema_path_in
-from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
 @dataclass(frozen=True)
@@ -180,7 +181,7 @@ def test_a_value_over_1_kb_is_one_line_that_the_specs_holding_it_point_to(
     assert len(written_out) == 1
 
     (launch,) = _plans()
-    lines = plan.read(launch)[1:]
+    lines = plan_text.read(launch)[1:]
     (value,) = [line for line in lines if "value" in line]
     assert value["is"] == {"|kind": "tuple", "|value": [_ref(m) for m in merges]}
     pointer = {"|kind": "value", "|value": value["value"]}
@@ -224,7 +225,7 @@ def test_a_launch_writes_what_it_runs_and_what_that_reaches_before_it_runs(
     assert furu.create(report, on=on) == 23
     (first,) = _plans()
     assert Path(events_of(report)[1]["plan"]) == first
-    header, *lines = plan.read(first)
+    header, *lines = plan_text.read(first)
     assert header["asked"] == [report.object_id]
     assert header["code"].keys() == {"repository", "commit", "lock"}
     returned = {
@@ -245,7 +246,7 @@ def test_a_launch_writes_what_it_runs_and_what_that_reaches_before_it_runs(
     again = InfluenceReport(table=table, top_k=21)
     assert furu.create(again, on=on) == 24
     (second,) = _plans() - {first}
-    assert plan.read(second)[1:] == [
+    assert plan_text.read(second)[1:] == [
         {
             "spec": again.object_id,
             "fields": {"table": _ref(table), "top_k": 21},

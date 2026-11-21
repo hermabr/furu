@@ -9,8 +9,8 @@ from collections.abc import Sequence
 from importlib.metadata import version
 
 from furu.config import get_config
-from furu.execution.manager import Manager
 from furu.logging import _execution_log, get_logger
+from furu.manager.manager import Manager
 
 logger = get_logger("manager")
 

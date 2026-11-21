@@ -15,8 +15,8 @@ import furu.locking as locking_module
 from furu import Spec
 from furu.config import get_config
 from furu.execution.load_or_create import _load_or_create
+from furu.protocol.layout import data_dir_in
 from furu.result.bundle import load_result_bundle
-from furu.storage._layout import data_dir_in
 
 OVERLAP_SLEEP_S = 0.01
 POLL_INTERVAL_S = 0.005

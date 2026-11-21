@@ -6,8 +6,8 @@ from typing import Any
 
 from furu import Spec
 from furu.core import working_folder
-from furu.storage._layout import FIXED, log_path_in, run_dir_in
-from furu.storage.events import read_events
+from furu.protocol.events import read_events
+from furu.protocol.layout import FIXED, log_path_in, run_dir_in
 from furu.storage.stored import stored_row
 
 

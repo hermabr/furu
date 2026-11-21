@@ -8,11 +8,11 @@ import tarfile
 import tomllib
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 from furu import code_trace
 from furu.config import get_config
+from furu.protocol.messages import CodeLocation
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -129,38 +129,31 @@ def extract_snapshot(commit: str, *, repo: Path) -> Path:
     return code_dir
 
 
-@dataclass(frozen=True, slots=True)
-class CodeLocation:
-    python: Path
-    project_root: Path
-    cwd: Path
-    repo_root: Path  # traced code paths are relative to it
-    checkout: Path  # where the launch was started: furu.submitting_repo_root()
+def code_here() -> CodeLocation:
+    """The code this process runs: the live worktree."""
+    return CodeLocation(
+        python=Path(sys.executable),
+        project_root=Path(EnvironmentIdentity.capture().project_root),
+        cwd=Path.cwd(),
+        repo_root=code_trace.repo_root(),
+        checkout=submitting_repo_root(),
+    )
 
-    @classmethod
-    def here(cls) -> CodeLocation:
-        return cls(
-            python=Path(sys.executable),
-            project_root=Path(EnvironmentIdentity.capture().project_root),
-            cwd=Path.cwd(),
-            repo_root=code_trace.repo_root(),
-            checkout=submitting_repo_root(),
-        )
 
-    @classmethod
-    def from_snapshot(cls, provenance: SubmitProvenance) -> CodeLocation:
-        repo_root = Path(provenance.git.repo_root)
-        code_dir = extract_snapshot(provenance.git.commit, repo=repo_root).resolve()
-        project_root = code_dir / Path(provenance.environment.project_root).relative_to(
-            repo_root
-        )
-        return cls(
-            python=project_root / ".venv" / "bin" / "python",
-            project_root=project_root,
-            cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
-            repo_root=code_dir,
-            checkout=repo_root,
-        )
+def code_from_snapshot(provenance: SubmitProvenance) -> CodeLocation:
+    """The code of ``provenance``'s commit, extracted into the snapshots folder."""
+    repo_root = Path(provenance.git.repo_root)
+    code_dir = extract_snapshot(provenance.git.commit, repo=repo_root).resolve()
+    project_root = code_dir / Path(provenance.environment.project_root).relative_to(
+        repo_root
+    )
+    return CodeLocation(
+        python=project_root / ".venv" / "bin" / "python",
+        project_root=project_root,
+        cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
+        repo_root=code_dir,
+        checkout=repo_root,
+    )
 
 
 def _push_command(git: GitIdentity) -> str:

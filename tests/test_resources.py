@@ -1,6 +1,6 @@
 from furu import Spec, Worker
-from furu.worker.backends.local import LocalThreadWorkerBackend
-from furu.worker.backends.protocol import can_run
+from furu.backends.local import LocalThreadWorkerBackend
+from furu.backends.protocol import can_run
 
 
 class Generate(Spec):

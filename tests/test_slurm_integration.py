@@ -13,10 +13,10 @@ from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
 
 import furu
 import furu.execution.run_on_workers as run_module
-import furu.worker.backends.slurm.pool as pool_module
-from furu.execution.manager import Manager
-from furu.worker.backends.slurm.backend import SlurmWorkerBackend
-from furu.worker.backends.slurm.resources import SlurmResources
+import furu.manager.slurm_pool as pool_module
+from furu.backends.slurm.backend import SlurmWorkerBackend
+from furu.backends.slurm.resources import SlurmResources
+from furu.manager.manager import Manager
 
 A_WORKER_COUNT = 2
 B_WORKER_COUNT = 3

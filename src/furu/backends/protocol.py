@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from furu.core import Spec
+    from furu.protocol.messages import Pool
     from furu.resources import Worker
-    from furu.worker.messages import Pool
 
 
 class WorkerBackend(Protocol):
@@ -30,16 +30,6 @@ class WorkerBackend(Protocol):
     def pool(self) -> Pool:
         """The plain data the manager needs to start this pool's workers."""
         ...
-
-
-class WorkerPool(Protocol):
-    """A manager's running pool."""
-
-    definition: Pool
-
-    def job_completed(self) -> None: ...
-
-    def stop(self) -> None: ...
 
 
 def can_run(backend: WorkerBackend, spec: Spec) -> bool:

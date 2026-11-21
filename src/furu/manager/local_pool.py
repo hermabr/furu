@@ -1,38 +1,15 @@
 from __future__ import annotations
 
-import dataclasses
 import threading
 import traceback
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from furu.logging import get_logger
-from furu.resources import Worker
-from furu.utils import _hash_dict_deterministically
-from furu.worker.messages import ErrorMessage, LocalPool, Pool
+from furu.protocol.messages import ErrorMessage, LocalPool, Pool
+from furu.worker.loop import worker_loop
 
 if TYPE_CHECKING:
-    from furu.core import Spec
-    from furu.execution.manager import Manager
-
-
-@dataclass(frozen=True, slots=True)
-class LocalThreadWorkerBackend:
-    """Worker threads in this process, running the live worktree."""
-
-    max_workers: int = 1
-    worker: Worker = field(default_factory=Worker.here)
-    accepts: Callable[[Spec], bool] | None = None
-
-    @property
-    def pool_key(self) -> str:
-        return "local:" + _hash_dict_deterministically(
-            {"worker": dataclasses.asdict(self.worker)}
-        )
-
-    def pool(self) -> LocalPool:
-        return LocalPool(max_workers=self.max_workers)
+    from furu.manager.manager import Manager
 
 
 class LocalThreadPool:
@@ -60,8 +37,6 @@ class LocalThreadPool:
 
 
 def _run_worker(manager: Manager, key: str, component: str) -> None:
-    from furu.worker.loop import worker_loop
-
     try:
         worker_loop(
             url=manager.url,

@@ -22,8 +22,8 @@ from furu.code_trace import (
 )
 from furu.logging import get_logger
 from furu.migration.schema import held
+from furu.protocol.layout import remembered_dir_in
 from furu.serializer.artifact import fingerprint
-from furu.storage._layout import remembered_dir_in
 
 if TYPE_CHECKING:
     from furu.core import Spec

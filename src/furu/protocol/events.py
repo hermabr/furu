@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from furu.storage._layout import events_path_in
+from furu.protocol.layout import events_path_in
 
 
 def read_events(run_dir: Path) -> list[dict[str, Any]]:

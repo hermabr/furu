@@ -32,14 +32,15 @@ from furu.dependencies import (
 from furu.execution.launch import missing
 from furu.execution.load_or_create import _load_or_create
 from furu.logging import _execution_log
-from furu.result.bundle import _save_result_bundle
-from furu.storage._layout import (
+from furu.protocol import plan_text
+from furu.protocol.layout import (
     data_dir_in,
     events_path_in,
     lock_path_in,
     log_path_in,
     result_dir_in,
 )
+from furu.result.bundle import _save_result_bundle
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -1690,7 +1691,7 @@ def test_nested_create_reports_all_missing_dependencies(
     found = exc_info.value.plan
     assert found is not None
     assert found.parent == launch_plan.with_suffix("")
-    assert plan.read(found) == [
+    assert plan_text.read(found) == [
         {"asked_by": [parent.object_id]},
         {"fields": {"key": 11}, "runs": True, "spec": first.object_id},
         {"fields": {"key": 12}, "runs": True, "spec": second.object_id},

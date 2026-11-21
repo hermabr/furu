@@ -1,0 +1,307 @@
+"""The furu manager: one queue and one set of worker pools for every launch.
+
+It holds only memory. A script sends its plan's lines and its pool
+definitions on every connection, so a restarted manager needs no state file:
+scripts plan again from disk and resend, and the working folders in
+``attempts/`` say which batches were started. Run it with
+``uvx furu@<version> manager``.
+
+This module is the part that talks: connections, pools, and one lock around
+the ``Queue``, which decides what runs.
+"""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Generator
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
+from pathlib import Path
+from secrets import token_urlsafe
+from typing import Protocol, assert_never
+
+from websockets.exceptions import ConnectionClosed
+from websockets.protocol import State
+from websockets.sync.server import ServerConnection, basic_auth, serve
+
+from furu.logging import get_logger
+from furu.manager import queue
+from furu.manager.local_pool import LocalThreadPool
+from furu.manager.queue import Queue, ToScript
+from furu.manager.slurm_pool import SlurmWorkerPool
+from furu.protocol.messages import (
+    CancelMessage,
+    ErrorMessage,
+    GaveUpMessage,
+    HelloMessage,
+    Job,
+    JobCompletedResult,
+    JobFailedResult,
+    JobResult,
+    LocalPool,
+    Pool,
+    RerunMessage,
+    ScriptMessage,
+    SlurmPool,
+    SubmitMessage,
+    WarningMessage,
+    first_message_adapter,
+    job_result_adapter,
+    script_message_adapter,
+)
+
+logger = get_logger("manager")
+
+
+class WorkerPool(Protocol):
+    """A manager's running pool."""
+
+    definition: Pool
+
+    def job_completed(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
+# Not part of a pool's key: its first script sets them and later ones must agree.
+_SETTINGS = {"job_name", "idle_timeout_seconds"}
+
+
+@dataclass(eq=False)
+class _Script:
+    connection: ServerConnection
+    pools: dict[str, Pool] = field(default_factory=dict)
+
+    def send(self, message: ToScript) -> None:
+        with suppress(ConnectionClosed):
+            self.connection.send(message.model_dump_json())
+
+
+@dataclass(eq=False)
+class Manager:
+    url: str
+    manager_dir: Path | None  # None for a script's in-process manager
+    lock: threading.Condition = field(default_factory=threading.Condition)
+    scripts: list[_Script] = field(default_factory=list)
+    pools: dict[str, WorkerPool] = field(default_factory=dict)
+    stopping: bool = False
+    queue: Queue[_Script, ServerConnection] = field(default_factory=Queue)
+
+    @classmethod
+    @contextmanager
+    def serve(
+        cls, *, listen_host: str, connect_host: str, manager_dir: Path | None
+    ) -> Generator[Manager]:
+        token = token_urlsafe(32)
+        server = serve(
+            lambda connection: manager._serve(connection),
+            listen_host,
+            0,
+            process_request=basic_auth(credentials=("furu", token)),
+            max_size=None,
+        )
+        port = server.socket.getsockname()[1]
+        manager = cls(
+            url=f"ws://furu:{token}@{connect_host}:{port}", manager_dir=manager_dir
+        )
+        thread = threading.Thread(target=server.serve_forever, name="furu-manager")
+        thread.start()
+        try:
+            yield manager
+        finally:
+            with manager.lock:
+                # A script that just left may still be forwarding its cancel.
+                manager.lock.wait_for(
+                    lambda: all(
+                        s.connection.state is State.OPEN for s in manager.scripts
+                    ),
+                    timeout=5,
+                )
+                manager.stopping = True
+                manager.lock.notify_all()
+            server.shutdown()  # closes every connection and waits for handlers
+            thread.join(timeout=10)
+            for pool in manager.pools.values():
+                pool.stop()
+
+    def _serve(self, connection: ServerConnection) -> None:
+        try:
+            match first_message_adapter.validate_json(connection.recv(timeout=10)):
+                case SubmitMessage() as submit:
+                    self._serve_script(connection, submit)
+                case HelloMessage() as hello:
+                    self._serve_worker(connection, hello)
+                case _ as unreachable:
+                    assert_never(unreachable)
+        except (ConnectionClosed, TimeoutError):
+            pass
+
+    def _flush(self) -> None:
+        with self.lock:
+            outbox, self.queue.outbox = self.queue.outbox, []
+        for script, message in outbox:
+            script.send(message)
+
+    # --- scripts ---------------------------------------------------------------
+
+    def _serve_script(
+        self, connection: ServerConnection, submit: SubmitMessage
+    ) -> None:
+        script = _Script(connection)
+        with self.lock:
+            self.scripts.append(script)
+        logger.info("script connected · %s", _peer(connection))
+        message: ScriptMessage = submit
+        try:
+            while True:
+                match message:
+                    case SubmitMessage():
+                        self._submit(script, message)
+                    case RerunMessage():
+                        with self.lock:
+                            self.queue.rerun(script, message)
+                            self.lock.notify_all()
+                    case GaveUpMessage():
+                        with self.lock:
+                            self.queue.gave_up(script, message)
+                            self.lock.notify_all()
+                    case CancelMessage():
+                        self._cancel(script)
+                    case _ as unreachable:
+                        assert_never(unreachable)
+                self._flush()
+                message = script_message_adapter.validate_json(connection.recv())
+        except ConnectionClosed:
+            pass
+        finally:
+            with self.lock:
+                self.scripts.remove(script)
+                dropped = self.queue.leave(script)
+                running = len(self.queue.unwanted())
+                self.lock.notify_all()
+            logger.info(
+                "script left · %s · dropped %d queued · %d still running",
+                _peer(connection),
+                dropped,
+                running,
+            )
+
+    def _submit(self, script: _Script, message: SubmitMessage) -> None:
+        with self.lock:
+            clashes = [
+                f"pool {key} already runs with {first}, not {asked}"
+                for key, definition in message.pools.items()
+                if key in self.pools
+                and (first := self.pools[key].definition.model_dump(include=_SETTINGS))
+                != (asked := definition.model_dump(include=_SETTINGS))
+            ]
+            if not clashes:
+                script.pools = message.pools
+                for key, definition in message.pools.items():
+                    if key not in self.pools:
+                        self.pools[key] = self._start_pool(key, definition)
+                queued = self.queue.submit(script, message)
+                self.lock.notify_all()
+        if clashes:
+            hint = "; restart the manager to change them"
+            script.send(ErrorMessage(reason="; ".join(clashes) + hint))
+        elif queued:
+            logger.info("queued %d specs from %s", queued, _peer(script.connection))
+
+    def _start_pool(self, key: str, definition: Pool) -> WorkerPool:
+        logger.info("starting pool %s", key)
+        match definition:
+            case SlurmPool():
+                if self.manager_dir is None:
+                    raise RuntimeError("slurm pools need a shared furu manager")
+                return SlurmWorkerPool(
+                    manager=self,
+                    key=key,
+                    definition=definition,
+                    directory=self.manager_dir / "workers" / key.replace(":", "-"),
+                )
+            case LocalPool():
+                return LocalThreadPool(manager=self, key=key, definition=definition)
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    def _cancel(self, script: _Script) -> None:
+        with self.lock:
+            dropped, workers = self.queue.cancel(script)
+            self.lock.notify_all()
+        logger.info(
+            "cancelled %d queued and %d running jobs from %s",
+            dropped,
+            len(workers),
+            _peer(script.connection),
+        )
+        for worker in workers:
+            with suppress(ConnectionClosed):
+                worker.send(CancelMessage().model_dump_json())
+
+    def notify(self, pool: str, message: WarningMessage | ErrorMessage) -> None:
+        """Tell every script that uses ``pool``, e.g. that its workers fail."""
+        (logger.warning if isinstance(message, WarningMessage) else logger.error)(
+            "%s · %s", pool, message.reason
+        )
+        with self.lock:
+            scripts = [script for script in self.scripts if pool in script.pools]
+        for script in scripts:
+            script.send(message)
+
+    def demand(self, pool: str) -> int:
+        """Workers ``pool`` should have: busy ones plus jobs it could start."""
+        with self.lock:
+            max_workers = max(
+                (
+                    script.pools[pool].max_workers
+                    for script in self.scripts
+                    if pool in script.pools
+                ),
+                default=0,
+            )
+            return self.queue.demand(pool, max_workers)
+
+    # --- workers ---------------------------------------------------------------
+
+    def _serve_worker(self, connection: ServerConnection, hello: HelloMessage) -> None:
+        worker = hello.worker
+        with self.lock:
+            known = hello.pool in self.pools
+        if not known:
+            logger.warning("worker %s belongs to no pool here; closing", worker)
+            return
+        logger.debug("worker connected · %s", worker)
+        while (job := self._lease(connection, pool=hello.pool)) is not None:
+            self._flush()
+            logger.info("leased %s to %s", job.label, worker, extra={"path": job.log})
+            result: JobResult
+            try:
+                connection.send(job.model_dump_json())
+                result = job_result_adapter.validate_json(connection.recv())
+            except ConnectionClosed:  # the next _lease sees it and returns None
+                if self.stopping:  # the worker finishes its job alone; it hasn't failed
+                    return
+                logger.warning("lost %s mid-job", worker, extra={"path": hello.log})
+                result = JobFailedResult(error=f"worker {worker} disconnected")
+            with self.lock:
+                if isinstance(result, JobCompletedResult):
+                    self.pools[hello.pool].job_completed()
+                self.queue.finish(connection, result)
+                self.lock.notify_all()
+            self._flush()
+
+    def _lease(self, connection: ServerConnection, *, pool: str) -> Job | None:
+        with self.lock:
+            while not self.stopping and connection.state is State.OPEN:
+                if (job := self.queue.hand_out(connection, pool)) is not None:
+                    return job
+                self.lock.wait(timeout=queue.CHECK_INTERVAL_S)
+            return None
+
+
+def _peer(connection: ServerConnection) -> str:
+    with suppress(OSError, TypeError):
+        host, port, *_ = connection.remote_address
+        return f"{host}:{port}"
+    return "?"
