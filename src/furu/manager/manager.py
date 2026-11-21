@@ -16,6 +16,7 @@ import threading
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Protocol, assert_never
@@ -211,18 +212,23 @@ class Manager:
 
     def _start_pool(self, key: str, definition: Pool) -> WorkerPool:
         logger.info("starting pool %s", key)
+        notify = partial(self.notify, key)
         match definition:
             case SlurmPool():
                 if self.manager_dir is None:
                     raise RuntimeError("slurm pools need a shared furu manager")
                 return SlurmWorkerPool(
-                    manager=self,
+                    url=self.url,
                     key=key,
                     definition=definition,
                     directory=self.manager_dir / "workers" / key.replace(":", "-"),
+                    demand=partial(self.demand, key),
+                    notify=notify,
                 )
             case LocalPool():
-                return LocalThreadPool(manager=self, key=key, definition=definition)
+                return LocalThreadPool(
+                    url=self.url, key=key, definition=definition, notify=notify
+                )
             case _ as unreachable:
                 assert_never(unreachable)
 
