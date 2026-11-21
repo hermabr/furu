@@ -13,7 +13,7 @@ from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
 
 import furu
 import furu.execution.run_on_workers as run_module
-import furu.manager.slurm_pool as pool_module
+import furu.manager.manager as manager_module
 from furu.backends.slurm.backend import SlurmWorkerBackend
 from furu.backends.slurm.resources import SlurmResources
 from furu.manager.manager import Manager
@@ -73,7 +73,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         scenario_id=scenario_id,
         duration_seconds=TASK_DURATION_SECONDS,
     )
-    monkeypatch.setattr(pool_module, "_POLL_INTERVAL_S", 0.1)
+    monkeypatch.setattr(manager_module, "_SCALE_INTERVAL_S", 0.1)
     with Manager.serve(
         listen_host="0.0.0.0",
         connect_host="127.0.0.1",
