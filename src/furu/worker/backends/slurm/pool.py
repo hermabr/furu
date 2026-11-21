@@ -45,36 +45,18 @@ _FINISHED_STATES = frozenset(
 )
 
 
-def _slurm(*argv: str) -> str | None:
-    """Run a Slurm command; its output, or None once a warning says why there is none."""
-    try:
-        result = subprocess.run(
-            argv,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=_SLURM_COMMAND_TIMEOUT_S,
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning("%s timed out", argv[0])
-        return None
-    if result.returncode != 0:
-        logger.warning("%s failed: %s", argv[0], result.stderr.strip())
-        return None
-    return result.stdout
+def _slurm(*argv: str) -> str:
+    """Run a Slurm command and return its output.
 
-
-def _states(output: str, separator: str) -> dict[str, str]:
-    """Each job id on a line of Slurm's output, and the state in the field after it.
-
-    A line without a state is skipped, so its job is not taken to be finished.
+    Raises CalledProcessError if it fails and TimeoutExpired if it hangs.
     """
-    states = {}
-    for line in output.splitlines():
-        job_id, _, rest = line.strip().partition(separator)
-        if state := rest.partition(separator)[0]:
-            states[job_id] = state
-    return states
+    return subprocess.run(
+        argv,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=_SLURM_COMMAND_TIMEOUT_S,
+    ).stdout
 
 
 class SlurmWorkerPool:
@@ -146,18 +128,19 @@ class SlurmWorkerPool:
         """Stop scaling and cancel queued workers; running ones finish."""
         self._stop_event.set()
         self._scale_thread.join()
-        pending = [
-            job_id
-            for job_id, state in (self._active_job_states() or {}).items()
-            if state == "PENDING"
-        ]
-        if pending:
-            _slurm("scancel", *pending)
+        try:
+            pending = [
+                job_id
+                for job_id, state in self._active_job_states().items()
+                if state == "PENDING"
+            ]
+            if pending:
+                _slurm("scancel", *pending)
+        except subprocess.SubprocessError as exc:
+            logger.warning("could not cancel queued workers: %s", exc)
 
     def _scale_once(self) -> None:
         active_job_states = self._active_job_states()
-        if active_job_states is None:
-            return  # squeue unavailable: keep every worker and retry next tick
         # squeue decides liveness; accounting only explains why a job left it.
         states = self._task_states() | active_job_states
         finished = {
@@ -212,7 +195,7 @@ class SlurmWorkerPool:
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
                 return
-            # One that timed out may be queued anyway; such a worker still
+            # One that times out may be queued anyway; such a worker still
             # serves this pool, but goes uncounted until its idle timeout.
             submitted = _slurm(
                 "sbatch",
@@ -221,8 +204,6 @@ class SlurmWorkerPool:
                 *self._sbatch_args,
                 str(self._script_path),
             )
-            if submitted is None:
-                return
             job_id = submitted.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:
                 self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(to_spawn))
@@ -237,17 +218,19 @@ class SlurmWorkerPool:
             for job_id in reversed(self._job_ids)
             if active_job_states.get(job_id) == "PENDING"
         ][:excess]
-        if not to_cancel or _slurm("scancel", *to_cancel) is None:
+        if not to_cancel:
             return
+        _slurm("scancel", *to_cancel)
+        cancelled = set(to_cancel)
         self._job_ids[:] = [
-            job_id for job_id in self._job_ids if job_id not in set(to_cancel)
+            job_id for job_id in self._job_ids if job_id not in cancelled
         ]
 
     def _allocations(self) -> str:
         return ",".join(sorted({job_id.partition("_")[0] for job_id in self._job_ids}))
 
-    def _active_job_states(self) -> dict[str, str] | None:
-        """What squeue says of each worker; None when it cannot say."""
+    def _active_job_states(self) -> dict[str, str]:
+        """What squeue says of each worker still queued or running."""
         if not self._job_ids:
             return {}
         output = _slurm(
@@ -261,13 +244,13 @@ class SlurmWorkerPool:
                 else ("--format=%A %T",)
             ),
         )
-        return None if output is None else _states(output, " ")
+        return dict(line.split() for line in output.splitlines())
 
     def _task_states(self) -> dict[str, str]:
-        """What accounting says of each worker.
+        """What accounting says of each worker, such as why it left squeue.
 
-        Its other lines, such as job steps and array tasks this pool did not
-        submit, are skipped.
+        Lines for anything else, such as array tasks this pool did not submit
+        or the grouped row of still-queued tasks, are skipped.
         """
         if not self._job_ids:
             return {}
@@ -282,18 +265,23 @@ class SlurmWorkerPool:
             self._allocations(),
         )
         known = set(self._job_ids)
+        rows = (line.split("|") for line in output.splitlines())
+        # "CANCELLED by <uid>" is CANCELLED.
         return {
-            job_id: state.upper().split(maxsplit=1)[0].removesuffix("+")
-            for job_id, state in _states(output or "", "|").items()
-            if job_id in known
+            job_id: state.partition(" ")[0] for job_id, state in rows if job_id in known
         }
 
     def _scale_loop(self) -> None:
-        # A failed tick fails the scripts using the pool now, but the pool keeps
-        # its workers and retries, so it still serves the scripts that come later.
+        # Slurm not answering only delays the pool. Any other failed tick fails
+        # the scripts using the pool now, but the pool keeps its workers and
+        # retries, so it still serves the scripts that come later.
         while not self._stop_event.is_set():
             try:
                 self._scale_once()
+            except subprocess.CalledProcessError as exc:
+                logger.warning("%s; retrying on the next tick: %s", exc, exc.stderr)
+            except subprocess.TimeoutExpired as exc:
+                logger.warning("%s; retrying on the next tick", exc)
             except Exception as exc:
                 logger.exception("scale tick failed; retrying on the next tick")
                 self._manager.notify(

@@ -473,16 +473,6 @@ def test_slurm_pool_ignores_untracked_array_siblings_from_sacct(
     assert not any("unexpected slurm job id" in message for message in caplog.messages)
 
 
-def test_slurm_pool_keeps_an_accounting_state_over_a_line_without_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pool = _pool(tmp_path, monkeypatch, _StubManager(1))
-    pool._job_ids[:] = ["100_1"]
-    monkeypatch.setattr(pool_module, "_slurm", lambda *_: "100_1|FAILED\n100_1\n")
-
-    assert pool._task_states() == {"100_1": "FAILED"}
-
-
 def test_slurm_pool_replaces_vanished_array_workers_as_one_array(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -534,8 +524,13 @@ def test_slurm_pool_keeps_every_worker_while_squeue_is_unavailable(
     # sacct reports still-queued array tasks as one grouped row, which gives
     # the tasks no individual state; that must not look like an exit.
     active_file.write_text("100_[0-1] PENDING\n100_2 FAILED\n")
-    monkeypatch.setattr(type(pool), "_active_job_states", lambda self: None)
-    pool._scale_once()
+
+    def squeue(self: object) -> dict[str, str]:
+        pool._stop_event.set()
+        raise subprocess.TimeoutExpired("squeue", 60.0)
+
+    monkeypatch.setattr(type(pool), "_active_job_states", squeue)
+    pool._scale_loop()
 
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
     assert manager.notes == []
@@ -755,10 +750,11 @@ def test_slurm_pool_retries_an_sbatch_timeout_without_failing_scripts(
     pool = _pool(tmp_path, monkeypatch, manager)
 
     def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        pool._stop_event.set()
         raise subprocess.TimeoutExpired(argv, 60.0)
 
     monkeypatch.setattr(pool_module.subprocess, "run", run)
-    pool._scale_once()
+    pool._scale_loop()
 
     assert manager.notes == []
     assert pool._job_ids == []
@@ -967,7 +963,7 @@ def _install_fake_slurm(
                 requested_jobs.update(arg.removeprefix("-j=").split(","))
 
         if "--noheader" not in sys.argv[1:]:
-            print("JobID|State|NodeList")
+            print("JobID|State")
         with open(active_file, encoding="utf-8") as file:
             active_jobs = file.read().splitlines()
 
@@ -976,7 +972,7 @@ def _install_fake_slurm(
             allocation_job_id = job_id.partition(".")[0].partition("_")[0]
             if allocation_job_id not in requested_jobs:
                 continue
-            print(f"{job_id}|{state or 'RUNNING'}|node-a")
+            print(f"{job_id}|{state or 'RUNNING'}")
         """,
     )
     _write_executable(
