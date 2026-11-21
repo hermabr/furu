@@ -4,7 +4,7 @@ import inspect
 from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from functools import cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, overload
@@ -137,13 +137,9 @@ class Returned:
             if self.name in vars(obj):
                 return vars(obj)[self.name]
         if named:
-            loads = _on_load.set(None)
-            try:
-                with paused():
-                    value = self.func(obj)
-                    found = self._fingerprint(obj, value)
-            finally:
-                _on_load.reset(loads)
+            with creating(on_load=_ignore_loads), paused():
+                value = self.func(obj)
+                found = self._fingerprint(obj, value)
             if found != (known := obj._returned[self.name]):
                 label = f"{obj.object_id}.{self.name}"
                 if not self.remember:
@@ -166,13 +162,13 @@ class Returned:
                     "call the method again."
                 )
         elif tracing() and any_under_creation():
-            creating = min(specs_under_creation()).partition(":")[0]
+            creator = min(creation().specs).partition(":")[0]
             raise RuntimeError(
-                f"the create() of {creating} traces its code and built a "
+                f"the create() of {creator} traces its code and built a "
                 f"{cls.__name__}, whose @furu.dependency method {self.name} "
                 "would run as part of it. furu does not trace a dependency "
                 f"method into the create() that builds its spec yet: turn code "
-                f"tracing off for {creating}, or declare the {cls.__name__} as "
+                f"tracing off for {creator}, or declare the {cls.__name__} as "
                 "a field or dependency of it."
             )
         else:
@@ -199,7 +195,7 @@ class Returned:
             return known
         with (
             recording(None, storage_root=storage, resumed=LogState()) as run,
-            recording_loads(lambda loaded, specs: run.loaded(loaded)),
+            creating(on_load=lambda loaded, specs: run.loaded(loaded)),
         ):
             # ``fields`` covers the spec and the specs its fields hold, directly
             # or through another spec: no copies.
@@ -300,55 +296,69 @@ def remembered_methods(cls: type) -> dict[str, Returned]:
     return {name: method for name, method in methods.items() if method.remember}
 
 
-# What to tell about each published run the create() in this context loads,
-# and the specs whose rows it loads from it.
-# TODO: results loaded in threads a create() starts aren't recorded (ContextVar
-# state doesn't reach them). Workaround: submit the work with
-# contextvars.copy_context().run. Check with a human before adding such threads.
 type OnLoad = Callable[[Path, Iterable[Spec]], None]
-_on_load: ContextVar[OnLoad | None] = ContextVar("_on_load", default=None)
 
 
-def record_loaded(run: Path, specs: Iterable[Spec]) -> None:
-    if (on_load := _on_load.get()) is not None:
-        on_load(run, specs)
+def _ignore_loads(run: Path, specs: Iterable[Spec]) -> None:
+    pass
 
 
-@contextmanager
-def recording_loads(on_load: OnLoad) -> Generator[None]:
-    token = _on_load.set(on_load)
-    try:
-        yield
-    finally:
-        _on_load.reset(token)
+@dataclass(frozen=True)
+class Creation:
+    """What code that runs in this context knows of the create() it runs in.
+
+    ``specs`` are the ids of the specs whose create() runs, ``plan`` the plan
+    file that lists them and ``asked`` the stored names of the classes their
+    launch asked about. ``on_load`` is told about each published run the
+    create(), or the traced call of a ``remember=True`` method, loads, and the
+    specs whose rows it loads from it.
+    """
+
+    specs: frozenset[str] = frozenset()
+    plan: Path | None = None
+    asked: frozenset[str] = frozenset()
+    on_load: OnLoad = _ignore_loads
 
 
-_specs_under_creation: ContextVar[frozenset[str]] = ContextVar(
-    "_specs_under_creation",
-    default=frozenset(),
+# TODO: a thread a create() starts sees Creation(), as if no create() ran
+# (ContextVar state doesn't reach it): its loads aren't recorded, a create() in it
+# starts a launch instead of blocking, and .directory raises. Workaround: submit
+# the work with contextvars.copy_context().run. Check with a human before adding
+# such threads.
+_creation: ContextVar[Creation] = ContextVar(
+    "furu_creation",
+    default=Creation(),  # noqa: B039 -- frozen
 )
 
 
-def is_under_creation(obj: Spec) -> bool:
-    return obj.object_id in _specs_under_creation.get()
-
-
-def any_under_creation() -> bool:
-    return bool(_specs_under_creation.get())
-
-
-def specs_under_creation() -> frozenset[str]:
-    """The ids of the specs whose create() runs in this context."""
-    return _specs_under_creation.get()
+def creation() -> Creation:
+    return _creation.get()
 
 
 @contextmanager
-def under_creation(objs: Sequence[Spec]) -> Generator[None]:
-    token = _specs_under_creation.set(frozenset(obj.object_id for obj in objs))
+def creating(
+    *,
+    specs: frozenset[str] | None = None,
+    plan: Path | None = None,
+    asked: frozenset[str] | None = None,
+    on_load: OnLoad | None = None,
+) -> Generator[None]:
+    """Run code with ``creation()`` changed in each field that is given."""
+    given = {"specs": specs, "plan": plan, "asked": asked, "on_load": on_load}
+    changes = {name: value for name, value in given.items() if value is not None}
+    token = _creation.set(replace(_creation.get(), **changes))
     try:
         yield
     finally:
-        _specs_under_creation.reset(token)
+        _creation.reset(token)
+
+
+def record_loaded(run: Path, specs: Iterable[Spec]) -> None:
+    creation().on_load(run, specs)
+
+
+def any_under_creation() -> bool:
+    return bool(creation().specs)
 
 
 class _DependencyNotReady(BaseException):

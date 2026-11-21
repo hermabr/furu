@@ -261,3 +261,8 @@ def test_a_launch_writes_what_it_runs_and_what_that_reaches_before_it_runs(
         },
         {"spec": data.object_id, "fields": {"split": data.split}},
     ]
+
+
+def test_listing_outside_a_create_says_so() -> None:
+    with pytest.raises(RuntimeError, match="only the create"):
+        plan.listing()
