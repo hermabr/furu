@@ -1137,27 +1137,22 @@ def test_a_blocked_attempt_reruns_once_what_it_found_is_built() -> None:
     ]
 
 
-def test_a_batch_whose_create_found_one_of_its_own_specs_missing_runs_that_one_first() -> (
-    None
-):
+def test_a_batch_whose_create_asks_for_one_of_its_own_specs_fails_loudly() -> None:
     objs = {obj.object_id: obj for obj in (BatchedRunLeaf(value=v) for v in (0, 1))}
     manager = Manager(url="ws://unused", manager_dir=None)
     script, run = _submit(manager, list(objs.values()))
     lease = _leased(manager)
-    asks, found = (objs[spec] for spec in lease.specs)
+    asks, found = lease.specs
 
-    _end(manager, lease, _blocked(found))
+    _end(manager, lease, _blocked(objs[found]))
     _answer(manager, script, run)
-    alone = _leased(manager)
-    assert alone.specs == [found.object_id]
-    assert [type(message) for message in _sent(manager)] == [WarningMessage]
-    _end(manager, alone)
     _answer(manager, script, run)
-    then = _leased(manager)
-    assert then.specs == [asks.object_id]
-    _end(manager, then)
-    _answer(manager, script, run)
-    assert run.completed == set(objs) and not manager.placed
+
+    assert run.failed == set(objs) and not run.left
+    (why,) = run.failures[asks]
+    assert f"asked for {found}, which is in the same batch" in why
+    assert str(working_folder([objs[asks], objs[found]])) in why
+    assert manager.gave_up == set(objs) and _sent(manager) == []
 
 
 def _stopped_sweep(count: int) -> tuple[Manager, list[str]]:
@@ -1237,7 +1232,7 @@ def test_a_new_manager_takes_up_the_working_folders_on_disk_once_their_lock_is_f
     assert _sent(manager) == []
 
 
-def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_goes_out_in_order() -> (
+def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_is_not_resumed() -> (
     None
 ):
     first = ChainedBatchedLeaf(value=0)
@@ -1248,7 +1243,7 @@ def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_goes_out_in_o
 
     manager = _manager([then])
 
-    assert manager.demand(CPU_POOL.pool_key) == 1
+    assert not manager.stopped
     lease = _leased(manager)
     assert lease.specs == [first.object_id]
     _end(manager, lease)

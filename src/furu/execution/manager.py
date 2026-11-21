@@ -332,7 +332,8 @@ class Manager:
         return sum(map(len, new.values()))
 
     def _find_stopped(self, class_dir: Path, specs: list[str]) -> None:
-        """Take as stopped the working folders on disk that hold only ``specs``.
+        """Take as stopped the working folders on disk that hold only ``specs``,
+        none of which waits for another.
 
         They were left by workers this manager did not hand them to, or
         does not remember. One whose worker is still alive holds its lock.
@@ -356,7 +357,14 @@ class Manager:
                 spec in by_hash and by_hash[spec] not in self.stopped_in
                 for spec in hashes
             ):
-                self._stop([by_hash[spec] for spec in hashes], run, held=False)
+                batch = [by_hash[spec] for spec in hashes]
+                # One that waits for another could never go out with it.
+                if not any(
+                    spec in batch
+                    for one in batch
+                    for spec in self.dag.waiting_for([one])
+                ):
+                    self._stop(batch, run, held=False)
 
     def _stop(self, specs: list[str], run: str, *, held: bool) -> None:
         stopped = _Stopped(specs, run, held)
@@ -374,20 +382,12 @@ class Manager:
     def _queue_ready(self) -> None:
         """Queue the specs that have nothing left to wait for.
 
-        A spec of a stopped batch goes out with that batch. Once one of them
-        can, the ones that still wait leave the batch, since what they wait
-        for may be in it; they are queued like any spec once nothing holds them.
+        A spec of a stopped batch goes out with that batch.
         """
-        stopped = set()
         for spec in self.dag.ready:
-            if spec in self.stopped_in:
-                stopped.add(self.stopped_in[spec])
-            else:
+            if spec not in self.stopped_in:
                 self._queue(spec)
         self.dag.ready.clear()
-        for batch in stopped:
-            for spec in [spec for spec in batch.specs if self.dag.waits(spec)]:
-                self._unstop(spec)
 
     def _unqueue(self, spec: str) -> None:
         placed = self.placed[spec]
@@ -433,15 +433,9 @@ class Manager:
     def _rerun(self, script: _Script, message: RerunMessage) -> None:
         with self.lock:
             theirs = [spec for spec in message.specs if self._answers(script, spec)]
-            # The specs of its own batch that its create() found missing go
-            # out first, so they wait only for what is outside it; unless
-            # that is all of them, which then wait for themselves.
-            inside = [spec for spec in message.after if spec in message.specs]
-            outside = [spec for spec in message.after if spec not in message.specs]
-            first = inside if len(inside) < len(message.specs) else []
             try:
                 for spec in theirs:
-                    self.dag.block(spec, outside if spec in first else message.after)
+                    self.dag.block(spec, message.after)
             except RuntimeError as exc:  # a dependency cycle
                 self.outbox.append((script, ErrorMessage(reason=str(exc))))
             for spec in theirs:
