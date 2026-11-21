@@ -839,6 +839,31 @@ def test_demand_caps_at_max_workers_and_filters_by_requirements() -> None:
     assert queue.demand(GPU_POOL.pool_key, 10) == 3
 
 
+def test_demand_counts_busy_workers_and_drops_to_zero_without_scripts() -> None:
+    manager = Manager(url="ws://unused", manager_dir=None)
+    script = _Script(
+        cast(ServerConnection, SimpleNamespace(send=lambda _: None)),
+        pools={CPU_POOL.pool_key: LocalPool(max_workers=10)},
+    )
+    manager.scripts.append(script)
+    manager.queue.submit(script, _new_run([RunLeaf(value=1), RunLeaf(value=2)])[1])
+    worker = cast(ServerConnection, "w")
+    assert manager.queue.hand_out(worker, CPU_POOL.pool_key) is not None
+
+    assert manager.demand(CPU_POOL.pool_key) == 2
+
+    manager.scripts.clear()
+    assert manager.demand(CPU_POOL.pool_key) == 0
+
+
+def test_a_batch_writes_its_log_into_its_working_folder() -> None:
+    objs = [BatchedRunLeaf(value=value) for value in range(2)]
+    job = _leased(_queue(objs))
+
+    assert job.specs == _ids(objs)
+    assert job.log == log_path_in(working_folder(objs))
+
+
 def test_batch_cap_follows_the_leasing_worker() -> None:
     one_gpu, four_gpus, eight_gpus = (_pool(Worker(gpus=gpus)) for gpus in (1, 4, 8))
     queue = _queue(

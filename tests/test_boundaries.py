@@ -1,8 +1,9 @@
 """Which parts of furu may import which.
 
-The manager and workers never see a Spec: they know only what messages, plan
-lines and folders on disk tell them. Everything not listed here is the script
-side, which may import anything.
+The manager and workers never import a Spec: they know only what messages,
+plan lines and folders on disk tell them. This checks each module's own
+imports; importing any of them still runs ``furu/__init__.py``. Everything not
+listed here is the script side, which may import anything.
 """
 
 import ast

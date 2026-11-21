@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import copy
 import functools
+import hashlib
 import importlib.util
 import json
 import os
@@ -52,7 +53,6 @@ from furu.config import get_config
 from furu.logging import get_logger
 from furu.protocol.layout import FIXED, trace_path_in, version_dirs_in
 from furu.protocol.messages import REPO_ROOT_ENV_VAR
-from furu.utils import _fingerprint as _blake2s
 from furu.utils import _hash_dict_deterministically
 
 _PROCESS_START_NS = time.time_ns()
@@ -140,7 +140,9 @@ def _read(path: Path) -> str | None:
 
 
 def _content_hash(text: str | None) -> str | None:
-    return None if text is None else _blake2s(text)
+    if text is None:
+        return None
+    return hashlib.blake2s(text.encode(), digest_size=10).hexdigest()
 
 
 # Each repo file's content hash as this process imported it; None if unknown.
@@ -420,7 +422,8 @@ def _fingerprint(text: str | None, ran: frozenset[str], uses: Uses) -> str | Non
     if (fingerprint := _FINGERPRINTS.get(key)) is None:
         body = [node for node, _, _ in _kept(parsed, ran, uses)]
         dump = ast.dump(ast.Module(body=body, type_ignores=[]))
-        fingerprint = _FINGERPRINTS[key] = f"blake2s:{_blake2s(dump)}"
+        digest = hashlib.blake2s(dump.encode(), digest_size=10).hexdigest()
+        fingerprint = _FINGERPRINTS[key] = f"blake2s:{digest}"
     return fingerprint
 
 
@@ -431,6 +434,10 @@ class FileTrace(BaseModel):
     uses: tuple[str, ...] | Literal["all"]
     reason: str | None = None
     fingerprint: str | None
+
+    @property
+    def uses_key(self) -> Uses:
+        return "all" if self.uses == "all" else frozenset(self.uses)
 
 
 _MODULES: dict[str, tuple[tuple[tuple[str, object], ...], dict]] = {}
@@ -656,11 +663,7 @@ def _changed(trace: Trace) -> str | None:
         return f"Python {trace.python} → {_PYTHON}"
     root = repo_root()
     for rel, entry in trace.code.items():
-        now = _fingerprint(
-            _read(root / rel),
-            frozenset(entry.ran),
-            "all" if entry.uses == "all" else frozenset(entry.uses),
-        )
+        now = _fingerprint(_read(root / rel), frozenset(entry.ran), entry.uses_key)
         if now != entry.fingerprint:
             why = f"{rel} changed" if now else f"{rel} is missing"
             if entry.uses == "all":
@@ -956,13 +959,16 @@ class Recording:
     """What one traced call ran and loaded: a create(), or a remembered dependency method."""
 
     storage_root: Path
-    collector: _Collector
     built_on: set[str] = field(default_factory=set)
+    _log: Callable[[list[str]], None] | None = None
+    _collector: _Collector | None = None
     checked: set[str] = field(default_factory=set)  # untraced checks, to warn about
 
     @property
     def ran(self) -> dict[str, frozenset[str]]:
-        return {rel: frozenset(names) for rel, names in self.collector.ran.items()}
+        if self._collector is None:
+            return {}
+        return {rel: frozenset(names) for rel, names in self._collector.ran.items()}
 
     def loaded(self, run: Path) -> None:
         """Note the code version of a published run that the call loaded."""
@@ -972,7 +978,8 @@ class Recording:
         name = os.path.relpath(version, self.storage_root)
         if name not in self.built_on:
             self.built_on.add(name)
-            self.collector.log.write(["built_on", name])
+            if self._log is not None:
+                self._log(["built_on", name])
 
 
 @contextmanager
@@ -998,7 +1005,7 @@ def recording(
         outer = _active
         _trace_into(collector)
         try:
-            yield Recording(storage_root, collector, set(resumed.built_on))
+            yield Recording(storage_root, set(resumed.built_on), log.write, collector)
         finally:
             _trace_into(outer)
             log.close()
@@ -1063,7 +1070,8 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
         )
         _CODE[key] = read, code, found
     warnings = list(found)
-    if opened := sorted(run.collector.opened):
+    assert run._collector is not None
+    if opened := sorted(run._collector.opened):
         more = f" and {len(opened) - 3} more" if len(opened) > 3 else ""
         warnings.append(
             f"read {', '.join(opened[:3])}{more}, which furu does not "
@@ -1078,7 +1086,7 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
         if warning not in _WARNED:  # once per process
             _WARNED.add(warning)
             warn(f"{label}: {warning}")
-    if stale := sorted(rel for rel in code if run.collector.changed(rel)):
+    if stale := sorted(rel for rel in code if run._collector.changed(rel)):
         raise StaleCodeError(
             f"{label}: {', '.join(stale)} changed after this process imported it, "
             "so the code that ran may not match the file on disk. Not publishing "

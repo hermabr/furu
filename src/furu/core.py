@@ -70,15 +70,20 @@ class Missing(Exception):
 
 
 _SPEC_CLASS_ATTRIBUTES = frozenset({"migrations", "throttle", "artifact_serializers"})
-_RESERVED_FIELD_NAMES = _SPEC_CLASS_ATTRIBUTES | {
-    "create",
-    "metadata",
-    "done",
-    "directory",
-    "load_existing",
-    "delete",
-    "runs_on",
-}
+_RESERVED_FIELD_NAMES = frozenset(
+    {
+        "create",
+        "metadata",
+        "done",
+        "directory",
+        "load_existing",
+        "delete",
+        "migrations",
+        "throttle",
+        "artifact_serializers",
+        "runs_on",
+    }
+)
 
 
 class Creates[T](Protocol):

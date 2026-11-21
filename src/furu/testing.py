@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,16 +26,26 @@ def override_config(config: _Config) -> Generator[None]:
         _set_config(previous)
 
 
-# The config before the session, and the session's own.
-_STATE_KEY = pytest.StashKey[tuple[_Config, _Config]]()
+@dataclass(slots=True)
+class _FuruPytestState:
+    original_config: _Config
+    run_config: _Config
+
+
+_STATE_KEY = pytest.StashKey[_FuruPytestState]()
 
 
 def _is_furu_pytest_mode_enabled() -> bool:
     return os.environ.get("FURU_PYTEST_MODE", "on").strip().lower() != "off"
 
 
-def _with_directories(config: _Config, directories: _FuruDirectories) -> _Config:
-    return config.model_copy(update={"directories": directories})
+def _replace_config_directories(
+    config: _Config,
+    directories: _FuruDirectories,
+) -> _Config:
+    data = config.model_dump()
+    data["directories"] = directories
+    return _Config.model_validate(data)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -52,7 +63,7 @@ def pytest_configure(config: pytest.Config) -> None:
         / f"furu-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
     )
 
-    run_config = _with_directories(
+    run_config = _replace_config_directories(
         get_config(),
         _FuruDirectories(
             **{
@@ -63,22 +74,29 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     # Tests run whatever the working tree holds; their results are throwaway.
     provenance._require_pushed_code = False
-    config.stash[_STATE_KEY] = get_config(), run_config
+
+    state = _FuruPytestState(
+        original_config=get_config(),
+        run_config=run_config,
+    )
     _set_config(run_config)
+    config.stash[_STATE_KEY] = state
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
 
-    original_config, run_config = config.stash[_STATE_KEY]
-    _set_config(original_config)
+    state = config.stash[_STATE_KEY]
+
+    _set_config(state.original_config)
     provenance._require_pushed_code = True
 
     keep = os.environ.get("FURU_PYTEST_KEEP", "clean").strip().lower() == "keep"
-    for name, path in run_config.directories:
+    for field_name in type(state.run_config.directories).model_fields:
+        path = getattr(state.run_config.directories, field_name)
         if keep:
-            print(f"kept furu {name} at {path}")
+            print(f"kept furu {field_name} at {path}")
         else:
             shutil.rmtree(path, ignore_errors=True)
 
@@ -92,14 +110,20 @@ def _furu_per_test_base_directory(
         yield
         return
 
-    _, run_config = pytestconfig.stash[_STATE_KEY]
+    state = pytestconfig.stash[_STATE_KEY]
     previous_config = get_config()
+
     test_id = hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
+    run_directories = state.run_config.directories
+
     _set_config(
-        _with_directories(
+        _replace_config_directories(
             previous_config,
             _FuruDirectories(
-                **{name: path / test_id for name, path in run_config.directories}
+                **{
+                    name: getattr(run_directories, name) / test_id
+                    for name in _FuruDirectories.model_fields
+                }
             ),
         )
     )

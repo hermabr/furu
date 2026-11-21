@@ -746,10 +746,10 @@ def test_slurm_pool_retries_an_sbatch_timeout_without_failing_scripts(
     manager = _StubManager(1)
     pool = _pool(tmp_path, monkeypatch, manager)
 
-    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+    def slurm(*argv: str) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(argv, 60.0)
 
-    monkeypatch.setattr(pool_module.subprocess, "run", run)
+    monkeypatch.setattr(pool_module, "_slurm", slurm)
     pool._scale_once()
 
     assert manager.notes == []

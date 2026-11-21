@@ -51,7 +51,8 @@ from furu.protocol.messages import (
 
 logger = get_logger("manager")
 
-# How long a stopped batch whose lock is held waits for the next look.
+# How long a stopped batch whose lock is held waits for the next look. An idle
+# worker's handler looks this often, and checks that its worker is still there.
 CHECK_INTERVAL_S = 5.0
 
 type ToScript = ResultMessage | GaveUpMessage | WarningMessage | ErrorMessage
@@ -220,7 +221,7 @@ class Queue[S: Hashable, W: Hashable]:
             if any(script in self.asked_by.get(spec, ()) for spec in lease.job.specs)
         ]
         dropped = self._drop(script)
-        unwanted = self.unwanted()
+        unwanted = set(self.unwanted())
         return dropped, [worker for worker in running if worker in unwanted]
 
     def leave(self, script: S) -> int:

@@ -25,6 +25,7 @@ from websockets.protocol import State
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.logging import get_logger
+from furu.manager import queue
 from furu.manager.local_pool import LocalThreadPool
 from furu.manager.queue import Queue, ToScript
 from furu.manager.slurm_pool import SlurmWorkerPool
@@ -62,8 +63,6 @@ class WorkerPool(Protocol):
     def stop(self) -> None: ...
 
 
-# How often an idle worker's handler checks that the worker is still there.
-_IDLE_CHECK_INTERVAL_S = 5.0
 # Not part of a pool's key: its first script sets them and later ones must agree.
 _SETTINGS = {"job_name", "idle_timeout_seconds"}
 
@@ -297,7 +296,7 @@ class Manager:
             while not self.stopping and connection.state is State.OPEN:
                 if (job := self.queue.hand_out(connection, pool)) is not None:
                     return job
-                self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
+                self.lock.wait(timeout=queue.CHECK_INTERVAL_S)
             return None
 
 

@@ -20,7 +20,7 @@ from runs import events_of
 
 import furu
 import furu.execution.run_on_workers as run_on_workers_module
-import furu.manager.manager as manager_module
+import furu.manager.queue as queue_module
 from furu import Spec
 from furu.backends.local import LocalThreadWorkerBackend
 from furu.config import get_config
@@ -71,7 +71,7 @@ def _manager(manager_dir: Path) -> Generator[Manager]:
 def manager_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Scripts with local backends use the shared manager, not their own."""
     monkeypatch.setattr(Manager, "serve", lambda **_: nullcontext(None))
-    monkeypatch.setattr(manager_module, "_IDLE_CHECK_INTERVAL_S", 0.1)
+    monkeypatch.setattr(queue_module, "CHECK_INTERVAL_S", 0.1)
     monkeypatch.setattr(run_on_workers_module, "_MANAGER_RETRY_INTERVAL_S", 0.1)
     directory = tmp_path / "manager"
     directory.mkdir()

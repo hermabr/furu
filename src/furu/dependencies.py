@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Iterable, Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Generator, Iterable, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from functools import cache, partial
@@ -24,7 +24,6 @@ from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.protocol.layout import remembered_dir_in
 from furu.serializer.artifact import fingerprint
-from furu.utils import setting
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -205,9 +204,13 @@ class Returned:
                 if id(spec := pending.pop()) not in met:
                     met[id(spec)] = spec, spec
                     pending += specs_in(_field_values(spec))
-            with setting(_met, met), setting(_checked, run.checked):
+            token, checks = _met.set(met), _checked.set(run.checked)
+            try:
                 value = vars(obj)[self.name] = self.func(obj)
                 found = self._fingerprint(obj, value)
+            finally:
+                _met.reset(token)
+                _checked.reset(checks)
         try:
             trace = build_trace(
                 run,
@@ -332,17 +335,22 @@ def creation() -> Creation:
     return _creation.get()
 
 
+@contextmanager
 def creating(
     *,
     specs: frozenset[str] | None = None,
     plan: Path | None = None,
     asked: frozenset[str] | None = None,
     on_load: OnLoad | None = None,
-) -> AbstractContextManager[None]:
+) -> Generator[None]:
     """Run code with ``creation()`` changed in each field that is given."""
     given = {"specs": specs, "plan": plan, "asked": asked, "on_load": on_load}
     changes = {name: value for name, value in given.items() if value is not None}
-    return setting(_creation, replace(_creation.get(), **changes))
+    token = _creation.set(replace(_creation.get(), **changes))
+    try:
+        yield
+    finally:
+        _creation.reset(token)
 
 
 def record_loaded(run: Path, specs: Iterable[Spec]) -> None:

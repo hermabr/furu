@@ -53,6 +53,13 @@ _RUN_LOG: ContextVar[TextIO | None] = ContextVar("furu_run_log", default=None)
 # In a worker child: the fd its output returns to between jobs.
 _child_stderr: int | None = None
 
+_LEVEL_LETTER = {
+    logging.DEBUG: "D",
+    logging.INFO: "I",
+    logging.WARNING: "W",
+    logging.ERROR: "E",
+    logging.CRITICAL: "C",
+}
 _DIM, _RED, _YELLOW, _MAGENTA, _ORANGE = "2", "31", "33", "35", "38;5;208"
 _LEVEL_STYLE = {
     logging.DEBUG: _DIM,
@@ -84,7 +91,7 @@ def _render(record: logging.LogRecord, *, console: bool, color: bool) -> str:
         paint(moment.astimezone().strftime("%H:%M:%S"), _DIM)
         if console
         else _utc_timestamp(moment),
-        paint(record.levelname[:1], _LEVEL_STYLE.get(level, "")),
+        paint(_LEVEL_LETTER.get(level, "?"), _LEVEL_STYLE.get(level, "")),
     ]
     if (rank := _rank()) is not None:
         tags.append(paint(f"rank{rank}", _MAGENTA))

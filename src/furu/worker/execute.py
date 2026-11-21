@@ -8,6 +8,7 @@ import threading
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
 from furu.config import _Config
 from furu.logging import get_logger
@@ -80,15 +81,25 @@ class ChildSlot:
 
         spec_name = job.specs[0].partition(":")[0]
         child = self._child
-        if child is not None and not (
-            settings.reuse != "never"
-            and child.process.poll() is None
-            and (child.environment, child.code, child.config)
-            == (environment, job.code, job.config)
-            and (settings.reuse == "same_environment" or child.spec_name == spec_name)
-        ):
-            self.close()
-            child = None
+        if child is not None:
+            same_process_context = (
+                child.process.poll() is None
+                and child.environment == environment
+                and child.code == job.code
+                and child.config == job.config
+            )
+            match settings.reuse:
+                case "never":
+                    can_reuse = False
+                case "same_environment":
+                    can_reuse = same_process_context
+                case "same_environment_same_spec":
+                    can_reuse = same_process_context and child.spec_name == spec_name
+                case unreachable:
+                    assert_never(unreachable)
+            if not can_reuse:
+                self.close()
+                child = None
         if child is None:
             child = self._child = self._spawn(environment, job=job)
         child.spec_name = spec_name
