@@ -126,7 +126,7 @@ def test_manager_restart_mid_job_lets_the_job_finish(
         # it waits on the gate; stop it in the background.
         stopping = threading.Thread(target=stack.close)
         stopping.start()
-        _wait_until(lambda: first.stopping)
+        _wait_until(first.stopping.is_set)
         with _manager(manager_dir) as second:
             _wait_until(lambda: second.scripts != [])
             (tmp_path / "open").touch()

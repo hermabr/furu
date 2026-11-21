@@ -82,7 +82,7 @@ class Manager:
     slurm_pools: dict[str, SlurmWorkerPool] = field(default_factory=dict)
     scalers: list[threading.Thread] = field(default_factory=list)  # one per Slurm pool
     local_workers: list[threading.Thread] = field(default_factory=list)
-    stopping: bool = False
+    stopping: threading.Event = field(default_factory=threading.Event)
     queue: Queue[_Script, ServerConnection] = field(default_factory=Queue)
 
     @classmethod
@@ -115,7 +115,7 @@ class Manager:
                     ),
                     timeout=5,
                 )
-                manager.stopping = True
+                manager.stopping.set()
                 manager.lock.notify_all()
             server.shutdown()  # closes every connection and waits for handlers
             thread.join(timeout=10)
@@ -249,18 +249,18 @@ class Manager:
         its workers and retries, so it still serves the scripts that come later.
         """
         try:
-            while True:
+            while not self.stopping.is_set():
                 try:
-                    for message in pool.poll():
+                    active, messages = pool.poll()
+                    for message in messages:
                         self.notify(key, message)
-                    pool.resize(self.demand(key))
+                    if active is not None:
+                        pool.resize(self.demand(key), active, self.stopping)
                 except Exception as exc:
                     logger.exception("scale tick failed; retrying on the next tick")
                     reason = f"slurm worker pool scale tick failed: {_summary(exc)}"
                     self.notify(key, ErrorMessage(reason=reason))
-                with self.lock:
-                    if self.lock.wait_for(lambda: self.stopping, _SCALE_INTERVAL_S):
-                        break
+                self.stopping.wait(_SCALE_INTERVAL_S)
         finally:
             pool.stop()
 
@@ -335,7 +335,7 @@ class Manager:
                 connection.send(job.model_dump_json())
                 result = job_result_adapter.validate_json(connection.recv())
             except ConnectionClosed:  # the next _lease sees it and returns None
-                if self.stopping:  # the worker finishes its job alone; it hasn't failed
+                if self.stopping.is_set():  # the worker finishes its job alone
                     return
                 logger.warning("lost %s mid-job", worker, extra={"path": hello.log})
                 result = JobFailedResult(error=f"worker {worker} disconnected")
@@ -350,7 +350,7 @@ class Manager:
 
     def _lease(self, connection: ServerConnection, *, pool: str) -> Job | None:
         with self.lock:
-            while not self.stopping and connection.state is State.OPEN:
+            while not self.stopping.is_set() and connection.state is State.OPEN:
                 if (job := self.queue.hand_out(connection, pool)) is not None:
                     return job
                 self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)

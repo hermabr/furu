@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,8 +71,9 @@ def _pool(tmp_path: Path, **overrides: Any) -> SlurmWorkerPool:
 
 def _tick(pool: SlurmWorkerPool, demand: int) -> list[WarningMessage | ErrorMessage]:
     """One tick of the manager's scaling loop; what it would tell scripts."""
-    messages = pool.poll()
-    pool.resize(demand)
+    active, messages = pool.poll()
+    if active is not None:
+        pool.resize(demand, active, threading.Event())
     return messages
 
 
@@ -716,37 +718,65 @@ def test_slurm_pool_retries_an_sbatch_timeout_without_failing_scripts(
     assert pool._job_ids == []
 
 
-def test_a_slurm_pool_tells_what_it_found_and_keeps_scaling_after_a_tick_fails(
+def test_a_slurm_pool_tells_its_scripts_what_it_found_and_retries_a_failed_tick(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(manager_module, "_SCALE_INTERVAL_S", 0.0)
     manager = Manager(url=_URL, manager_dir=None)
-    told: list[WarningMessage | ErrorMessage] = []
-    monkeypatch.setattr(manager, "notify", lambda _, message: told.append(message))
-    calls: list[object] = []
+    told: dict[str, list[str]] = {"slurm:x": [], "slurm:y": []}
+    for key, sent in told.items():
+        script = _Script(cast(ServerConnection, SimpleNamespace(send=sent.append)))
+        script.pools = {key: _slurm_backend().pool()}
+        manager.scripts.append(script)
     found = WarningMessage(reason="slurm worker 1 FAILED")
+    calls: list[str] = []
 
     class FailingOnce:
-        def poll(self) -> list[WarningMessage | ErrorMessage]:
+        def poll(self) -> tuple[dict[str, str], list[WarningMessage | ErrorMessage]]:
             calls.append("poll")
-            return [] if found in told else [found]
+            return {}, [] if "resize" in calls else [found]
 
-        def resize(self, demand: int) -> None:
-            calls.append(demand)
-            if len(calls) == 2:
+        def resize(self, demand: int, active: dict[str, str], stopping: object) -> None:
+            calls.append("resize")
+            if calls.count("resize") == 1:
                 raise RuntimeError("boom")
-            manager.stopping = True
+            manager.stopping.set()
 
         def stop(self) -> None:
-            calls.append("stopped")
+            calls.append("stop")
 
     manager._scale("slurm:x", cast(SlurmWorkerPool, FailingOnce()))
 
-    assert calls == ["poll", 0, "poll", 0, "stopped"]
-    assert told == [  # what the failed tick found still reaches the scripts
-        found,
-        ErrorMessage(reason="slurm worker pool scale tick failed: RuntimeError: boom"),
-    ]
+    assert calls == ["poll", "resize", "poll", "resize", "stop"]
+    # What the failed tick found still reaches the pool's scripts, and only those.
+    assert told == {
+        "slurm:x": [
+            found.model_dump_json(),
+            ErrorMessage(
+                reason="slurm worker pool scale tick failed: RuntimeError: boom"
+            ).model_dump_json(),
+        ],
+        "slurm:y": [],
+    }
+
+
+def test_a_stopping_slurm_pool_submits_no_more_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = _pool(tmp_path, use_job_arrays=False)
+    stopping = threading.Event()
+    submitted: list[str] = []
+
+    def sbatch(*argv: str) -> str:
+        submitted.append(argv[0])
+        stopping.set()  # the manager stops while the first sbatch runs
+        return f"{len(submitted)}\n"
+
+    monkeypatch.setattr(pool_module, "_slurm", sbatch)
+    pool.resize(3, {}, stopping)
+
+    assert submitted == ["sbatch"]
+    assert pool._job_ids == ["1"]
 
 
 # --- end to end --------------------------------------------------------------------
@@ -817,9 +847,7 @@ def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
             script,
             SubmitMessage(pools={key: pool}, launch=launch, lines=[], groups=[]),
         )
-    with manager.lock:
-        manager.stopping = True
-        manager.lock.notify_all()
+    manager.stopping.set()
     for scaler in manager.scalers:
         scaler.join()
 

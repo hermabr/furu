@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -73,7 +74,7 @@ def _states(output: str, separator: str) -> dict[str, str]:
 class SlurmWorkerPool:
     """One sbatch recipe's workers, whose workers connect to ``url``.
 
-    Each tick the manager calls ``poll``, tells scripts what it returns, and
+    Each tick the manager calls ``poll``, tells scripts what it found, and
     then calls ``resize`` with how many workers the pool should have.
     """
 
@@ -87,7 +88,6 @@ class SlurmWorkerPool:
     ) -> None:
         self._use_job_arrays = definition.use_job_arrays
         self._job_ids: list[str] = []
-        self._active: dict[str, str] | None = None  # squeue's states at the last poll
         self._streak: list[str] = []  # "<job id> <state>" since a job last completed
         self._streak_started = 0.0
         self._last_submit = -_REPLACE_INTERVAL_S
@@ -142,14 +142,20 @@ class SlurmWorkerPool:
         if pending:
             _slurm("scancel", *pending)
 
-    def poll(self) -> list[WarningMessage | ErrorMessage]:
-        """Forget finished workers; what the scripts using the pool should be told."""
+    def poll(
+        self,
+    ) -> tuple[dict[str, str] | None, list[WarningMessage | ErrorMessage]]:
+        """Forget finished workers.
+
+        Returns what squeue says of each worker (None when it cannot say), and
+        what the scripts using the pool should be told.
+        """
         messages: list[WarningMessage | ErrorMessage] = []
-        self._active = self._active_job_states()
-        if self._active is None:
-            return messages  # squeue unavailable: keep every worker and retry
+        active = self._active_job_states()
+        if active is None:
+            return None, messages  # squeue unavailable: keep every worker and retry
         # squeue decides liveness; accounting only explains why a job left it.
-        states = self._task_states() | self._active
+        states = self._task_states() | active
         finished = {
             job_id: state
             for job_id in self._job_ids
@@ -184,15 +190,19 @@ class SlurmWorkerPool:
                     )
                 )
                 self._streak.clear()
-        return messages
+        return active, messages
 
-    def resize(self, demand: int) -> None:
-        """Start or cancel workers so that there are ``demand``, as of the last poll."""
-        if self._active is None:
-            return
+    def resize(
+        self, demand: int, active: dict[str, str], stopping: threading.Event
+    ) -> None:
+        """Start or cancel workers so that there are ``demand``.
+
+        ``active`` is what ``poll`` returned. No ``sbatch`` starts once
+        ``stopping`` is set.
+        """
         to_spawn = demand - len(self._job_ids)
         if to_spawn < 0:
-            self._cancel_queued_workers(-to_spawn, self._active)
+            self._cancel_queued_workers(-to_spawn, active)
             return
         if to_spawn == 0:
             return
@@ -204,6 +214,8 @@ class SlurmWorkerPool:
             self._last_submit = now
 
         for _ in range(1 if self._use_job_arrays else to_spawn):
+            if stopping.is_set():
+                return
             # One that timed out may be queued anyway; such a worker still
             # serves this pool, but goes uncounted until its idle timeout.
             submitted = _slurm(

@@ -1041,7 +1041,7 @@ def test_worker_dropped_by_manager_shutdown_does_not_fail_its_job() -> None:
     ):
         worker = _hello(manager.url)
         Job.model_validate_json(worker.recv(timeout=5))
-        manager.stopping = True
+        manager.stopping.set()
         worker.close()
 
         with pytest.raises(TimeoutError):
