@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from furu.logging import get_logger
-from furu.protocol.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
+from furu.protocol.messages import ErrorMessage, SlurmPool, WarningMessage
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
 
@@ -73,7 +73,8 @@ def _states(output: str, separator: str) -> dict[str, str]:
 class SlurmWorkerPool:
     """One sbatch recipe's workers, whose workers connect to ``url``.
 
-    The manager calls ``scale`` with how many it should have.
+    Each tick the manager calls ``poll``, tells scripts what it returns, and
+    then calls ``resize`` with how many workers the pool should have.
     """
 
     def __init__(
@@ -84,9 +85,9 @@ class SlurmWorkerPool:
         definition: SlurmPool,
         directory: Path,
     ) -> None:
-        self.definition: Pool = definition
         self._use_job_arrays = definition.use_job_arrays
         self._job_ids: list[str] = []
+        self._active: dict[str, str] | None = None  # squeue's states at the last poll
         self._streak: list[str] = []  # "<job id> <state>" since a job last completed
         self._streak_started = 0.0
         self._last_submit = -_REPLACE_INTERVAL_S
@@ -141,17 +142,14 @@ class SlurmWorkerPool:
         if pending:
             _slurm("scancel", *pending)
 
-    def scale(self, demand: int) -> list[WarningMessage | ErrorMessage]:
-        """Start or cancel workers so that there are ``demand``.
-
-        Returns what the scripts using the pool should be told.
-        """
+    def poll(self) -> list[WarningMessage | ErrorMessage]:
+        """Forget finished workers; what the scripts using the pool should be told."""
         messages: list[WarningMessage | ErrorMessage] = []
-        active_job_states = self._active_job_states()
-        if active_job_states is None:
+        self._active = self._active_job_states()
+        if self._active is None:
             return messages  # squeue unavailable: keep every worker and retry
         # squeue decides liveness; accounting only explains why a job left it.
-        states = self._task_states() | active_job_states
+        states = self._task_states() | self._active
         finished = {
             job_id: state
             for job_id in self._job_ids
@@ -186,16 +184,22 @@ class SlurmWorkerPool:
                     )
                 )
                 self._streak.clear()
+        return messages
 
+    def resize(self, demand: int) -> None:
+        """Start or cancel workers so that there are ``demand``, as of the last poll."""
+        if self._active is None:
+            return
         to_spawn = demand - len(self._job_ids)
         if to_spawn < 0:
-            self._cancel_queued_workers(-to_spawn, active_job_states)
-            return messages
+            self._cancel_queued_workers(-to_spawn, self._active)
+            return
         if to_spawn == 0:
-            return messages
+            return
+        now = time.monotonic()
         if self._streak:
             if now - self._last_submit < _REPLACE_INTERVAL_S:
-                return messages
+                return
             to_spawn = 1
             self._last_submit = now
 
@@ -210,13 +214,12 @@ class SlurmWorkerPool:
                 str(self._script_path),
             )
             if submitted is None:
-                return messages
+                return
             job_id = submitted.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:
                 self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(to_spawn))
             else:
                 self._job_ids.append(job_id)
-        return messages
 
     def _cancel_queued_workers(
         self, excess: int, active_job_states: dict[str, str]

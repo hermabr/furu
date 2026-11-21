@@ -80,8 +80,8 @@ class Manager:
     scripts: list[_Script] = field(default_factory=list)
     pools: dict[str, Pool] = field(default_factory=dict)  # those started
     slurm_pools: dict[str, SlurmWorkerPool] = field(default_factory=dict)
-    # Each Slurm pool's scaling loop, and the local pools' workers.
-    threads: list[threading.Thread] = field(default_factory=list)
+    scalers: list[threading.Thread] = field(default_factory=list)  # one per Slurm pool
+    local_workers: list[threading.Thread] = field(default_factory=list)
     stopping: bool = False
     queue: Queue[_Script, ServerConnection] = field(default_factory=Queue)
 
@@ -119,8 +119,10 @@ class Manager:
                 manager.lock.notify_all()
             server.shutdown()  # closes every connection and waits for handlers
             thread.join(timeout=10)
-            for pool_thread in manager.threads:
-                pool_thread.join(timeout=10)
+            for scaler in manager.scalers:
+                scaler.join()  # each Slurm command it waits on gives up in a minute
+            for worker in manager.local_workers:
+                worker.join(timeout=10)
 
     def _serve(self, connection: ServerConnection) -> None:
         try:
@@ -212,58 +214,55 @@ class Manager:
             case SlurmPool():
                 if self.manager_dir is None:
                     raise RuntimeError("slurm pools need a shared furu manager")
-                pool = self.slurm_pools[key] = SlurmWorkerPool(
+                pool = SlurmWorkerPool(
                     url=self.url,
                     key=key,
                     definition=definition,
                     directory=self.manager_dir / "workers" / key.replace(":", "-"),
                 )
-                threads = [
-                    threading.Thread(
-                        target=self._scale,
-                        args=(key, pool),
-                        name="furu-slurm-worker-pool-scale",
-                    )
-                ]
+                scaler = threading.Thread(
+                    target=self._scale,
+                    args=(key, pool),
+                    name="furu-slurm-worker-pool-scale",
+                )
+                scaler.start()
+                self.scalers.append(scaler)
+                self.slurm_pools[key] = pool
             case LocalPool():
                 # Threads that stay until the manager closes.
-                threads = [
-                    threading.Thread(
+                for index in range(definition.max_workers):
+                    worker = threading.Thread(
                         target=self._run_local_worker,
                         args=(key, f"w{index}"),
                         name=f"furu-local-worker-{index}",
                     )
-                    for index in range(definition.max_workers)
-                ]
+                    worker.start()
+                    self.local_workers.append(worker)
             case _ as unreachable:
                 assert_never(unreachable)
         self.pools[key] = definition
-        self.threads += threads
-        for thread in threads:
-            thread.start()
 
     def _scale(self, key: str, pool: SlurmWorkerPool) -> None:
-        """Size ``pool`` to its demand until the manager stops, then cancel its queued workers.
+        """Size ``pool`` to its demand until the manager stops; then cancel its queue.
 
         A failed tick fails the scripts using the pool now, but the pool keeps
         its workers and retries, so it still serves the scripts that come later.
         """
-        while True:
-            try:
-                messages = pool.scale(self.demand(key))
-            except Exception as exc:
-                logger.exception("scale tick failed; retrying on the next tick")
-                messages = [
-                    ErrorMessage(
-                        reason=f"slurm worker pool scale tick failed: {_summary(exc)}"
-                    )
-                ]
-            for message in messages:
-                self.notify(key, message)
-            with self.lock:
-                if self.lock.wait_for(lambda: self.stopping, _SCALE_INTERVAL_S):
-                    break
-        pool.stop()
+        try:
+            while True:
+                try:
+                    for message in pool.poll():
+                        self.notify(key, message)
+                    pool.resize(self.demand(key))
+                except Exception as exc:
+                    logger.exception("scale tick failed; retrying on the next tick")
+                    reason = f"slurm worker pool scale tick failed: {_summary(exc)}"
+                    self.notify(key, ErrorMessage(reason=reason))
+                with self.lock:
+                    if self.lock.wait_for(lambda: self.stopping, _SCALE_INTERVAL_S):
+                        break
+        finally:
+            pool.stop()
 
     def _run_local_worker(self, key: str, component: str) -> None:
         try:
