@@ -2,25 +2,29 @@ from __future__ import annotations
 
 import threading
 import traceback
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 from furu.logging import get_logger
 from furu.protocol.messages import ErrorMessage, LocalPool, Pool
 from furu.worker.loop import worker_loop
 
-if TYPE_CHECKING:
-    from furu.manager.manager import Manager
-
 
 class LocalThreadPool:
-    """``max_workers`` threads that stay until the manager closes."""
+    """``max_workers`` threads that connect to ``url`` and stay until it closes."""
 
-    def __init__(self, *, manager: Manager, key: str, definition: LocalPool) -> None:
+    def __init__(
+        self,
+        *,
+        url: str,
+        key: str,
+        definition: LocalPool,
+        notify: Callable[[ErrorMessage], None],
+    ) -> None:
         self.definition: Pool = definition
         self._threads = [
             threading.Thread(
                 target=_run_worker,
-                args=(manager, key, f"w{index}"),
+                args=(url, key, f"w{index}", notify),
                 name=f"furu-local-worker-{index}",
             )
             for index in range(definition.max_workers)
@@ -36,10 +40,12 @@ class LocalThreadPool:
             thread.join(timeout=10)
 
 
-def _run_worker(manager: Manager, key: str, component: str) -> None:
+def _run_worker(
+    url: str, key: str, component: str, notify: Callable[[ErrorMessage], None]
+) -> None:
     try:
         worker_loop(
-            url=manager.url,
+            url=url,
             pool=key,
             idle_timeout=None,
             component=component,
@@ -47,10 +53,9 @@ def _run_worker(manager: Manager, key: str, component: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 -- fault barrier: fail the runs instead
         get_logger(component).exception("local worker thread crashed")
-        manager.notify(
-            key,
+        notify(
             ErrorMessage(
                 reason="local worker thread crashed: "
                 + traceback.format_exception_only(type(exc), exc)[-1].strip()
-            ),
+            )
         )

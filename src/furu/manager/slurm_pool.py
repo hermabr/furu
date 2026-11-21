@@ -6,16 +6,13 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from furu.logging import get_logger
 from furu.protocol.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
-
-if TYPE_CHECKING:
-    from furu.manager.manager import Manager
 
 logger = get_logger("slurm")
 
@@ -78,19 +75,24 @@ def _states(output: str, separator: str) -> dict[str, str]:
 
 
 class SlurmWorkerPool:
-    """One sbatch recipe's workers, sized to the manager's queue every 10 s."""
+    """One sbatch recipe's workers, sized to ``demand()`` every 10 s.
+
+    Its workers connect to ``url``; what goes wrong is told to ``notify``.
+    """
 
     def __init__(
         self,
         *,
-        manager: Manager,
+        url: str,
         key: str,
         definition: SlurmPool,
         directory: Path,
+        demand: Callable[[], int],
+        notify: Callable[[WarningMessage | ErrorMessage], None],
     ) -> None:
         self.definition: Pool = definition
-        self._manager = manager
-        self._key = key
+        self._demand = demand
+        self._notify = notify
         self._use_job_arrays = definition.use_job_arrays
         self._job_ids: list[str] = []
         self._streak: list[str] = []  # "<job id> <state>" since a job last completed
@@ -118,7 +120,7 @@ class SlurmWorkerPool:
             + "".join(f"{command}\n" for command in definition.pre_worker_commands)
             # Do not leak the manager's environment into the job's snapshot.
             + "unset VIRTUAL_ENV\n"
-            f"export {MANAGER_URL_ENV_VAR}={shlex.quote(manager.url)}\n"
+            f"export {MANAGER_URL_ENV_VAR}={shlex.quote(url)}\n"
             f'component="{job_id}"\n'
             # Workers run the manager's own furu, wherever it came from.
             f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
@@ -179,25 +181,23 @@ class SlurmWorkerPool:
             for job_id, state in sorted(failed.items()):
                 self._streak.append(f"{job_id} {state}")
                 log = self._log_dir / f"{job_id}.log"
-                self._manager.notify(
-                    self._key,
-                    WarningMessage(reason=f"slurm worker {job_id} {state} → {log}"),
+                self._notify(
+                    WarningMessage(reason=f"slurm worker {job_id} {state} → {log}")
                 )
             if (
                 len(self._streak) > _BROKEN_AFTER_FAILURES
                 and now - self._streak_started >= _BROKEN_AFTER_S
             ):
-                self._manager.notify(
-                    self._key,
+                self._notify(
                     ErrorMessage(
                         reason=f"slurm pool is broken: {len(self._streak)} workers "
                         f"failed over {format_duration(now - self._streak_started)} "
                         f"without a job completing: {', '.join(self._streak)}"
-                    ),
+                    )
                 )
                 self._streak.clear()
 
-        to_spawn = self._manager.demand(self._key) - len(self._job_ids)
+        to_spawn = self._demand() - len(self._job_ids)
         if to_spawn < 0:
             self._cancel_queued_workers(-to_spawn, active_job_states)
             return
@@ -295,11 +295,10 @@ class SlurmWorkerPool:
                 self._scale_once()
             except Exception as exc:
                 logger.exception("scale tick failed; retrying on the next tick")
-                self._manager.notify(
-                    self._key,
+                self._notify(
                     ErrorMessage(
                         reason="slurm worker pool scale tick failed: "
                         + traceback.format_exception_only(type(exc), exc)[-1].strip()
-                    ),
+                    )
                 )
             self._stop_event.wait(timeout=_POLL_INTERVAL_S)
