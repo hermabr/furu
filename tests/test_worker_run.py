@@ -19,7 +19,7 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.dag as dag_module
-import furu.manager.local_pool as local_pool_module
+import furu.manager.manager as manager_module
 from furu import Spec, Throttle, Worker, plan
 from furu.backends.local import LocalThreadWorkerBackend
 from furu.backends.slurm.backend import SlurmWorkerBackend
@@ -1041,7 +1041,7 @@ def test_worker_dropped_by_manager_shutdown_does_not_fail_its_job() -> None:
     ):
         worker = _hello(manager.url)
         Job.model_validate_json(worker.recv(timeout=5))
-        manager.stopping = True
+        manager.stopping.set()
         worker.close()
 
         with pytest.raises(TimeoutError):
@@ -1201,7 +1201,7 @@ def test_run_fails_when_local_worker_crashes(
     def crashing_worker_loop(**_: object) -> None:
         raise RuntimeError("worker boom")
 
-    monkeypatch.setattr(local_pool_module, "worker_loop", crashing_worker_loop)
+    monkeypatch.setattr(manager_module, "worker_loop", crashing_worker_loop)
 
     with pytest.raises(
         RuntimeError, match="local worker thread crashed: RuntimeError: worker boom"
