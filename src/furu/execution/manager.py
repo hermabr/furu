@@ -332,7 +332,8 @@ class Manager:
         return sum(map(len, new.values()))
 
     def _find_stopped(self, class_dir: Path, specs: list[str]) -> None:
-        """Take as stopped the working folders on disk that hold only ``specs``.
+        """Take as stopped the working folders on disk that hold only ``specs``,
+        none of which waits for another.
 
         They were left by workers this manager did not hand them to, or
         does not remember. One whose worker is still alive holds its lock.
@@ -356,7 +357,14 @@ class Manager:
                 spec in by_hash and by_hash[spec] not in self.stopped_in
                 for spec in hashes
             ):
-                self._stop([by_hash[spec] for spec in hashes], run, held=False)
+                batch = [by_hash[spec] for spec in hashes]
+                # One that waits for another could never go out with it.
+                if not any(
+                    spec in batch
+                    for one in batch
+                    for spec in self.dag.waiting_for([one])
+                ):
+                    self._stop(batch, run, held=False)
 
     def _stop(self, specs: list[str], run: str, *, held: bool) -> None:
         stopped = _Stopped(specs, run, held)
