@@ -546,7 +546,9 @@ def _save_result_bundle(
 
     ``label`` names the results in a warning.
     """
-    bundle_dir.mkdir(parents=True, exist_ok=False)
+    # Not with its parents: a process whose working folder was taken from it
+    # must not make the folder again under the old name.
+    bundle_dir.mkdir()
 
     writer = _Writer(data_dir)
     manifest: list[JsonValue] = []

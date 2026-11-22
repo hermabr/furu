@@ -12,6 +12,11 @@ from tracedrepo import Repo
 from furu import provenance
 from furu.config import _project_anchor
 
+# Tests run as a process outside Slurm wherever pytest was started, so that a
+# working folder is named for a process and none asks a real Slurm about a job.
+for _name in ("SLURM_JOB_ID", "SLURM_CLUSTER_NAME", "SLURM_RESTART_COUNT"):
+    os.environ.pop(_name, None)
+
 # Set once here so xdist workers and every child process they start inherit it.
 os.environ.update(
     {

@@ -517,16 +517,16 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
     spec = _spec(lemma=str)(lemma="comer")
     spec.create()
     path = schema_path_in(spec._class_dir)
-    lock = schema.lock
+    short_lock = schema.short_lock
 
     @contextmanager
     def another_process_first(lock_path: Path):
-        with lock(lock_path) as has_lock:
+        with short_lock(lock_path):
             with path.open("a") as file:
                 file.write('{"added":"min_overlap","default":0.5}\n')
-            yield has_lock
+            yield
 
-    monkeypatch.setattr(schema, "lock", another_process_first)
+    monkeypatch.setattr(schema, "short_lock", another_process_first)
 
     with pytest.raises(MigrationError, match="recorded 0.5"):
         _ = after(lemma="comer").done
@@ -534,6 +534,27 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
         {"names": ["lemma"]},
         {"added": "min_overlap", "default": 0.5},
     ]
+
+
+def test_the_first_line_of_a_default_is_the_recorded_one() -> None:
+    # Two writers can both add a line: the lock on the file is given up for
+    # stale after a minute, with its holder possibly only slow.
+    def merge(default: float) -> Spec:
+        return _spec(
+            lemma=str,
+            min_overlap=(float, default),
+            migrations=(Added("min_overlap", default=default),),
+        )(lemma="comer")
+
+    spec = _spec(lemma=str)(lemma="comer")
+    spec.create()
+    with schema_path_in(spec._class_dir).open("a") as file:
+        file.write('{"added":"min_overlap","default":0.5}\n')
+        file.write('{"added":"min_overlap","default":0.6}\n')
+
+    assert merge(0.5).done
+    with pytest.raises(MigrationError, match="recorded 0.5"):
+        _ = merge(0.6).done
 
 
 def test_a_line_cut_short_is_skipped_and_the_next_writer_starts_a_new_line() -> None:

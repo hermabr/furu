@@ -14,6 +14,8 @@ from furu.code_trace import _REPO_ROOT_ENV_VAR
 from furu.config import _Config
 from furu.logging import get_logger
 from furu.snapshot import CodeLocation
+from furu.storage import attempt_lock
+from furu.storage._layout import log_path_in
 from furu.worker.messages import Job, JobFailedResult, JobResult, job_result_adapter
 
 _LOG_TAIL_BYTES = 32 * 1024
@@ -169,6 +171,9 @@ class ChildSlot:
             return job_result_adapter.validate_json(line)
 
         returncode = child.process.wait()
+        # It died without giving up the job's working folder, and only this
+        # process knows that it is dead.
+        attempt_lock.release_child(job.folder, child.process.pid)
         if returncode < 0:
             try:
                 name = signal.Signals(-returncode).name
@@ -182,7 +187,7 @@ class ChildSlot:
         )
         # The log's tail is the child's last words, and the reason goes last
         # so it reads as the error's summary.
-        return JobFailedResult(error=f"{_tail(job.log)}subprocess died: {reason}")
+        return JobFailedResult(error=f"{_tail(job.folder)}subprocess died: {reason}")
 
 
 def _kill(process: subprocess.Popen[str]) -> None:
@@ -196,9 +201,12 @@ def _kill(process: subprocess.Popen[str]) -> None:
         os.killpg(process.pid, signal.SIGKILL)
 
 
-def _tail(path: Path) -> str:
+def _tail(folder: Path) -> str:
+    """The end of the log in the working folder that ``folder`` holds now."""
+    if (attempt := attempt_lock.current(folder)) is None:
+        return ""
     try:
-        with path.open("rb") as file:
+        with log_path_in(attempt).open("rb") as file:
             file.seek(max(0, file.seek(0, os.SEEK_END) - _LOG_TAIL_BYTES))
             tail = file.read().decode(errors="replace")
     except OSError:
