@@ -17,12 +17,12 @@ type BatchFn = Callable[[Any, Worker], tuple[object, int]]
 
 
 class _BatchedHook(NamedTuple):
-    func: Callable[[list[Any], SpecDirectory], list[Any]]
+    func: Callable[[list[Any], SpecDirectory], list[object]]
     batch_fn: BatchFn
 
 
-def is_batched(cls: type) -> bool:
-    return isinstance(getattr(cls, "_furu_create_hook", None), _BatchedHook)
+def is_batched(cls: type[Spec]) -> bool:
+    return isinstance(cls._furu_create_hook, _BatchedHook)
 
 
 def batch_of(
@@ -39,7 +39,7 @@ def batch_of(
     so two specs with one batch key and different Metadata stop the launch.
     ``firsts`` holds the first spec seen in each batch on each worker.
     """
-    hook = getattr(type(obj), "_furu_create_hook", None)
+    hook = type(obj)._furu_create_hook
     if not isinstance(hook, _BatchedHook):
         return obj._stored_name, 1
     key, cap = hook.batch_fn(obj, worker)

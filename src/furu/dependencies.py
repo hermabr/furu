@@ -46,7 +46,7 @@ class _Dependency[TSpec, T]:
         def __get__(self, instance: None, owner: type[TSpec] | None = None) -> Self: ...
 
         @overload
-        def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
+        def __get__(self, instance: object, owner: type | None = None) -> T: ...
 
 
 @overload
@@ -82,7 +82,7 @@ def dependency[TSpec: Spec, T](
     return _Dependency(func, remember)
 
 
-def dependency_field(cls: type, name: str, declared: _Dependency) -> Any:
+def dependency_field(cls: type, name: str, declared: _Dependency) -> object:
     """The dataclass field ``cls.name`` becomes; its type is the return annotation."""
     if "return" not in declared.func.__annotations__:
         raise TypeError(
@@ -121,7 +121,7 @@ class Returned:
             value, cls, self.name, declared, obj.artifact_serializers, held[cls]
         )
 
-    def __get__(self, obj: Spec | None, owner: type | None = None) -> Any:
+    def __get__(self, obj: Spec | None, owner: type | None = None) -> object:
         if obj is None:
             return self
         if (copy := fresh(obj)) is not obj:
@@ -260,7 +260,7 @@ def fresh(obj: Spec) -> Spec:
     return met[id(obj)][1]
 
 
-def _field_values(obj: Spec) -> dict[str, Any]:
+def _field_values(obj: Spec) -> dict[str, object]:
     """The values of the fields of ``obj`` that no dependency method fills."""
     names = {f.name for f in fields(obj)} - returned_attributes(type(obj))
     return {k: v for k, v in vars(obj).items() if k in names}

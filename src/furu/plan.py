@@ -38,6 +38,8 @@ from itertools import chain
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic import JsonValue
+
 from furu._declared_types import cached_type_hints
 from furu._tree import specs_in
 from furu.config import get_config
@@ -56,7 +58,6 @@ from furu.serializer.artifact import (
     to_json,
 )
 from furu.utils import (
-    JsonValue,
     _fingerprint,
     _hash_dict_deterministically,
     _stable_json_dump,

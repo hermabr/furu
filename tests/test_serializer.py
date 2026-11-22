@@ -5,6 +5,7 @@ from typing import Annotated, Any, ClassVar, Literal
 
 import numpy as np
 import pytest
+from pydantic import JsonValue
 
 from furu import Serializer, Spec, plan
 from furu.constants import (
@@ -14,7 +15,6 @@ from furu.constants import (
 )
 from furu.serializer.artifact import to_json
 from furu.serializer.registry import SerializerMeta
-from furu.utils import JsonValue
 
 
 class _Secret:

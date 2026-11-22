@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast, get_args
 
 from pydantic import BaseModel as PydanticBaseModel
+from pydantic import JsonValue
 
 from furu._declared_types import (
     cached_type_hints,
@@ -31,7 +32,6 @@ from furu.serializer.registry import (
     _annotated_serializer,
 )
 from furu.utils import (
-    JsonValue,
     _fingerprint,
     _stable_json_dump,
     fully_qualified_name,
@@ -98,7 +98,7 @@ def _serializer_may_apply(
 
 
 def hashed_fields(
-    obj: Any,
+    obj: object,
     artifact_serializers: tuple[type[Serializer], ...],
     nested: set[type],
 ) -> dict[str, JsonValue]:
@@ -164,7 +164,7 @@ def is_default(
 
 
 def field_fingerprints(
-    obj: Any,
+    obj: object,
     artifact_serializers: tuple[type[Serializer], ...],
     nested: set[type],
     leave: Collection[str] = (),
@@ -224,7 +224,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
 
         return {KINDMARKER: "spec", VALUEMARKER: fresh(obj).object_id}
 
-    def assert_correct_dict_key(x: Any) -> str:
+    def assert_correct_dict_key(x: object) -> str:
         if not isinstance(x, str):
             raise TypeError(
                 f"Cannot serialize dict key {x!r} of type {type(x).__name__!r}: "
@@ -372,9 +372,9 @@ def from_json(
     value: JsonValue,
     declared_type: object,
     nested: set[type],
-    spec: Callable[[str], Any],
+    spec: Callable[[str], object],
     moved: Mapping[str, str],
-) -> Any:
+) -> object:
     """The value `to_json` wrote.
 
     `spec` gives the spec with an id, and `moved` says where a class written
@@ -383,7 +383,7 @@ def from_json(
     class is added to `nested`.
     """
 
-    def read(child: JsonValue, child_type: object) -> Any:
+    def read(child: JsonValue, child_type: object) -> object:
         return from_json(child, child_type, nested, spec, moved)
 
     if isinstance(value, list):

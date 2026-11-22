@@ -121,7 +121,7 @@ class Spec(_FuruDataclassTransform, ABC):
     before the change.
     """
 
-    _furu_create_hook: ClassVar[Callable[..., Any] | _BatchedHook]
+    _furu_create_hook: ClassVar[Callable[..., object] | _BatchedHook | None] = None
     throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
     artifact_serializers: ClassVar[tuple[type[Serializer], ...]] = ()
@@ -129,7 +129,7 @@ class Spec(_FuruDataclassTransform, ABC):
     # finds. The script that wrote the line named the spec and checked its class.
     _from_line: ClassVar[bool] = False
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+    def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         if cls is Spec:
             return
