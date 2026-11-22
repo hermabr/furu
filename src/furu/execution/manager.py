@@ -34,14 +34,13 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu import plan
 from furu.dag import Dag
-from furu.locking import is_active_lock
 from furu.logging import _group_label, get_logger
 from furu.storage._layout import (
     attempt_dir_in,
     attempts_dir_in,
-    lock_path_in,
     run_name,
 )
+from furu.storage.attempt_lock import active_attempt_dir, is_attempt_blocked
 from furu.storage.events import read_events
 from furu.worker.backends.local import LocalThreadPool
 from furu.worker.backends.protocol import WorkerPool
@@ -348,9 +347,12 @@ class Manager:
             return
         by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
         for run in runs:
+            active = active_attempt_dir(attempt_dir_in(class_dir, run))
+            if active is None:
+                continue
             hashes = [
                 spec
-                for opened in read_events(attempt_dir_in(class_dir, run))[:1]
+                for opened in read_events(active)[:1]
                 for spec in opened.get("specs", ())
             ]
             if hashes and all(
@@ -705,7 +707,7 @@ class Manager:
             ):
                 continue
             class_dir = self.placed[stopped.specs[0]].class_dir
-            if is_active_lock(lock_path_in(class_dir, stopped.run)):
+            if is_attempt_blocked(attempt_dir_in(class_dir, stopped.run)):
                 stopped.look_at = now + _IDLE_CHECK_INTERVAL_S
             else:
                 yield stopped

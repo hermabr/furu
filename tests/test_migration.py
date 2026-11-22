@@ -517,16 +517,16 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
     spec = _spec(lemma=str)(lemma="comer")
     spec.create()
     path = schema_path_in(spec._class_dir)
-    lock = schema.lock
+    lock = schema.short_lock
 
     @contextmanager
     def another_process_first(lock_path: Path):
-        with lock(lock_path) as has_lock:
+        with lock(lock_path):
             with path.open("a") as file:
                 file.write('{"added":"min_overlap","default":0.5}\n')
-            yield has_lock
+            yield
 
-    monkeypatch.setattr(schema, "lock", another_process_first)
+    monkeypatch.setattr(schema, "short_lock", another_process_first)
 
     with pytest.raises(MigrationError, match="recorded 0.5"):
         _ = after(lemma="comer").done
@@ -792,3 +792,51 @@ def test_a_step_that_does_not_fit_the_class_is_refused(
 ) -> None:
     with pytest.raises(TypeError, match=problem):
         declare()
+
+
+def test_schema_ndjson_recorded_defaults_is_first_line_wins() -> None:
+    lines = [
+        {"names": ["lemma"]},
+        {"added": "min_overlap", "default": 0.5},
+        {"added": "min_overlap", "default": 0.9},
+        {
+            "nested": "Vimeo",
+            "class_part": "abc",
+            "added": "fps",
+            "default": 30,
+        },
+        {
+            "nested": "Vimeo",
+            "class_part": "abc",
+            "added": "fps",
+            "default": 60,
+        },
+    ]
+    assert schema._recorded_defaults(lines) == {
+        (None, None, "min_overlap"): 0.5,
+        ("Vimeo", "abc", "fps"): 30,
+    }
+
+    first = _spec(
+        "FirstWins",
+        lemma=str,
+        min_overlap=(float, 0.5),
+        migrations=(Added("min_overlap", default=0.5),),
+    )
+    spec = first(lemma="comer")
+    spec.create()
+    # Even if a late frozen writer appends a conflicting second line, the first wins.
+    path = schema_path_in(spec._class_dir)
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps({"added": "min_overlap", "default": 0.9}) + "\n")
+    schema._checked.clear()
+
+    schema.check_defaults(spec._class_dir, type(spec))
+    conflicting = _spec(
+        "FirstWins",
+        lemma=str,
+        min_overlap=(float, 0.9),
+        migrations=(Added("min_overlap", default=0.9),),
+    )
+    with pytest.raises(MigrationError, match="recorded 0.5"):
+        schema.check_defaults(spec._class_dir, type(conflicting(lemma="comer")))

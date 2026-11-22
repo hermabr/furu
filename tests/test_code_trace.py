@@ -1172,7 +1172,11 @@ def test_preempted_traced_spec_resumes_when_its_code_is_unchanged(
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
     assert not spec.done
-    log = (spec._attempt_dir / "trace.log").read_text()
+    from furu.storage.attempt_lock import active_attempt_dir
+
+    active = active_attempt_dir(spec._attempt_dir)
+    assert active is not None
+    log = (active / "trace.log").read_text()
     assert '"ran", "' + f"{repo.package}/resumable.py" + '", "step_one"]' in log
 
     # Unrelated edits don't count: the code that ran is unchanged.
@@ -1217,7 +1221,11 @@ def test_fixed_retry_resumes_without_a_check(
     monkeypatch.setenv("FURU_TEST_PREEMPT", "1")
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
-    assert scratch_dir_in(spec._attempt_dir).is_dir()
+    from furu.storage.attempt_lock import active_attempt_dir
+
+    active = active_attempt_dir(spec._attempt_dir)
+    assert active is not None
+    assert scratch_dir_in(active).is_dir()
 
     repo.edit("resumable.py", "return 1", "return 10")
     spec = repo.load("resumable").Resumable(name="a")

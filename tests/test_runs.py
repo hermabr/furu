@@ -20,16 +20,19 @@ from furu.config import get_config
 from furu.core import working_folder
 from furu.dependencies import creating
 from furu.execution import load_or_create
-from furu.locking import is_active_lock
 from furu.storage import stored
 from furu.storage._layout import (
     FIXED,
     attempts_dir_in,
     events_path_in,
-    lock_path_in,
-    log_path_in,
     run_name,
     runs_dir_in,
+)
+from furu.storage.attempt_lock import (
+    active_attempt_dir,
+    attempt_log_path,
+    is_attempt_blocked,
+    list_attempt_entries,
 )
 
 
@@ -54,8 +57,7 @@ class Weights(Spec):
 
     @furu.batched(lambda spec, worker: (None, 100))
     def create(specs: list["Weights"], directory: furu.SpecDirectory) -> list[Any]:
-        attempts = attempts_dir_in(specs[0]._class_dir)
-        Weights.locks += [path.name for path in attempts.glob("*.lock")]
+        Weights.locks += list_attempt_entries(working_folder(specs))
         return [np.full(3, spec.seed) for spec in specs]
 
 
@@ -104,8 +106,9 @@ class FailsAsABatch(Spec):
 
 class LosesItsLock(Spec):
     def create(self) -> int:
-        # As if paused past the stale window, so that a successor took over.
-        lock_path_in(self._class_dir, self._artifact_hash).unlink()
+        # As if a successor took over and renamed our working folder away.
+        claimed = self.directory._base_dir
+        claimed.rename(claimed.with_name("local__other__99999__stolen"))
         return 1
 
 
@@ -133,12 +136,10 @@ def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
     rename = Path.rename
 
     def spy(self: Path, target: Path) -> Path:
-        if self == spec._attempt_dir:
+        if self.parent == spec._attempt_dir:
             seen["files"] = sorted(path.name for path in self.iterdir())
             seen["ends"] = ends_of(spec)
-            seen["locked"] = is_active_lock(
-                lock_path_in(spec._class_dir, spec._artifact_hash)
-            )
+            seen["locked"] = is_attempt_blocked(spec._attempt_dir)
             seen["done"] = spec.done
         return rename(self, target)
 
@@ -154,7 +155,7 @@ def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
         "done": False,
     }
     assert sorted(path.name for path in run_of(spec).iterdir()) == files
-    # The working folder moved, and its lock beside it was released.
+    # The working folder moved and its parent in attempts/ was cleaned up.
     assert list(attempts_dir_in(spec._class_dir).iterdir()) == []
 
 
@@ -166,7 +167,7 @@ def test_a_crash_before_the_rename_publishes_nothing(
     rename = Path.rename
 
     def crash(self: Path, target: Path) -> Path:
-        if self == spec._attempt_dir:
+        if self.parent == spec._attempt_dir:
             raise RuntimeError("killed before the rename")
         return rename(self, target)
 
@@ -177,12 +178,14 @@ def test_a_crash_before_the_rename_publishes_nothing(
 
     assert not spec.done
     assert not fixed_run(spec).exists()
-    assert spec._attempt_dir.is_dir()
+    active = active_attempt_dir(spec._attempt_dir)
+    assert active is not None and active.name.startswith("free__")
 
     assert spec.create() == 2
 
 
 def test_a_batch_is_one_run_with_a_row_per_spec_and_one_file_per_array() -> None:
+    Weights.locks.clear()
     specs = [Weights(seed=seed) for seed in range(5)]
     name = run_name([spec._artifact_hash for spec in specs])
 
@@ -200,12 +203,13 @@ def test_a_batch_is_one_run_with_a_row_per_spec_and_one_file_per_array() -> None
         "result/manifest.json",
     ]
     assert events_of(specs[0])[0]["specs"] == [spec._artifact_hash for spec in specs]
-    # One working folder under one lock, both gone once it is published.
-    assert Weights.locks == [f"{name}.lock"]
+    # One claimed working folder, gone once it is published.
+    assert len(Weights.locks) == 1
+    assert Weights.locks[0].startswith(("local__", "slurm__"))
     assert list(attempts_dir_in(specs[0]._class_dir).iterdir()) == []
 
 
-def test_the_same_specs_in_the_same_order_are_refused_and_another_order_is_kept(
+def test_the_same_specs_in_the_same_order_preserves_winner_and_another_order_is_kept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     specs = [Train(seed=1), Train(seed=2)]
@@ -213,11 +217,12 @@ def test_the_same_specs_in_the_same_order_are_refused_and_another_order_is_kept(
     run = run_of(specs[0])
     published = events_path_in(run).read_text()
 
-    with pytest.raises(OSError, match="Directory not empty|File exists"):
-        _compute_again(specs, monkeypatch)
+    # Winner is preserved untouched; loser attempt is cleanly trashed.
+    _compute_again(specs, monkeypatch)
     _compute_again(specs[::-1], monkeypatch)
 
     assert events_path_in(run).read_text() == published
+    assert list(attempts_dir_in(specs[0]._class_dir).iterdir()) == []
     hashes = [spec._artifact_hash for spec in specs]
     assert sorted(path.name for path in run.parent.iterdir()) == sorted(
         [run_name(hashes), run_name(hashes[::-1])]
@@ -259,7 +264,7 @@ def test_a_batch_with_a_stored_spec_still_runs_whole_in_the_folder_named_for_it(
         load_or_create._ensure_group_result(specs)
 
     # Where the job that handed the batch out looks for its log.
-    assert "boom" in log_path_in(working_folder(specs)).read_text()
+    assert "boom" in attempt_log_path(working_folder(specs)).read_text()
 
 
 def test_a_run_is_read_once_and_a_new_listing_reads_what_was_added(
@@ -388,8 +393,9 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
 
 def test_an_attempt_killed_in_the_middle_of_a_line_costs_only_that_line() -> None:
     spec = Leaf(n=4)
-    spec._attempt_dir.mkdir(parents=True)
-    events_path_in(spec._attempt_dir).write_text(
+    attempt = spec._attempt_dir / "free__seed"
+    attempt.mkdir(parents=True)
+    events_path_in(attempt).write_text(
         f'\n{{"event":"opened","at":"2026-11-14T14:02:09Z","specs":["{spec._artifact_hash}"]}}\n'
         '{"event":"start","at":"2026-11-14T14:02:11Z","attempt":1,"host":"jagupard26"}\n'
         '{"event":"end","at":"2026-11-14T15:4'

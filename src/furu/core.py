@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import shutil
 from abc import ABC
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import cached_property
 from inspect import get_annotations
@@ -30,7 +32,6 @@ from furu.dependencies import (
     remembers,
     returned_attributes,
 )
-from furu.locking import lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
@@ -40,18 +41,14 @@ from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
     attempt_dir_in,
-    attempts_dir_in,
-    lock_path_in,
     run_dir_in,
     run_name,
     version_dirs_in,
 )
+from furu.storage.attempt_lock import inspect_deletable_attempts
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Stored, load_rows, stored_row
-from furu.utils import (
-    _hash_dict_deterministically,
-    nfs_safe_unique_name,
-)
+from furu.utils import _hash_dict_deterministically
 
 if TYPE_CHECKING:
     from typing import dataclass_transform
@@ -219,7 +216,8 @@ class Spec(_FuruDataclassTransform, ABC):
     @final
     @property
     def directory(self) -> SpecDirectory:
-        if self.object_id not in creation().specs:
+        current = creation()
+        if self.object_id not in current.specs:
             raise RuntimeError(
                 f"{self.object_id}.directory is only available inside this "
                 "spec's own create() hook. To use files another spec produced, "
@@ -235,7 +233,11 @@ class Spec(_FuruDataclassTransform, ABC):
                 "create(specs, directory). Name the files you write per spec by "
                 "the spec's fields, since the same spec can land in another batch."
             )
-        return SpecDirectory(self._attempt_dir)
+        if current.attempt_dir is None:
+            raise RuntimeError(
+                f"{self.object_id}.directory has no claimed attempt directory"
+            )
+        return SpecDirectory(current.attempt_dir)
 
     @final
     @cached_property
@@ -293,25 +295,40 @@ class Spec(_FuruDataclassTransform, ABC):
             )
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
-        attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
-            folders = [self._attempt_dir] + [
-                run_dir_in(version, self._artifact_hash)
-                for version in version_dirs_in(self._class_dir)
-            ]
-            folders = [folder for folder in folders if folder.is_dir()]
-            if not folders:
+        attempt_root = self._attempt_dir
+        adoptable_attempts = inspect_deletable_attempts(attempt_root)
+        published_runs = [
+            run
+            for version in version_dirs_in(self._class_dir)
+            if (run := run_dir_in(version, self._artifact_hash)).is_dir()
+        ]
+        folders = [*adoptable_attempts, *published_runs]
+        if not folders:
+            return False
+        if mode == "prompt":
+            listed = ", ".join(map(str, folders))
+            answer = input(f"Do you want to delete {listed}? [y/N] ")
+            if answer.strip().lower() != "y":
                 return False
-            if mode == "prompt":
-                listed = ", ".join(map(str, folders))
-                answer = input(f"Do you want to delete {listed}? [y/N] ")
-                if answer.strip().lower() != "y":
-                    return False
-            for folder in folders:
-                # Renamed first, so no reader finds half a run.
-                tombstone = nfs_safe_unique_name(folder, name="deleting")
-                folder.rename(tombstone)
-                shutil.rmtree(tombstone)
+        for attempt in adoptable_attempts:
+            tombstone = attempt.parent / f".deleting__{secrets.token_hex(8)}"
+            try:
+                attempt.rename(tombstone)
+            except FileNotFoundError:
+                # Re-check in case another worker just claimed the attempt.
+                inspect_deletable_attempts(attempt_root)
+                continue
+            shutil.rmtree(tombstone, ignore_errors=True)
+        with suppress(OSError):
+            attempt_root.rmdir()
+        for run in published_runs:
+            # Renamed first, so no reader finds half a run.
+            tombstone = run.parent / f".deleting__{secrets.token_hex(8)}"
+            try:
+                run.rename(tombstone)
+            except FileNotFoundError:
+                continue
+            shutil.rmtree(tombstone, ignore_errors=True)
         return True
 
     @final

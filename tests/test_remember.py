@@ -17,6 +17,7 @@ import furu
 from furu import Spec, plan
 from furu.config import get_config
 from furu.storage._layout import remembered_dir_in
+from furu.storage.attempt_lock import AttemptLockedError
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 # The seeds of each call of LooTable.runs in this process.
@@ -253,7 +254,11 @@ def _name_then_launch(named: Any, launch: Any) -> None:
     assert table.object_id
     named.release()
     launch.wait(timeout=10)
-    furu.create(table)
+    try:
+        furu.create(table)
+    except AttemptLockedError:
+        # Both launches saved their remembered file before racing on Cifar.
+        pass
 
 
 def test_two_launches_at_once_each_save_a_file() -> None:

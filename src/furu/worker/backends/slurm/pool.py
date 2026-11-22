@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
+from furu.worker.backends.slurm._command import run_slurm as _slurm
 from furu.worker.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
@@ -19,7 +20,6 @@ if TYPE_CHECKING:
 
 logger = get_logger("slurm")
 
-_SLURM_COMMAND_TIMEOUT_S = 60.0
 _POLL_INTERVAL_S = 10.0
 # A failing pool replaces at most one worker per minute; it is broken once
 # more than 10 workers failed over at least 30 minutes with no job completing.
@@ -43,20 +43,6 @@ _FINISHED_STATES = frozenset(
         "TIMEOUT",
     }
 )
-
-
-def _slurm(*argv: str) -> str:
-    """Run a Slurm command and return its output.
-
-    Raises CalledProcessError if it fails and TimeoutExpired if it hangs.
-    """
-    return subprocess.run(
-        argv,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=_SLURM_COMMAND_TIMEOUT_S,
-    ).stdout
 
 
 class SlurmWorkerPool:

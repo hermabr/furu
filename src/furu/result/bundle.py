@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import os
 import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -556,10 +557,11 @@ def _save_result_bundle(
         manifest.append(_dump_value(value, Any, (), writer))
     _save_columns(writer.columns, bundle_dir, data_dir=data_dir, label=label)
     # One row per line, so that a row can be found by hand.
-    (bundle_dir / MANIFEST_FILE_NAME).write_text(
-        "[\n" + ",\n".join(map(json.dumps, manifest)) + "\n]\n",
-        encoding="utf-8",
-    )
+    manifest_path = bundle_dir / MANIFEST_FILE_NAME
+    with manifest_path.open("w", encoding="utf-8") as file:
+        file.write("[\n" + ",\n".join(map(json.dumps, manifest)) + "\n]\n")
+        file.flush()
+        os.fsync(file.fileno())
 
 
 def load_result_bundle(
