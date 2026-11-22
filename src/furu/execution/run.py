@@ -280,13 +280,22 @@ class Run:
             for dependency in dependencies
             if dependency.object_id not in self.completed and not dependency.done
         ]
+        own = [dependency for dependency in unbuilt if dependency.object_id in ids]
         ended = [
             dependency
             for dependency in unbuilt
             if dependency.object_id in self.specs
             and dependency.object_id not in self.left
         ]
-        if ended:
+        if own:
+            folder = working_folder([self.specs[spec] for spec in ids])
+            why = (
+                f"its create() asked for {own[0].object_id}, which is in the same "
+                "batch: specs that need one another cannot run as one batch. Give "
+                f"them different batch keys, and delete {folder} so that it is "
+                "not resumed"
+            )
+        elif ended:
             why = f"needs {ended[0].object_id}, which this run gave up on"
         else:
             # Each spec of the batch has its own clocks, which say the same.
