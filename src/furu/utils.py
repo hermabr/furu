@@ -107,6 +107,24 @@ def nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
     return path.with_name(stem)
 
 
+def listdir_fresh(folder: Path) -> list[str]:
+    """The names in ``folder`` as the file server has them; none when it is not there.
+
+    A machine remembers for up to a minute that a folder was not there.
+    Listing the folder above it makes it look again, so list from the storage
+    root down: another machine may just have made this one.
+    """
+    try:
+        return os.listdir(folder)
+    except FileNotFoundError:
+        try:
+            for above in reversed(folder.parents[:4]):
+                os.listdir(above)
+            return os.listdir(folder)
+        except FileNotFoundError:
+            return []
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` via a unique temp file and rename, so concurrent
     readers on NFS never observe a truncated file."""

@@ -23,7 +23,7 @@ import furu
 import furu.execution.load_or_create as execution_module
 from furu import Metadata, Spec, Throttle, Worker, plan
 from furu.config import get_config
-from furu.core import working_folder
+from furu.core import attempt_parent, working_folder
 from furu.dag import Dag
 from furu.dependencies import (
     _DependencyNotReady,
@@ -36,10 +36,10 @@ from furu.result.bundle import _save_result_bundle
 from furu.storage._layout import (
     data_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     result_dir_in,
 )
+from furu.storage.attempt import claimed
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -122,7 +122,7 @@ class DoneProbe(Spec):
 
 class DirectoryPeekingValue(Spec):
     def create(self) -> str:
-        assert self.directory.data == self._attempt_dir / "data"
+        assert self.directory.data == working_folder([self]) / "data"
         with pytest.raises(RuntimeError, match=r"only available inside"):
             _ = Node(name="other").directory
         return "ok"
@@ -479,7 +479,7 @@ class MetadataTimingValue(Spec):
         type(self).create_events.append(
             (
                 self.key,
-                events_path_in(self._attempt_dir).exists(),
+                events_path_in(working_folder([self])).exists(),
                 sibling.done,
             )
         )
@@ -1079,7 +1079,9 @@ def test_data_dir():
         / "06b20558c682cb23a593"
     )
     assert node_pair._class_dir == class_dir
-    assert node_pair._attempt_dir == class_dir / "attempts" / "0213f99a818a40d63cf9"
+    assert (
+        attempt_parent([node_pair]) == class_dir / "attempts" / "0213f99a818a40d63cf9"
+    )
     assert fixed_run(node_pair) == (
         class_dir / "fixed" / "runs" / "0213f99a818a40d63cf9"
     )
@@ -1204,7 +1206,7 @@ def test_data_dir_is_user_data_subdirectory() -> None:
         "log",
         "result",
     ]
-    assert not obj._attempt_dir.exists()
+    assert not working_folder([obj]).exists()
 
 
 def test_unused_data_dir_is_not_created_by_create() -> None:
@@ -1222,7 +1224,7 @@ def test_directory_is_only_available_inside_own_create() -> None:
         _ = node.directory
 
     # Outside access must not fabricate a working folder.
-    assert not node._attempt_dir.exists()
+    assert not working_folder([node]).exists()
 
     node.create()
 
@@ -1247,7 +1249,7 @@ def test_a_batch_has_one_directory_and_a_spec_of_it_has_none() -> None:
 
 def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
     obj = ScratchWritingValue(name="payload")
-    scratch_dir = obj._attempt_dir / "scratch"
+    scratch_dir = attempt_parent([obj]) / "free__0" / "scratch"
     scratch_dir.mkdir(parents=True)
     (scratch_dir / "download.csv").write_text("from-previous-attempt", encoding="utf-8")
 
@@ -1265,7 +1267,7 @@ def test_a_spec_is_done_only_once_its_run_is_published() -> None:
     assert probe.done
     with pytest.raises(RuntimeError, match="failed single for 1"):
         failing.create()
-    assert failing._attempt_dir.exists()
+    assert working_folder([failing]).exists()
     assert not failing.done
 
 
@@ -1306,7 +1308,7 @@ def test_delete_removes_the_working_folder_of_a_stopped_attempt() -> None:
 
     assert failing.delete(mode="force")
 
-    assert not failing._attempt_dir.exists()
+    assert not working_folder([failing]).exists()
     assert not failing.delete(mode="force")
 
 
@@ -1454,14 +1456,14 @@ def test_no_create_hook_raises_only_for_missing_result() -> None:
         furu.create(NoCreateHookValue(key=2))
 
 
-def test_no_create_hook_uses_post_lock_cache_recheck(
+def test_no_create_hook_checks_for_a_published_run_once_it_holds_the_working_folder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     obj = NoCreateHookValue(key=3)
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(obj._class_dir, obj._artifact_hash)
+    def published_meanwhile(parent: Path):
+        assert parent == attempt_parent([obj])
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
@@ -1469,9 +1471,10 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
         )
-        yield lambda: True
+        with claimed(parent) as folder:
+            yield folder
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "claimed", published_meanwhile)
 
     assert furu.create(obj) == "cached-after-lock:1"
 
@@ -1592,11 +1595,11 @@ def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> N
 def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "first"
     first = ObjectIdStorageValue(key=1)
-    first_data_dir = data_dir_in(first._attempt_dir)
+    first_data_dir = data_dir_in(working_folder([first]))
 
     ObjectIdStorageValue.storage_override = tmp_path / "second"
     second = ObjectIdStorageValue(key=1)
-    second_data_dir = data_dir_in(second._attempt_dir)
+    second_data_dir = data_dir_in(working_folder([second]))
 
     assert first.object_id == second.object_id
     assert first_data_dir != second_data_dir
@@ -1605,7 +1608,7 @@ def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None
     assert ObjectIdStorageValue.create_calls == [1]
 
 
-def test_existing_items_are_skipped_before_locking(
+def test_existing_items_are_skipped_before_a_working_folder_is_taken(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     existing = CountedSingleValue(key=1)
@@ -1613,27 +1616,28 @@ def test_existing_items_are_skipped_before_locking(
 
     assert existing.create() == "single:1"
 
-    lock_calls: list[Path] = []
+    claims: list[Path] = []
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        lock_calls.append(lock_path)
-        yield lambda: True
+    def spy(parent: Path):
+        claims.append(parent)
+        with claimed(parent) as folder:
+            yield folder
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "claimed", spy)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [lock_path_in(missing._class_dir, missing._artifact_hash)]
+    assert claims == [attempt_parent([missing])]
 
 
-def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
+def test_a_worker_that_takes_the_working_folder_checks_for_a_published_run_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pending = CountedSingleValue(key=5)
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(pending._class_dir, pending._artifact_hash)
+    def published_meanwhile(parent: Path):
+        assert parent == attempt_parent([pending])
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
@@ -1641,13 +1645,14 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",
         )
-        yield lambda: True
+        with claimed(parent) as folder:
+            yield folder
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "claimed", published_meanwhile)
 
     assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []
-    assert not pending._attempt_dir.exists()
+    assert not working_folder([pending]).exists()
 
 
 def test_empty_list_returns_empty_list() -> None:
@@ -1817,7 +1822,7 @@ def test_a_failed_batch_logs_the_traceback_once_and_ends_its_one_attempt() -> No
     assert ends_of(objs) == [
         {"outcome": "failed", "error": "RuntimeError: failed batch for [1, 2]"}
     ]
-    assert not objs[0]._attempt_dir.exists()
+    assert not attempt_parent([objs[0]]).exists()
 
 
 def test_a_failed_create_logs_the_traceback_once() -> None:

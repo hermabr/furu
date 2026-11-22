@@ -12,6 +12,9 @@ from tracedrepo import Repo
 from furu import provenance
 from furu.config import _project_anchor
 
+# The suite may itself run in a Slurm job, which the tests' processes are not
+# workers of: their working folders are named for the process.
+os.environ.pop("SLURM_JOB_ID", None)
 # Set once here so xdist workers and every child process they start inherit it.
 os.environ.update(
     {

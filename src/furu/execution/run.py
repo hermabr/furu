@@ -21,7 +21,7 @@ from websockets.sync.client import ClientConnection
 from furu import plan
 from furu._batched import batch_of
 from furu.config import get_config
-from furu.core import Spec, working_folder
+from furu.core import Spec, attempt_parent, working_folder
 from furu.dag import why_stuck
 from furu.dependencies import missing_dependencies
 from furu.execution.launch import missing
@@ -288,7 +288,7 @@ class Run:
             and dependency.object_id not in self.left
         ]
         if own:
-            folder = working_folder([self.specs[spec] for spec in ids])
+            folder = attempt_parent([self.specs[spec] for spec in ids])
             why = (
                 f"its create() asked for {own[0].object_id}, which is in the same "
                 "batch: specs that need one another cannot run as one batch. Give "

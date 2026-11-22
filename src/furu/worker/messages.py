@@ -15,7 +15,8 @@ from furu.config import _Config
 from furu.logging import _group_label
 from furu.snapshot import CodeLocation
 from furu.spec_metadata import Metadata, Reuse
-from furu.storage._layout import attempt_dir_in, log_path_in, run_name
+from furu.storage._layout import attempt_parent_in, log_path_in, run_name
+from furu.storage.attempt import current
 
 
 class _Message(BaseModel):
@@ -71,9 +72,12 @@ class Job(Launch):
 
     @property
     def log(self) -> Path:
-        """Where its create() writes: the log in the working folder of its run."""
+        """Where its create() writes: the log in the working folder of its run.
+
+        Looked up on each read: the folder is renamed for whoever works in it.
+        """
         run = run_name([spec.rpartition(":")[2] for spec in self.specs])
-        return log_path_in(attempt_dir_in(self.class_dir, run))
+        return log_path_in(current(attempt_parent_in(self.class_dir, run)))
 
 
 class CancelMessage(_Message):

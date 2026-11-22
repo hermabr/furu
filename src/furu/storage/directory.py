@@ -7,12 +7,18 @@ from furu.storage._layout import data_dir_in, scratch_dir_in
 
 @dataclass(frozen=True)
 class SpecDirectory:
+    """The folders of a run's working folder that its ``create()`` writes in.
+
+    Made without their parents: a working folder that was renamed is someone
+    else's, and is not made again under its old name.
+    """
+
     _base_dir: Path
 
     @cached_property
     def data(self) -> Path:
         data_dir = data_dir_in(self._base_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
+        data_dir.mkdir(exist_ok=True)
         return data_dir
 
     @property
@@ -21,5 +27,5 @@ class SpecDirectory:
         codecs persist the result. Not cached, so accesses re-create it.
         """
         scratch_dir = scratch_dir_in(self._base_dir)
-        scratch_dir.mkdir(parents=True, exist_ok=True)
+        scratch_dir.mkdir(exist_ok=True)
         return scratch_dir

@@ -22,23 +22,22 @@ import furu.execution.manager as manager_module
 import furu.worker.loop as worker_loop_module
 from furu import Spec, Throttle, Worker, plan
 from furu.config import get_config
-from furu.core import working_folder
+from furu.core import attempt_parent, working_folder
 from furu.dag import Dag
 from furu.execution.launch import missing
 from furu.execution.manager import Manager, _Lease, _Script
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
-from furu.locking import lock
 from furu.logging import _display_path
 from furu.snapshot import CodeLocation
 from furu.storage import events
 from furu.storage._layout import (
-    attempt_dir_in,
+    attempt_parent_in,
     execution_log_path_in,
-    lock_path_in,
     log_path_in,
     run_name,
 )
+from furu.storage.attempt import claimed
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import SlurmResources
@@ -625,7 +624,7 @@ def test_a_failed_attempt_reruns_until_its_retries_run_out(
     assert [record.levelno for record in failed] == [logging.WARNING] * 3 + [
         logging.ERROR
     ]
-    assert failed[0].__dict__["path"] == log_path_in(leaf._attempt_dir)
+    assert failed[0].__dict__["path"] == log_path_in(working_folder([leaf]))
     # The last attempt is never one that retries.
     assert [message for message in caplog.messages if "progress" in message] == [
         *["progress 0/1 · 1 retrying"] * 3,
@@ -669,7 +668,7 @@ def test_the_runs_error_lists_each_spec_it_gave_up_on_and_each_that_waits_for_on
         "2 specs failed, 1 blocked",
         *(
             f"  {obj.object_id} · 1 attempt · ValueError: {obj.value} → "
-            f"{_display_path(log_path_in(obj._attempt_dir))}"
+            f"{_display_path(log_path_in(working_folder([obj])))}"
             for obj in (first, second)
         ),
         f"  {parent.object_id} · blocked",
@@ -1151,7 +1150,7 @@ def test_a_batch_whose_create_asks_for_one_of_its_own_specs_fails_loudly() -> No
     assert run.failed == set(objs) and not run.left
     (why,) = run.failures[asks]
     assert f"asked for {found}, which is in the same batch" in why
-    assert str(working_folder([objs[asks], objs[found]])) in why
+    assert str(attempt_parent([objs[asks], objs[found]])) in why
     assert manager.gave_up == set(objs) and _sent(manager) == []
 
 
@@ -1170,7 +1169,7 @@ def _stopped_sweep(count: int) -> tuple[Manager, list[str]]:
 def _old_folder(ids: Sequence[str]) -> str:
     """The working folder of the batch that stopped: specs 1 to 5."""
     name = run_name([spec.rpartition(":")[2] for spec in ids[:5]])
-    return str(attempt_dir_in(SweepLeaf(value=1)._class_dir, name))
+    return str(attempt_parent_in(SweepLeaf(value=1)._class_dir, name))
 
 
 @pytest.mark.parametrize(
@@ -1212,22 +1211,26 @@ def test_a_worker_is_filled_with_unstarted_specs_then_stopped_batches(
     assert _sent(manager) == []
 
 
-def test_a_new_manager_takes_up_the_working_folders_on_disk_once_their_lock_is_free(
+def test_a_new_manager_takes_up_the_working_folders_on_disk_once_nobody_holds_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(manager_module, "_IDLE_CHECK_INTERVAL_S", 0.0)
     specs = [SweepLeaf(value=value) for value in range(4)]
     # A batch that a worker of another manager opened, in its order.
     started = [specs[2], specs[0]]
-    folder = working_folder(started)
-    folder.mkdir(parents=True)
-    events.start(folder, [spec._artifact_hash for spec in started], _plan(), _plan())
 
-    with lock(lock_path_in(folder.parent.parent, folder.name)):
+    with claimed(attempt_parent(started)) as folder:
+        events.start(
+            folder, [spec._artifact_hash for spec in started], _plan(), _plan()
+        )
         manager = _manager(specs, backends=[SMALL])
         assert _leased(manager, SMALL).specs == _ids([specs[1], specs[3]])
-        # Its worker is alive: nothing to hand out.
+        # Its worker is alive: nothing to hand out, and its script is told once.
         assert _lease(manager, SMALL) is None
+        assert _lease(manager, SMALL) is None
+        (warning,) = _sent(manager)
+        assert isinstance(warning, WarningMessage)
+        assert f"waits for its working folder: {folder} is held by" in warning.reason
     assert _leased(manager, SMALL).specs == _ids(started)
     assert _sent(manager) == []
 
@@ -1237,7 +1240,7 @@ def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_is_not_resume
 ):
     first = ChainedBatchedLeaf(value=0)
     then = ChainedBatchedLeaf(value=1, previous=first)
-    folder = working_folder([first, then])
+    folder = attempt_parent([first, then]) / "free__0"
     folder.mkdir(parents=True)
     events.start(folder, [first._artifact_hash, then._artifact_hash], _plan(), _plan())
 
@@ -1539,7 +1542,7 @@ def test_run_writes_log_to_its_execution_dir() -> None:
     assert any(f" planned exec {executor_dir.name[:5]} · " in line for line in lines)
     assert any(
         line.endswith(
-            f" leased {leaf.object_id} to w0 → {log_path_in(leaf._attempt_dir)}"
+            f" leased {leaf.object_id} to w0 → {log_path_in(working_folder([leaf]))}"
         )
         for line in lines
     )
