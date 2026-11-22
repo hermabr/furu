@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from furu import Spec
-from furu.core import working_folder
+from furu.core import attempt_dir_of
 from furu.storage._layout import FIXED, log_path_in, run_dir_in
+from furu.storage.attempt import working_folder_in
 from furu.storage.events import read_events
 from furu.storage.stored import stored_row
 
@@ -21,6 +22,14 @@ def run_of(spec: Spec) -> Path:
 def fixed_run(spec: Spec) -> Path:
     """Where spec's run is published when no traced code is involved."""
     return run_dir_in(spec._class_dir / FIXED, spec._artifact_hash)
+
+
+def working_folder(specs: Spec | Sequence[Spec]) -> Path:
+    """The one working folder in the attempts/<run>/ of a spec, or of a batch."""
+    batch = [specs] if isinstance(specs, Spec) else specs
+    folder = working_folder_in(attempt_dir_of(batch))
+    assert folder is not None, f"{batch[0].object_id} has no working folder"
+    return folder
 
 
 def _folder(specs: Spec | Sequence[Spec]) -> Path:

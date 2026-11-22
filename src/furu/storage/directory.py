@@ -12,14 +12,17 @@ class SpecDirectory:
     @cached_property
     def data(self) -> Path:
         data_dir = data_dir_in(self._base_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
+        data_dir.mkdir(exist_ok=True)
         return data_dir
 
     @property
     def scratch(self) -> Path:
         """Scratch space for ``create()``: kept across retries, deleted once
         codecs persist the result. Not cached, so accesses re-create it.
+
+        Neither folder makes its working folder: one that is gone was taken
+        from this create(), which must not write on.
         """
         scratch_dir = scratch_dir_in(self._base_dir)
-        scratch_dir.mkdir(parents=True, exist_ok=True)
+        scratch_dir.mkdir(exist_ok=True)
         return scratch_dir

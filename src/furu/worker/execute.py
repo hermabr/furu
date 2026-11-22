@@ -14,6 +14,7 @@ from furu.code_trace import _REPO_ROOT_ENV_VAR
 from furu.config import _Config
 from furu.logging import get_logger
 from furu.snapshot import CodeLocation
+from furu.storage.attempt import free_after_death, owner
 from furu.worker.messages import Job, JobFailedResult, JobResult, job_result_adapter
 
 _LOG_TAIL_BYTES = 32 * 1024
@@ -182,7 +183,10 @@ class ChildSlot:
         )
         # The log's tail is the child's last words, and the reason goes last
         # so it reads as the error's summary.
-        return JobFailedResult(error=f"{_tail(job.log)}subprocess died: {reason}")
+        error = f"{_tail(job.log)}subprocess died: {reason}"
+        # Nothing else can tell that the folder it worked in is free.
+        free_after_death(job.attempt_dir, owner(child.process.pid))
+        return JobFailedResult(error=error)
 
 
 def _kill(process: subprocess.Popen[str]) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from abc import ABC
 from collections.abc import Callable, Sequence
@@ -30,7 +31,6 @@ from furu.dependencies import (
     remembers,
     returned_attributes,
 )
-from furu.locking import lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
@@ -40,12 +40,11 @@ from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
     attempt_dir_in,
-    attempts_dir_in,
-    lock_path_in,
     run_dir_in,
     run_name,
     version_dirs_in,
 )
+from furu.storage.attempt import claimed, trash
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Stored, load_rows, stored_row
 from furu.utils import (
@@ -235,7 +234,9 @@ class Spec(_FuruDataclassTransform, ABC):
                 "create(specs, directory). Name the files you write per spec by "
                 "the spec's fields, since the same spec can land in another batch."
             )
-        return SpecDirectory(self._attempt_dir)
+        attempt = creation().attempt
+        assert attempt is not None
+        return SpecDirectory(attempt)
 
     @final
     @cached_property
@@ -275,6 +276,8 @@ class Spec(_FuruDataclassTransform, ABC):
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         """Remove this spec's runs under every code version, and its working folder.
 
+        Raises, deleting nothing, while another process works on the spec.
+
         A traced class keeps each version's trace.json, so what was built on
         the deleted results stays done. A spec with ``@furu.batched`` is a row
         in a run that other specs share, so this raises and names that run.
@@ -293,13 +296,12 @@ class Spec(_FuruDataclassTransform, ABC):
             )
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
-        attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
-            folders = [self._attempt_dir] + [
-                run_dir_in(version, self._artifact_hash)
+        with claimed(self._attempt_dir) as attempt:
+            folders = [
+                folder
                 for version in version_dirs_in(self._class_dir)
-            ]
-            folders = [folder for folder in folders if folder.is_dir()]
+                if (folder := run_dir_in(version, self._artifact_hash)).is_dir()
+            ] + ([attempt] if os.listdir(attempt) else [])
             if not folders:
                 return False
             if mode == "prompt":
@@ -309,8 +311,11 @@ class Spec(_FuruDataclassTransform, ABC):
                     return False
             for folder in folders:
                 # Renamed first, so no reader finds half a run.
-                tombstone = nfs_safe_unique_name(folder, name="deleting")
-                folder.rename(tombstone)
+                if folder == attempt:
+                    tombstone = trash(attempt, attempt)
+                else:
+                    tombstone = nfs_safe_unique_name(folder, name="deleting")
+                    folder.rename(tombstone)
                 shutil.rmtree(tombstone)
         return True
 
@@ -377,11 +382,12 @@ class Spec(_FuruDataclassTransform, ABC):
     @final
     @property
     def _attempt_dir(self) -> Path:
-        return working_folder([self])
+        return attempt_dir_of([self])
 
 
-def working_folder(specs: Sequence[Spec]) -> Path:
-    """Where the run that holds ``specs`` as its rows does its work."""
+def attempt_dir_of(specs: Sequence[Spec]) -> Path:
+    """attempts/<run>/ of the run that holds ``specs`` as its rows: the folder
+    that holds its one working folder."""
     return attempt_dir_in(
         specs[0]._class_dir, run_name([spec._artifact_hash for spec in specs])
     )

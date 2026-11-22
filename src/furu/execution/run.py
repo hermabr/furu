@@ -21,13 +21,13 @@ from websockets.sync.client import ClientConnection
 from furu import plan
 from furu._batched import batch_of
 from furu.config import get_config
-from furu.core import Spec, working_folder
+from furu.core import Spec, attempt_dir_of
 from furu.dag import why_stuck
 from furu.dependencies import missing_dependencies
 from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
-from furu.storage._layout import log_path_in
+from furu.storage.attempt import log_in
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.messages import (
@@ -196,7 +196,7 @@ class Run:
             return []
         # The log of that call: its batch's.
         ran = [self.specs[spec] for spec in message.object_ids if spec in self.specs]
-        log = log_path_in(working_folder(ran))
+        log = log_in(attempt_dir_of(ran))
         replies: list[_Reply]
         match message.result:
             case JobCompletedResult():
@@ -288,7 +288,7 @@ class Run:
             and dependency.object_id not in self.left
         ]
         if own:
-            folder = working_folder([self.specs[spec] for spec in ids])
+            folder = attempt_dir_of([self.specs[spec] for spec in ids])
             why = (
                 f"its create() asked for {own[0].object_id}, which is in the same "
                 "batch: specs that need one another cannot run as one batch. Give "

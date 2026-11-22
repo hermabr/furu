@@ -84,6 +84,19 @@ def _run_names(runs: Path) -> list[str]:
             return []
 
 
+def _look_again(runs: Path) -> None:
+    """Make this machine look again at the names in a runs/ folder.
+
+    NFS can remember for up to a minute that a name was missing, until the
+    folder holding it is opened; so are the folders above it, top down.
+    """
+    for folder in reversed([runs, *runs.parents[:3]]):
+        try:
+            os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
+        except FileNotFoundError:
+            return
+
+
 def _listed(version: Path, batches: bool) -> dict[str, _First]:
     """The first row of each spec in a code version's runs, as a listing shows now.
 
@@ -124,10 +137,13 @@ class Stored:
 
     A look lists each class folder and each runs/ folder once, however many
     specs it is asked about, so asking about a whole launch costs one listing
-    per class. Take a new look to see what was published since.
+    per class. Take a new look to see what was published since. A ``fresh``
+    look also sees what another machine published within the last minute,
+    at the cost of opening the folders a spec's run would be in.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, fresh: bool = False) -> None:
+        self._fresh = fresh
         self._live: dict[tuple[Path, str], list[Path]] = {}
         self._listed: dict[tuple[Path, bool], dict[str, _First]] = {}
 
@@ -151,6 +167,9 @@ class Stored:
             check_defaults(obj._class_dir, type(obj))
         if is_batched(type(obj)):
             return self.listed(obj)
+        if self._fresh:
+            for version in self._versions(obj):
+                _look_again(runs_dir_in(version))
         held = [
             run
             for version in self._versions(obj)
