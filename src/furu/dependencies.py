@@ -316,6 +316,7 @@ class Creation:
 
     specs: frozenset[str] = frozenset()
     plan: Path | None = None
+    attempt_dir: Path | None = None
     asked: frozenset[str] = frozenset()
     on_load: OnLoad = _ignore_loads
 
@@ -340,11 +341,18 @@ def creating(
     *,
     specs: frozenset[str] | None = None,
     plan: Path | None = None,
+    attempt_dir: Path | None = None,
     asked: frozenset[str] | None = None,
     on_load: OnLoad | None = None,
 ) -> Generator[None]:
     """Run code with ``creation()`` changed in each field that is given."""
-    given = {"specs": specs, "plan": plan, "asked": asked, "on_load": on_load}
+    given = {
+        "specs": specs,
+        "plan": plan,
+        "asked": asked,
+        "on_load": on_load,
+        "attempt_dir": attempt_dir,
+    }
     changes = {name: value for name, value in given.items() if value is not None}
     token = _creation.set(replace(_creation.get(), **changes))
     try:

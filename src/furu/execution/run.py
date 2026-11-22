@@ -21,13 +21,13 @@ from websockets.sync.client import ClientConnection
 from furu import plan
 from furu._batched import batch_of
 from furu.config import get_config
-from furu.core import Spec, working_folder
+from furu.core import Spec, attempt_parent, working_folder
 from furu.dag import why_stuck
 from furu.dependencies import missing_dependencies
 from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
-from furu.storage._layout import log_path_in
+from furu.storage import attempt_lock
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.messages import (
@@ -196,7 +196,7 @@ class Run:
             return []
         # The log of that call: its batch's.
         ran = [self.specs[spec] for spec in message.object_ids if spec in self.specs]
-        log = log_path_in(working_folder(ran))
+        log = attempt_lock.log(attempt_parent(ran))
         replies: list[_Reply]
         match message.result:
             case JobCompletedResult():

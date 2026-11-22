@@ -68,7 +68,7 @@ def _events(runs: Sequence[Path]) -> list[bytes]:
     return texts
 
 
-def _run_names(runs: Path) -> list[str]:
+def run_names(runs: Path) -> list[str]:
     """The folders in a code version's runs/; none when it has no runs yet."""
     try:
         return os.listdir(runs)
@@ -91,7 +91,7 @@ def _listed(version: Path, batches: bool) -> dict[str, _First]:
     """
     runs = runs_dir_in(version)
     # A dotted name is a run that is being deleted.
-    names = {name for name in _run_names(runs) if "." not in name}
+    names = {name for name in run_names(runs) if "." not in name}
     read, first = _READ.setdefault(version, (set(), {}))
     if read - names:
         # A run was deleted, and a spec it held may be in another one.
@@ -141,6 +141,10 @@ class Stored:
                 else [version for version, why in versions(class_dir) if why is None]
             )
         return self._live[class_dir, code_version]
+
+    def has_run(self, obj: Spec, name: str) -> bool:
+        """Revalidate the runs/ listing before claiming a working folder."""
+        return any(name in run_names(runs_dir_in(v)) for v in self._versions(obj))
 
     def row(self, obj: Spec) -> Row | None:
         """Where obj's result is, if one is stored and its code still matches."""

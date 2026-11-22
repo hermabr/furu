@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
-from furu.locking import lock, read_text_or_none
+from furu.locking import short_lock
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -78,7 +78,9 @@ def _declared_defaults(cls: type[Spec]) -> dict[_Step, tuple[str, JsonValue]]:
 
 def _read(path: Path) -> list[dict[str, Any]] | None:
     """The file's whole lines; None when there is no file."""
-    if (text := read_text_or_none(path)) is None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
     lines = []
     for line in text.splitlines():
@@ -101,11 +103,12 @@ def _append(path: Path, lines: list[dict[str, Any]]) -> None:
 
 
 def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
-    return {
-        (line.get("nested"), line.get("class_part"), line["added"]): line["default"]
-        for line in lines
-        if "added" in line
-    }
+    defaults: dict[_Step, JsonValue] = {}
+    for line in lines:
+        if "added" in line:
+            key = (line.get("nested"), line.get("class_part"), line["added"])
+            defaults.setdefault(key, line["default"])
+    return defaults
 
 
 def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
@@ -123,7 +126,7 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
     lines = _read(path) if declared or record else None
     if lines is not None or record:
         if not lines or declared.keys() - _recorded_defaults(lines).keys():
-            with lock(schema_lock_path_in(class_dir)):
+            with short_lock(schema_lock_path_in(class_dir)):
                 lines = _read(path) or []
                 recorded = _recorded_defaults(lines)
                 new: list[dict[str, Any]] = [
@@ -136,7 +139,9 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
                     new.insert(0, {"names": list(naming(cls).first_names)})
                 if new:
                     _append(path, new)
-                lines += new
+                    # A writer paused past short_lock's stale timeout may have
+                    # appended first. Check the actual order before caching.
+                    lines = _read(path) or []
         recorded = _recorded_defaults(lines)
         for step, (label, default) in declared.items():
             if _stable_json_dump(recorded[step]) != _stable_json_dump(default):
@@ -194,7 +199,7 @@ def record_nested_names(class_dir: Path, holds: dict[type, tuple[str, ...]]) -> 
         ]
 
     if unrecorded():
-        with lock(schema_lock_path_in(class_dir)):
+        with short_lock(schema_lock_path_in(class_dir)):
             if new := unrecorded():
                 _append(schema_path_in(class_dir), new)
     _nested_recorded.update(lines)

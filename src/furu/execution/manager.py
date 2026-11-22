@@ -34,12 +34,11 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu import plan
 from furu.dag import Dag
-from furu.locking import is_active_lock
 from furu.logging import _group_label, get_logger
+from furu.storage import attempt_lock
 from furu.storage._layout import (
     attempt_dir_in,
     attempts_dir_in,
-    lock_path_in,
     run_name,
 )
 from furu.storage.events import read_events
@@ -348,11 +347,19 @@ class Manager:
             return
         by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
         for run in runs:
-            hashes = [
-                spec
-                for opened in read_events(attempt_dir_in(class_dir, run))[:1]
-                for spec in opened.get("specs", ())
-            ]
+            folders = attempt_lock.entries(attempt_dir_in(class_dir, run))
+            if not folders:
+                continue
+            hashes = next(
+                (
+                    opened["specs"]
+                    for folder in folders
+                    if not folder.is_symlink() and folder.is_dir()
+                    for opened in read_events(folder)[:1]
+                    if opened.get("specs")
+                ),
+                [run] if run in by_hash else [],
+            )
             if hashes and all(
                 spec in by_hash and by_hash[spec] not in self.stopped_in
                 for spec in hashes
@@ -692,8 +699,7 @@ class Manager:
         """The stopped batches that can go out now, oldest first.
 
         ``wanted`` says whether the caller has a use for a batch, given its
-        first spec. A batch whose working folder is locked is still being
-        computed, or its worker died less than a lock's lifetime ago.
+        first spec. A working folder can go out only when its owner is known to be gone.
         """
         now = time.monotonic()
         for stopped in list(self.stopped):
@@ -705,7 +711,11 @@ class Manager:
             ):
                 continue
             class_dir = self.placed[stopped.specs[0]].class_dir
-            if is_active_lock(lock_path_in(class_dir, stopped.run)):
+            folders = attempt_lock.entries(attempt_dir_in(class_dir, stopped.run))
+            if any(
+                attempt_lock.classify(f) is not attempt_lock.State.ADOPTABLE
+                for f in folders
+            ):
                 stopped.look_at = now + _IDLE_CHECK_INTERVAL_S
             else:
                 yield stopped

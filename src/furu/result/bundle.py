@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import os
 import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -311,6 +312,13 @@ def _dump_artifact(
     return {WRAPPER_KEY: body}
 
 
+def _column_directory(bundle: Path, relative: Path) -> None:
+    # An attempt can move. Never recreate it by making missing ancestors.
+    for parent in reversed(relative.parents[:-1]):
+        (bundle / parent).mkdir(exist_ok=True)
+    (bundle / relative).mkdir()
+
+
 def _save_columns(
     columns: dict[ValuePath, list[_Cell]],
     bundle_dir: Path,
@@ -334,7 +342,7 @@ def _save_columns(
         if all(cell.codec is codec for cell in cells) and not any(
             position[:i] in clashing for i in range(1, len(position) + 1)
         ):
-            (bundle_dir / shared).mkdir(parents=True)
+            _column_directory(bundle_dir, shared)
             metadatas = codec.save_many(
                 [cell.value for cell in cells], bundle_dir / shared
             )
@@ -347,7 +355,7 @@ def _save_columns(
         if metadatas is None:
             paths = [Path(ROWS_DIR_NAME, str(cell.row), *position) for cell in cells]
             for path in paths:
-                (bundle_dir / path).mkdir(parents=True)
+                _column_directory(bundle_dir, path)
             metadatas = [
                 cell.codec.save(cell.value, bundle_dir / path)
                 for cell, path in zip(cells, paths)
@@ -546,7 +554,7 @@ def _save_result_bundle(
 
     ``label`` names the results in a warning.
     """
-    bundle_dir.mkdir(parents=True, exist_ok=False)
+    bundle_dir.mkdir()
 
     writer = _Writer(data_dir)
     manifest: list[JsonValue] = []
@@ -560,6 +568,21 @@ def _save_result_bundle(
         "[\n" + ",\n".join(map(json.dumps, manifest)) + "\n]\n",
         encoding="utf-8",
     )
+
+    # Codecs can write several files. Flush their contents and directory entries
+    # before events.jsonl can say this result finished.
+    def raise_error(exc: OSError) -> None:
+        raise exc
+
+    for root, _, files, directory in os.fwalk(
+        bundle_dir, topdown=False, onerror=raise_error
+    ):
+        for name in files:
+            path = Path(root, name)
+            if not path.is_symlink():
+                with path.open("rb") as file:
+                    os.fsync(file.fileno())
+        os.fsync(directory)
 
 
 def load_result_bundle(

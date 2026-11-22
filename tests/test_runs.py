@@ -3,6 +3,7 @@
 A batch is one run with a row per spec, found again by listing runs/.
 """
 
+import errno
 import re
 import shutil
 import socket
@@ -20,13 +21,11 @@ from furu.config import get_config
 from furu.core import working_folder
 from furu.dependencies import creating
 from furu.execution import load_or_create
-from furu.locking import is_active_lock
-from furu.storage import stored
+from furu.storage import attempt_lock, stored
 from furu.storage._layout import (
     FIXED,
     attempts_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     run_name,
     runs_dir_in,
@@ -55,7 +54,11 @@ class Weights(Spec):
     @furu.batched(lambda spec, worker: (None, 100))
     def create(specs: list["Weights"], directory: furu.SpecDirectory) -> list[Any]:
         attempts = attempts_dir_in(specs[0]._class_dir)
-        Weights.locks += [path.name for path in attempts.glob("*.lock")]
+        Weights.locks += [
+            path.parent.name
+            for path in attempts.glob("*/*")
+            if attempt_lock.classify(path) is attempt_lock.State.HELD
+        ]
         return [np.full(3, spec.seed) for spec in specs]
 
 
@@ -104,8 +107,8 @@ class FailsAsABatch(Spec):
 
 class LosesItsLock(Spec):
     def create(self) -> int:
-        # As if paused past the stale window, so that a successor took over.
-        lock_path_in(self._class_dir, self._artifact_hash).unlink()
+        claim = self._attempt_dir
+        claim.rename(claim.with_name("free__manual"))
         return 1
 
 
@@ -136,9 +139,7 @@ def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
         if self == spec._attempt_dir:
             seen["files"] = sorted(path.name for path in self.iterdir())
             seen["ends"] = ends_of(spec)
-            seen["locked"] = is_active_lock(
-                lock_path_in(spec._class_dir, spec._artifact_hash)
-            )
+            seen["locked"] = attempt_lock.classify(self) is attempt_lock.State.HELD
             seen["done"] = spec.done
         return rename(self, target)
 
@@ -201,11 +202,11 @@ def test_a_batch_is_one_run_with_a_row_per_spec_and_one_file_per_array() -> None
     ]
     assert events_of(specs[0])[0]["specs"] == [spec._artifact_hash for spec in specs]
     # One working folder under one lock, both gone once it is published.
-    assert Weights.locks == [f"{name}.lock"]
+    assert Weights.locks == [name]
     assert list(attempts_dir_in(specs[0]._class_dir).iterdir()) == []
 
 
-def test_the_same_specs_in_the_same_order_are_refused_and_another_order_is_kept(
+def test_the_same_specs_in_the_same_order_are_reused_and_another_order_is_kept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     specs = [Train(seed=1), Train(seed=2)]
@@ -213,8 +214,7 @@ def test_the_same_specs_in_the_same_order_are_refused_and_another_order_is_kept(
     run = run_of(specs[0])
     published = events_path_in(run).read_text()
 
-    with pytest.raises(OSError, match="Directory not empty|File exists"):
-        _compute_again(specs, monkeypatch)
+    _compute_again(specs, monkeypatch)
     _compute_again(specs[::-1], monkeypatch)
 
     assert events_path_in(run).read_text() == published
@@ -388,7 +388,7 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
 
 def test_an_attempt_killed_in_the_middle_of_a_line_costs_only_that_line() -> None:
     spec = Leaf(n=4)
-    spec._attempt_dir.mkdir(parents=True)
+    (spec._attempt_dir / "free__manual").mkdir(parents=True)
     events_path_in(spec._attempt_dir).write_text(
         f'\n{{"event":"opened","at":"2026-11-14T14:02:09Z","specs":["{spec._artifact_hash}"]}}\n'
         '{"event":"start","at":"2026-11-14T14:02:11Z","attempt":1,"host":"jagupard26"}\n'
@@ -406,3 +406,112 @@ def test_an_attempt_killed_in_the_middle_of_a_line_costs_only_that_line() -> Non
         ("start", 2, None),
         ("end", None, "ok"),
     ]
+
+
+@pytest.mark.parametrize("code", [errno.ENOENT, errno.ESTALE, errno.EIO, errno.EDQUOT])
+def test_publish_error_preserves_finished_result_and_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    spec = BlocksThenFailsOnce()
+    with pytest.raises(ValueError, match="bad shape"):
+        spec.create()
+    real_rename = Path.rename
+
+    def fail(self: Path, target: Path):
+        if target == fixed_run(spec):
+            assert not (self / "scratch").exists()
+            (trash,) = self.parent.glob(".trash__*")
+            assert (trash / "failed").exists()
+            raise OSError(code, "injected publish failure")
+        return real_rename(self, target)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "rename", fail)
+        with pytest.raises(OSError) as caught:
+            spec.create()
+    assert caught.value.errno == code
+    assert not spec.done
+    released = spec._attempt_dir
+    assert released.name.startswith("free__")
+    assert (released / "result" / "manifest.json").is_file()
+    assert (released / "scratch" / "failed").exists()
+    assert ends_of(spec)[-1] == {"outcome": "ok"}
+    assert spec.create() == 7
+
+
+@pytest.mark.parametrize("lost_reply", [True, False])
+def test_publish_keeps_the_winner_and_only_removes_detached_trash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lost_reply: bool
+) -> None:
+    attempt = tmp_path / "attempts" / "run" / "claim"
+    (attempt / "scratch").mkdir(parents=True)
+    (attempt / "result").write_text("ours")
+    published = tmp_path / "version" / "runs" / "run"
+    published.parent.mkdir(parents=True)
+    rename, rmtree = Path.rename, shutil.rmtree
+    discarded = []
+
+    def race(self: Path, target: Path):
+        if target == published:
+            if lost_reply:
+                rename(self, target)
+                raise OSError(errno.EIO, "lost reply")
+            published.mkdir()
+            (published / "result").write_text("winner")
+        return rename(self, target)
+
+    def discard(path, *, ignore_errors=False):
+        assert Path(path).parent == attempt.parent
+        assert Path(path).name.startswith(".trash__")
+        discarded.append(path)
+        return rmtree(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(Path, "rename", race)
+    monkeypatch.setattr(shutil, "rmtree", discard)
+    load_or_create._publish(attempt, published)
+    assert (published / "result").read_text() == ("ours" if lost_reply else "winner")
+    assert not (published / "scratch").exists()
+    assert len(discarded) == (1 if lost_reply else 2)
+    assert not attempt.parent.exists()
+
+
+@pytest.mark.parametrize("owner", ["local__host__7__0123456789abcdef", "unrecognized"])
+def test_delete_refuses_held_or_unknown_attempts_before_touching_any_run(
+    owner: str,
+) -> None:
+    spec = Leaf(n=9)
+    spec.create()
+    parent = spec._attempt_dir
+    adoptable = parent / "free__manual"
+    adoptable.mkdir(parents=True)
+    (parent / owner).mkdir()
+    with pytest.raises(RuntimeError, match=re.escape(str(parent / owner))):
+        spec.delete(mode="force")
+    assert spec.load_existing() == 9
+    assert adoptable.is_dir()
+    assert (parent / owner).is_dir()
+
+
+def test_delete_renames_every_folder_before_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = Leaf(n=5)
+    spec.create()
+    published = fixed_run(spec)
+    parent = spec._attempt_dir
+    (parent / "free__manual").mkdir(parents=True)
+    (parent / "free__0123456789abcdef").mkdir()
+    rmtree = shutil.rmtree
+    removed = []
+
+    def inspect(path, *, ignore_errors=False):
+        assert path.name.startswith(".deleting__")
+        removed.append(path.parent)
+        return rmtree(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(shutil, "rmtree", inspect)
+    assert spec.delete(mode="force")
+    assert removed.count(parent) == 2
+    assert removed.count(published.parent) == 1
+    assert not parent.exists()
+    assert not spec.done

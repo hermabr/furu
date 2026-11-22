@@ -9,15 +9,13 @@ from furu.utils import _hash_dict_deterministically
 # @furu.dependency(remember=True) method. The class name is one path component,
 # so the folders under it are exactly its class parts.
 #
-#   attempts/<run>/           the working folder of a run in progress
-#   attempts/<run>.lock       its lock, beside it so that publishing never moves it
+#   attempts/<run>/<owner>    the working folder; its name grants ownership
 #   <code version>/trace.json which code its runs ran; "fixed" has none
 #   <code version>/runs/<run> a published run, which never changes again
 #   remembered/               what such methods returned, a file per launch
 #
-# A working folder is renamed into runs/ under the same name, so both share
-# the run layout below. A run holds one row per spec: the specs of one batch,
-# or the one spec of a class without @furu.batched.
+# A working folder is renamed into runs/ under its logical run name. It holds
+# one row per spec in the batch, or one spec for a class without @furu.batched.
 
 FIXED = "fixed"
 REMEMBERED = "remembered"
@@ -42,10 +40,6 @@ def attempts_dir_in(class_dir: Path) -> Path:
 
 def attempt_dir_in(class_dir: Path, run: str) -> Path:
     return attempts_dir_in(class_dir) / run
-
-
-def lock_path_in(class_dir: Path, run: str) -> Path:
-    return attempts_dir_in(class_dir) / f"{run}.lock"
 
 
 def version_dirs_in(class_dir: Path) -> list[Path]:

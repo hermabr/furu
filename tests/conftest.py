@@ -13,6 +13,11 @@ from furu import provenance
 from furu.config import _project_anchor
 
 # Set once here so xdist workers and every child process they start inherit it.
+# Keep synthetic owners away from the cluster that happens to run pytest.
+# The Slurm backend tests set the allocation variables in their own workers.
+for name in ("SLURM_JOB_ID", "SLURM_CLUSTER_NAME", "SLURM_RESTART_COUNT"):
+    os.environ.pop(name, None)
+
 os.environ.update(
     {
         # Worker children import spec classes by fully qualified name from the
