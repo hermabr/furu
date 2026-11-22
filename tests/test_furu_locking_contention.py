@@ -1,7 +1,6 @@
 """Real processes racing for the same results. Children are forked, so they
 share this test's furu config and data directories."""
 
-import json
 import os
 import time
 from multiprocessing import get_context
@@ -15,6 +14,7 @@ import furu.locking as locking_module
 from furu import Spec
 from furu.config import get_config
 from furu.execution.load_or_create import _load_or_create
+from furu.locking import LockError
 from furu.result.bundle import load_result_bundle
 from furu.storage._layout import data_dir_in
 
@@ -120,16 +120,10 @@ def _start(target, *args) -> BaseProcess:
     return proc
 
 
-def _steal_lock(lock: Path) -> None:
-    claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
-    manifest = {"claim_path": str(claim_path)}
-    fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(manifest, f)
-        f.flush()
-        os.fsync(f.fileno())
-    lock.unlink()
-    os.link(claim_path, lock)
+def _steal_attempt(attempt_dir: Path) -> Path:
+    stolen = attempt_dir.with_name(f"local__otherhost__99999__stolen{os.getpid()}")
+    attempt_dir.rename(stolen)
+    return stolen
 
 
 def _race(target, *argss: tuple) -> list[tuple]:
@@ -190,18 +184,21 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     while not entered_path.exists():
         assert time.monotonic() < deadline
         time.sleep(POLL_INTERVAL_S)
-    (lock_path,) = data_dir.glob("**/attempts/*.lock")
-    _steal_lock(lock_path)
+    (attempt_dir,) = (
+        path
+        for path in data_dir.glob("**/attempts/*/*")
+        if not path.name.startswith(".")
+    )
+    stolen = _steal_attempt(attempt_dir)
     release_path.touch()
 
     result = out_q.get(timeout=TIMEOUT_S)
     proc.join(timeout=TIMEOUT_S)
     assert proc.exitcode == 0
     assert result[0] == "err"
-    assert result[2] == RuntimeError.__name__
+    assert result[2] == LockError.__name__
     assert result[3].endswith("before writing the result")
     assert list(data_dir.glob("**/runs/*")) == []
-    (log,) = data_dir.glob("**/attempts/*/log")
-    log_text = log.read_text(encoding="utf-8")
+    log_text = (stolen / "log").read_text(encoding="utf-8")
     assert "create failed" in log_text
     assert "before writing the result" in log_text

@@ -11,8 +11,8 @@ from furu.config import get_config
 from furu.dag import Dag
 from furu.execution.launch import missing
 from furu.execution.run_on_workers import run_on_workers
-from furu.locking import lock
-from furu.storage._layout import attempts_dir_in, lock_path_in
+from furu.locking import attempt_lock
+from furu.storage._layout import attempt_parent_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
@@ -161,13 +161,12 @@ def test_missing_reaches_specs_in_dataclasses_and_ones_a_dependency_method_retur
 @pytest.mark.parametrize("held", [True, False])
 def test_a_spec_whose_attempt_runs_or_stopped_is_missing(held: bool) -> None:
     leaf = Leaf(name=f"attempt-{held}")
-    attempts_dir_in(leaf._class_dir).mkdir(parents=True)
-    path = lock_path_in(leaf._class_dir, leaf._artifact_hash)
+    parent = attempt_parent_in(leaf._class_dir, leaf._artifact_hash)
     if held:
-        with lock(path):
+        with attempt_lock(parent):
             assert missing([leaf], Dag()) == [leaf]
     else:
-        path.touch()
+        (parent / "free__stopped").mkdir(parents=True)
         assert missing([leaf], Dag()) == [leaf]
 
 
@@ -321,4 +320,4 @@ def test_worker_run_reports_worker_failures():
     assert ends_of(failing) == [
         {"outcome": "failed", "error": "RuntimeError: intentional failure: boom"}
     ]
-    assert not parent._attempt_dir.exists()
+    assert not parent._attempt_parent.exists()

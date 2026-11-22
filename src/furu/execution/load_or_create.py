@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import errno
 import secrets
 import shutil
 import time
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Generator, Iterable, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -19,10 +20,11 @@ from furu.code_trace import (
     build_trace,
     paused,
     recording,
+    versions,
     why_not_resumable,
 )
 from furu.config import get_config
-from furu.core import Creates, Missing, Spec, working_folder
+from furu.core import Creates, Missing, Spec, attempt_parent
 from furu.dag import Dag, why_stuck
 from furu.dependencies import (
     _DependencyNotReady,
@@ -34,7 +36,13 @@ from furu.dependencies import (
 )
 from furu.execution.launch import ask, held_in
 from furu.execution.launch import missing as missing_under
-from furu.locking import lock
+from furu.locking import (
+    LockError,
+    attempt_lock,
+    attempt_log_path,
+    owns_attempt,
+    revalidated_listdir,
+)
 from furu.logging import _group_label, _log_scope, get_logger
 from furu.migration.schema import check_defaults, record_nested_names
 from furu.provenance import _require_uv, capture_submit_provenance
@@ -44,13 +52,15 @@ from furu.serializer.artifact import remembering
 from furu.storage import events
 from furu.storage._layout import (
     FIXED,
+    attempt_parent_in,
     attempts_dir_in,
     data_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     result_dir_in,
     run_dir_in,
+    run_name,
+    runs_dir_in,
     scratch_dir_in,
     trace_log_path_in,
     trace_path_in,
@@ -64,8 +74,6 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from furu.worker.backends.protocol import WorkerBackend
-
-type HasLock = Callable[[], bool]
 
 
 @contextmanager
@@ -105,7 +113,11 @@ def _recording(
             if run is not None:
                 run.loaded(folder)
 
-        with creating(specs=frozenset(obj.object_id for obj in group), on_load=on_load):
+        with creating(
+            specs=frozenset(obj.object_id for obj in group),
+            on_load=on_load,
+            attempt_dir=attempt,
+        ):
             yield run, loaded
 
 
@@ -140,6 +152,40 @@ def _load_or_create(
     return map_specs(lambda obj: results[obj.object_id], tree)
 
 
+def _is_in_revalidated_dir(directory: Path, name: str) -> bool:
+    entries = revalidated_listdir(directory, levels=4)
+    return entries is not None and name in entries
+
+
+def _is_group_published(objs: Sequence[Spec], run_id: str) -> bool:
+    """Whether ``objs`` already have a live published run, bypassing NFS negative caches."""
+    lead = objs[0]
+    class_dir = lead._class_dir
+    revalidated_listdir(class_dir)
+    live = (
+        [class_dir / FIXED]
+        if lead._metadata.code_version == "fixed"
+        else [version for version, why in versions(class_dir) if why is None]
+    )
+    for version in live:
+        if _is_in_revalidated_dir(runs_dir_in(version), run_id):
+            return True
+    look = Stored()
+    return all(look.row(obj) is not None for obj in objs)
+
+
+def _trash_dir(path: Path) -> None:
+    """Atomically move ``path`` to a dotted sibling and remove it."""
+    trash = path.parent / f".trash__{secrets.token_hex(8)}"
+    try:
+        path.rename(trash)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ESTALE):
+            return
+        raise
+    shutil.rmtree(trash, ignore_errors=True)
+
+
 def _ensure_group_result(objs: Sequence[Spec]) -> None:
     """Create and publish one create() call's ``objs`` as one run, unless all are stored.
 
@@ -159,12 +205,14 @@ def _ensure_group_result(objs: Sequence[Spec]) -> None:
     for obj in objs:
         record_nested_names(class_dir, held_in(obj))
 
-    with lock(lock_path_in(class_dir, working_folder(objs).name)) as has_lock:
-        # Whoever held the lock before may have published the run and taken
-        # its working folder with it.
-        look = Stored()
-        if any(look.row(obj) is None for obj in objs):
-            _create_and_store_group(list(objs), has_lock=has_lock)
+    run_id = run_name([obj._artifact_hash for obj in objs])
+    parent = attempt_parent_in(class_dir, run_id)
+    with attempt_lock(
+        parent,
+        is_published=lambda: _is_group_published(objs, run_id),
+    ) as attempt:
+        if attempt is not None and not _is_group_published(objs, run_id):
+            _create_and_store_group(list(objs), attempt=attempt, run_id=run_id)
 
 
 # Python cannot map Creates[T] -> T through an arbitrary structure, so the shapes
@@ -421,7 +469,7 @@ def _create_in_process(group: list[Spec]) -> None:
     lead = group[0]
     label = _group_label(lead.object_id, len(group))
     lead.logger.info(
-        "creating %s", label, extra={"path": log_path_in(working_folder(group))}
+        "creating %s", label, extra={"path": attempt_log_path(attempt_parent(group))}
     )
     started_at = time.monotonic()
     _ensure_group_result(group)
@@ -429,8 +477,10 @@ def _create_in_process(group: list[Spec]) -> None:
     lead.logger.info("finished %s ok · %s", label, duration)
 
 
-def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
-    """Run the group's create() in its one working folder, then publish it.
+def _create_and_store_group(
+    group: list[Spec], *, attempt: Path, run_id: str
+) -> None:
+    """Run the group's create() in its claimed working folder, then publish it.
 
     events.jsonl gets this attempt's start and end, and what create() writes
     goes to the folder's log: one call, one folder, one log. The run is added
@@ -441,15 +491,13 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
     cls = type(lead)
     metadata = lead._metadata  # a batch has one Metadata
     label = _group_label(lead.object_id, len(group))
-    attempt = working_folder(group)
-    attempt.mkdir(exist_ok=True)
     with _log_scope(log_path_in(attempt)):
         # Go on from what earlier attempts in the folder ran. A fixed class
         # continues with what they left there. A traced one does only if the
         # code an attempt ran (recorded in trace.log) is unchanged on disk;
         # otherwise the files it wrote are dropped.
         traced = metadata.code_version == "traced"
-        if traced and (why := why_rerun(lead._class_dir, attempt.name)):
+        if traced and (why := why_rerun(lead._class_dir, run_id)):
             lead.logger.info("rerunning %s: %s", label, why)
         resumed = LogState()
         if traced and events_path_in(attempt).exists():
@@ -491,8 +539,8 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
                 )
 
             # Write the results into the working folder, a row per spec.
-            if not has_lock():
-                raise RuntimeError(
+            if not owns_attempt(attempt):
+                raise LockError(
                     f"lost the lock on {attempt} before writing the result"
                 )
             result_dir = result_dir_in(attempt)
@@ -509,18 +557,17 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
             trace = None
             if run is not None:
                 trace = build_trace(run, label=label, warn=lead.logger.warning)
-            shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
             trace_log_path_in(attempt).unlink(missing_ok=True)
         except _DependencyNotReady as exc:
             # Without the lock the folder is a successor's, or published.
-            if has_lock():
+            if owns_attempt(attempt):
                 waiting_on = [dep.object_id for dep in exc.dependencies]
                 events.end(attempt, "blocked", waiting_on=waiting_on)
             raise
         except BaseException as exc:
             if isinstance(exc, Exception):
                 lead.logger.exception("create failed for %s", label)
-            if has_lock():
+            if owns_attempt(attempt):
                 error = ": ".join([type(exc).__name__, *str(exc).splitlines()[:1]])
                 events.end(attempt, "failed", error=error)
             raise
@@ -528,18 +575,18 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
         version = lead._class_dir / (FIXED if trace is None else trace.version)
         record.batch(
             group,
-            run=attempt.name,
+            run=run_id,
             version=version.name,
             start=started,
             end=ended,
             loaded=loaded,
         )
 
-        # Publish: rename the working folder into runs/ of its code version,
-        # name unchanged. The lock is held through the rename, so nobody else
-        # is in the folder, and readers see the whole run or none of it. A run
+        # Publish: move scratch/ out atomically first, then rename the working
+        # folder into runs/<run_id>. The folder name encodes ownership through
+        # the rename, so readers see the whole run or none of it, and a run
         # that is already there is never replaced.
-        published = run_dir_in(version, attempt.name)
+        published = run_dir_in(version, run_id)
         published.parent.mkdir(parents=True, exist_ok=True)
         if trace is not None:
             trace_path = trace_path_in(version)
@@ -549,7 +596,31 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
                 atomic_write_text(
                     trace_path, trace.model_dump_json(indent=2, exclude_none=True)
                 )
-        if not has_lock():
-            raise RuntimeError(f"lost the lock on {attempt} before publishing")
-        lead.logger.debug("publishing %s under %s", label, version.name)
-        attempt.rename(published)
+        if not owns_attempt(attempt):
+            raise LockError(f"lost the lock on {attempt} before publishing")
+
+        trash_scratch: Path | None = attempt.parent / f".trash__{secrets.token_hex(8)}"
+        try:
+            scratch_dir_in(attempt).rename(trash_scratch)
+        except FileNotFoundError:
+            trash_scratch = None
+
+        published_or_won = False
+        try:
+            lead.logger.debug("publishing %s under %s", label, version.name)
+            try:
+                attempt.rename(published)
+            except OSError:
+                if not _is_in_revalidated_dir(published.parent, published.name):
+                    raise
+                # A winner already exists in runs/ (either a concurrent publisher
+                # won or an NFS retry hid our own rename succeeding). Drop our
+                # duplicate without touching the winner.
+                _trash_dir(attempt)
+            published_or_won = True
+        finally:
+            if trash_scratch is not None:
+                if not published_or_won:
+                    with suppress(OSError):
+                        trash_scratch.rename(scratch_dir_in(attempt))
+                shutil.rmtree(trash_scratch, ignore_errors=True)

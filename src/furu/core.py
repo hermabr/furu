@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import shutil
 from abc import ABC
 from collections.abc import Callable, Sequence
@@ -30,7 +31,7 @@ from furu.dependencies import (
     remembers,
     returned_attributes,
 )
-from furu.locking import lock
+from furu.locking import attempt_lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
@@ -39,9 +40,7 @@ from furu.serializer.artifact import field_fingerprints, is_default
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
-    attempt_dir_in,
-    attempts_dir_in,
-    lock_path_in,
+    attempt_parent_in,
     run_dir_in,
     run_name,
     version_dirs_in,
@@ -219,7 +218,8 @@ class Spec(_FuruDataclassTransform, ABC):
     @final
     @property
     def directory(self) -> SpecDirectory:
-        if self.object_id not in creation().specs:
+        current = creation()
+        if self.object_id not in current.specs:
             raise RuntimeError(
                 f"{self.object_id}.directory is only available inside this "
                 "spec's own create() hook. To use files another spec produced, "
@@ -235,7 +235,8 @@ class Spec(_FuruDataclassTransform, ABC):
                 "create(specs, directory). Name the files you write per spec by "
                 "the spec's fields, since the same spec can land in another batch."
             )
-        return SpecDirectory(self._attempt_dir)
+        assert current.attempt_dir is not None
+        return SpecDirectory(current.attempt_dir)
 
     @final
     @cached_property
@@ -293,13 +294,16 @@ class Spec(_FuruDataclassTransform, ABC):
             )
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
-        attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
-            folders = [self._attempt_dir] + [
-                run_dir_in(version, self._artifact_hash)
+        parent = attempt_parent_in(self._class_dir, self._artifact_hash)
+        with attempt_lock(parent) as attempt:
+            assert attempt is not None
+            has_attempt = any(attempt.iterdir())
+            published = [
+                folder
                 for version in version_dirs_in(self._class_dir)
+                if (folder := run_dir_in(version, self._artifact_hash)).is_dir()
             ]
-            folders = [folder for folder in folders if folder.is_dir()]
+            folders = ([attempt] if has_attempt else []) + published
             if not folders:
                 return False
             if mode == "prompt":
@@ -307,11 +311,14 @@ class Spec(_FuruDataclassTransform, ABC):
                 answer = input(f"Do you want to delete {listed}? [y/N] ")
                 if answer.strip().lower() != "y":
                     return False
-            for folder in folders:
+            for folder in published:
                 # Renamed first, so no reader finds half a run.
                 tombstone = nfs_safe_unique_name(folder, name="deleting")
                 folder.rename(tombstone)
                 shutil.rmtree(tombstone)
+            tombstone = parent / f".deleting__{secrets.token_hex(8)}"
+            attempt.rename(tombstone)
+            shutil.rmtree(tombstone)
         return True
 
     @final
@@ -376,12 +383,12 @@ class Spec(_FuruDataclassTransform, ABC):
 
     @final
     @property
-    def _attempt_dir(self) -> Path:
-        return working_folder([self])
+    def _attempt_parent(self) -> Path:
+        return attempt_parent([self])
 
 
-def working_folder(specs: Sequence[Spec]) -> Path:
-    """Where the run that holds ``specs`` as its rows does its work."""
-    return attempt_dir_in(
+def attempt_parent(specs: Sequence[Spec]) -> Path:
+    """The attempt parent directory ``attempts/<run>/`` for ``specs``."""
+    return attempt_parent_in(
         specs[0]._class_dir, run_name([spec._artifact_hash for spec in specs])
     )

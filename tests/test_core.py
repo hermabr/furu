@@ -17,13 +17,12 @@ from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, ConfigDict
-from runs import ends_of, fixed_run, log_of, run_of
+from runs import attempt_of, ends_of, fixed_run, log_of, run_of
 
 import furu
 import furu.execution.load_or_create as execution_module
 from furu import Metadata, Spec, Throttle, Worker, plan
 from furu.config import get_config
-from furu.core import working_folder
 from furu.dag import Dag
 from furu.dependencies import (
     _DependencyNotReady,
@@ -31,12 +30,13 @@ from furu.dependencies import (
 )
 from furu.execution.launch import missing
 from furu.execution.load_or_create import _load_or_create
+from furu.locking import attempt_lock as real_attempt_lock
 from furu.logging import _execution_log
 from furu.result.bundle import _save_result_bundle
 from furu.storage._layout import (
+    attempt_parent_in,
     data_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     result_dir_in,
 )
@@ -122,7 +122,7 @@ class DoneProbe(Spec):
 
 class DirectoryPeekingValue(Spec):
     def create(self) -> str:
-        assert self.directory.data == self._attempt_dir / "data"
+        assert self.directory.data == attempt_of(self) / "data"
         with pytest.raises(RuntimeError, match=r"only available inside"):
             _ = Node(name="other").directory
         return "ok"
@@ -138,7 +138,7 @@ class BatchedDirectoryValue(Spec):
     def create(
         objs: list["BatchedDirectoryValue"], directory: furu.SpecDirectory
     ) -> list[Path]:
-        assert directory.data == working_folder(objs) / "data"
+        assert directory.data == attempt_of(objs) / "data"
         with pytest.raises(RuntimeError, match=r"create\(specs, directory\)"):
             _ = objs[0].directory
         paths = [directory.data / f"{obj.key}.txt" for obj in objs]
@@ -479,7 +479,7 @@ class MetadataTimingValue(Spec):
         type(self).create_events.append(
             (
                 self.key,
-                events_path_in(self._attempt_dir).exists(),
+                events_path_in(attempt_of(self)).exists(),
                 sibling.done,
             )
         )
@@ -1079,7 +1079,7 @@ def test_data_dir():
         / "06b20558c682cb23a593"
     )
     assert node_pair._class_dir == class_dir
-    assert node_pair._attempt_dir == class_dir / "attempts" / "0213f99a818a40d63cf9"
+    assert node_pair._attempt_parent == class_dir / "attempts" / "0213f99a818a40d63cf9"
     assert fixed_run(node_pair) == (
         class_dir / "fixed" / "runs" / "0213f99a818a40d63cf9"
     )
@@ -1204,7 +1204,7 @@ def test_data_dir_is_user_data_subdirectory() -> None:
         "log",
         "result",
     ]
-    assert not obj._attempt_dir.exists()
+    assert not obj._attempt_parent.exists()
 
 
 def test_unused_data_dir_is_not_created_by_create() -> None:
@@ -1222,7 +1222,7 @@ def test_directory_is_only_available_inside_own_create() -> None:
         _ = node.directory
 
     # Outside access must not fabricate a working folder.
-    assert not node._attempt_dir.exists()
+    assert not node._attempt_parent.exists()
 
     node.create()
 
@@ -1247,7 +1247,7 @@ def test_a_batch_has_one_directory_and_a_spec_of_it_has_none() -> None:
 
 def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
     obj = ScratchWritingValue(name="payload")
-    scratch_dir = obj._attempt_dir / "scratch"
+    scratch_dir = obj._attempt_parent / "free__prev" / "scratch"
     scratch_dir.mkdir(parents=True)
     (scratch_dir / "download.csv").write_text("from-previous-attempt", encoding="utf-8")
 
@@ -1265,7 +1265,7 @@ def test_a_spec_is_done_only_once_its_run_is_published() -> None:
     assert probe.done
     with pytest.raises(RuntimeError, match="failed single for 1"):
         failing.create()
-    assert failing._attempt_dir.exists()
+    assert attempt_of(failing).name.startswith("free__")
     assert not failing.done
 
 
@@ -1306,7 +1306,7 @@ def test_delete_removes_the_working_folder_of_a_stopped_attempt() -> None:
 
     assert failing.delete(mode="force")
 
-    assert not failing._attempt_dir.exists()
+    assert not failing._attempt_parent.exists()
     assert not failing.delete(mode="force")
 
 
@@ -1460,8 +1460,8 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
     obj = NoCreateHookValue(key=3)
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(obj._class_dir, obj._artifact_hash)
+    def fake_attempt_lock(parent: Path, **_: object):
+        assert parent == attempt_parent_in(obj._class_dir, obj._artifact_hash)
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
@@ -1469,9 +1469,9 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
         )
-        yield lambda: True
+        yield None
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "attempt_lock", fake_attempt_lock)
 
     assert furu.create(obj) == "cached-after-lock:1"
 
@@ -1592,11 +1592,11 @@ def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> N
 def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "first"
     first = ObjectIdStorageValue(key=1)
-    first_data_dir = data_dir_in(first._attempt_dir)
+    first_data_dir = data_dir_in(first._attempt_parent)
 
     ObjectIdStorageValue.storage_override = tmp_path / "second"
     second = ObjectIdStorageValue(key=1)
-    second_data_dir = data_dir_in(second._attempt_dir)
+    second_data_dir = data_dir_in(second._attempt_parent)
 
     assert first.object_id == second.object_id
     assert first_data_dir != second_data_dir
@@ -1616,14 +1616,15 @@ def test_existing_items_are_skipped_before_locking(
     lock_calls: list[Path] = []
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        lock_calls.append(lock_path)
-        yield lambda: True
+    def spy_attempt_lock(parent: Path, **kwargs: Any):
+        lock_calls.append(parent)
+        with real_attempt_lock(parent, **kwargs) as attempt:
+            yield attempt
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "attempt_lock", spy_attempt_lock)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [lock_path_in(missing._class_dir, missing._artifact_hash)]
+    assert lock_calls == [attempt_parent_in(missing._class_dir, missing._artifact_hash)]
 
 
 def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
@@ -1632,8 +1633,8 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
     pending = CountedSingleValue(key=5)
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(pending._class_dir, pending._artifact_hash)
+    def publish_before_acquire(parent: Path, **kwargs: Any):
+        assert parent == attempt_parent_in(pending._class_dir, pending._artifact_hash)
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
@@ -1641,13 +1642,14 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",
         )
-        yield lambda: True
+        with real_attempt_lock(parent, **kwargs) as attempt:
+            yield attempt
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "attempt_lock", publish_before_acquire)
 
     assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []
-    assert not pending._attempt_dir.exists()
+    assert not pending._attempt_parent.exists()
 
 
 def test_empty_list_returns_empty_list() -> None:
@@ -1817,7 +1819,7 @@ def test_a_failed_batch_logs_the_traceback_once_and_ends_its_one_attempt() -> No
     assert ends_of(objs) == [
         {"outcome": "failed", "error": "RuntimeError: failed batch for [1, 2]"}
     ]
-    assert not objs[0]._attempt_dir.exists()
+    assert not objs[0]._attempt_parent.exists()
 
 
 def test_a_failed_create_logs_the_traceback_once() -> None:
