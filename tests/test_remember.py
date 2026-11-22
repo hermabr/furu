@@ -16,6 +16,7 @@ from tracedrepo import Repo, fresh_process
 import furu
 from furu import Spec, plan
 from furu.config import get_config
+from furu.locking import LockError
 from furu.storage._layout import remembered_dir_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
@@ -248,19 +249,25 @@ def test_storage_that_cannot_be_written_to_still_loads() -> None:
     assert not remembered_dir_in(table._class_dir).exists()
 
 
-def _name_then_launch(named: Any, launch: Any) -> None:
+def _name_then_launch(named: Any, launch: Any, out_q: Any) -> None:
     table = LooTable(data=Cifar(split="race"), seeds=2)
     assert table.object_id
     named.release()
     launch.wait(timeout=10)
-    furu.create(table)
+    try:
+        furu.create(table)
+        out_q.put("ok")
+    except LockError:
+        out_q.put("locked")
 
 
 def test_two_launches_at_once_each_save_a_file() -> None:
     ctx = get_context("fork")
-    named, launch = ctx.Semaphore(0), ctx.Event()
+    named, launch, out_q = ctx.Semaphore(0), ctx.Event(), ctx.Queue()
     launches = [
-        ctx.Process(target=_name_then_launch, args=(named, launch), daemon=True)
+        ctx.Process(
+            target=_name_then_launch, args=(named, launch, out_q), daemon=True
+        )
         for _ in range(2)
     ]
     for process in launches:
@@ -270,8 +277,11 @@ def test_two_launches_at_once_each_save_a_file() -> None:
         assert named.acquire(timeout=10)
     launch.set()
     for process in launches:
-        process.join(timeout=10)
+        process.join(timeout=30)
         assert process.exitcode == 0
+    outcomes = [out_q.get(timeout=10) for _ in launches]
+    assert "ok" in outcomes
+    assert set(outcomes) <= {"ok", "locked"}
 
     table = LooTable(data=Cifar(split="race"), seeds=2)
     first, second = _remembered(table)

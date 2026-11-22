@@ -34,14 +34,14 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu import plan
 from furu.dag import Dag
-from furu.locking import is_active_lock
 from furu.logging import _group_label, get_logger
 from furu.storage._layout import (
-    attempt_dir_in,
+    attempt_parent_in,
     attempts_dir_in,
-    lock_path_in,
+    resolve_attempt_dir,
     run_name,
 )
+from furu.storage.attempt_lock import is_attempt_blocked
 from furu.storage.events import read_events
 from furu.worker.backends.local import LocalThreadPool
 from furu.worker.backends.protocol import WorkerPool
@@ -342,15 +342,18 @@ class Manager:
             runs = [
                 name
                 for name in os.listdir(attempts_dir_in(class_dir))
-                if "." not in name
+                if not name.startswith(".")
             ]
         except FileNotFoundError:
             return
         by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
         for run in runs:
+            attempt_dir = resolve_attempt_dir(class_dir, run)
+            if attempt_dir == attempt_parent_in(class_dir, run):
+                continue
             hashes = [
                 spec
-                for opened in read_events(attempt_dir_in(class_dir, run))[:1]
+                for opened in read_events(attempt_dir)[:1]
                 for spec in opened.get("specs", ())
             ]
             if hashes and all(
@@ -705,7 +708,7 @@ class Manager:
             ):
                 continue
             class_dir = self.placed[stopped.specs[0]].class_dir
-            if is_active_lock(lock_path_in(class_dir, stopped.run)):
+            if is_attempt_blocked(attempt_parent_in(class_dir, stopped.run)):
                 stopped.look_at = now + _IDLE_CHECK_INTERVAL_S
             else:
                 yield stopped
@@ -759,7 +762,7 @@ class Manager:
                     f"{label} starts in a new working folder: it holds specs of a "
                     "batch that stopped and is not that batch alone, so what the "
                     "batch had done is dropped. Its working folder stays in "
-                    f"attempts/: {attempt_dir_in(placed.class_dir, stopped.run)}"
+                    f"attempts/: {resolve_attempt_dir(placed.class_dir, stopped.run)}"
                 )
                 logger.warning("%s", reason)
                 self.outbox.append((script, WarningMessage(reason=reason)))

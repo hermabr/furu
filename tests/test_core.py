@@ -34,12 +34,13 @@ from furu.execution.load_or_create import _load_or_create
 from furu.logging import _execution_log
 from furu.result.bundle import _save_result_bundle
 from furu.storage._layout import (
+    attempt_parent_in,
     data_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     result_dir_in,
 )
+from furu.storage.attempt_lock import AttemptLock
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -1247,7 +1248,8 @@ def test_a_batch_has_one_directory_and_a_spec_of_it_has_none() -> None:
 
 def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
     obj = ScratchWritingValue(name="payload")
-    scratch_dir = obj._attempt_dir / "scratch"
+    seed_dir = attempt_parent_in(obj._class_dir, obj._artifact_hash) / "free__seed"
+    scratch_dir = seed_dir / "scratch"
     scratch_dir.mkdir(parents=True)
     (scratch_dir / "download.csv").write_text("from-previous-attempt", encoding="utf-8")
 
@@ -1255,6 +1257,7 @@ def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
 
     assert not scratch_dir.exists()
     assert not (run_of(obj) / "scratch").exists()
+    assert not obj._attempt_dir.exists()
 
 
 def test_a_spec_is_done_only_once_its_run_is_published() -> None:
@@ -1312,6 +1315,37 @@ def test_delete_removes_the_working_folder_of_a_stopped_attempt() -> None:
 
 def test_delete_returns_false_when_missing() -> None:
     assert not Node(name="x").delete(mode="force")
+
+
+def test_delete_refuses_when_attempt_is_held_or_unknown() -> None:
+    from furu.locking import LockError
+
+    node = Node(name="busy")
+    assert node.create() == "Node(busy)"
+    parent = attempt_parent_in(node._class_dir, node._artifact_hash)
+    held = parent / "local__other-host__1234__deadbeef"
+    held.mkdir(parents=True)
+
+    with pytest.raises(LockError, match=re.escape(str(held))):
+        node.delete(mode="force")
+    assert node.done
+
+    held.rename(parent / "malformed-folder")
+    with pytest.raises(LockError, match="unknown"):
+        node.delete(mode="force")
+    assert node.done
+
+
+class ZombieProbe(Spec):
+    def create(self) -> str:
+        self._attempt_dir.rename(self._attempt_dir.with_name("free__stolen"))
+        _ = self.directory.data
+        return "unreachable"
+
+
+def test_directory_mkdir_without_parents_fails_for_zombie_owner() -> None:
+    with pytest.raises(FileNotFoundError):
+        ZombieProbe().create()
 
 
 def test_the_log_is_published_with_the_run_and_holds_only_what_create_wrote() -> None:
@@ -1460,8 +1494,9 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
     obj = NoCreateHookValue(key=3)
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(obj._class_dir, obj._artifact_hash)
+    def fake_acquire(attempts_dir: Path, run: str, **_: object):
+        assert attempts_dir == attempt_parent_in(obj._class_dir, obj._artifact_hash)
+        assert run == obj._artifact_hash
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
@@ -1469,9 +1504,11 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
         )
-        yield lambda: True
+        claimed = attempts_dir / "local__test__1__deadbeef"
+        claimed.mkdir(parents=True)
+        yield AttemptLock(attempts_dir=attempts_dir, path=claimed, claimed_name=claimed.name)
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "acquire_attempt", fake_acquire)
 
     assert furu.create(obj) == "cached-after-lock:1"
 
@@ -1616,14 +1653,16 @@ def test_existing_items_are_skipped_before_locking(
     lock_calls: list[Path] = []
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        lock_calls.append(lock_path)
-        yield lambda: True
+    def fake_acquire(attempts_dir: Path, run: str, **_: object):
+        lock_calls.append(attempts_dir)
+        claimed = attempts_dir / "local__test__1__deadbeef"
+        claimed.mkdir(parents=True)
+        yield AttemptLock(attempts_dir=attempts_dir, path=claimed, claimed_name=claimed.name)
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "acquire_attempt", fake_acquire)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [lock_path_in(missing._class_dir, missing._artifact_hash)]
+    assert lock_calls == [attempt_parent_in(missing._class_dir, missing._artifact_hash)]
 
 
 def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
@@ -1632,8 +1671,9 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
     pending = CountedSingleValue(key=5)
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(pending._class_dir, pending._artifact_hash)
+    def fake_acquire(attempts_dir: Path, run: str, **_: object):
+        assert attempts_dir == attempt_parent_in(pending._class_dir, pending._artifact_hash)
+        assert run == pending._artifact_hash
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
@@ -1641,13 +1681,15 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",
         )
-        yield lambda: True
+        claimed = attempts_dir / "local__test__1__deadbeef"
+        claimed.mkdir(parents=True)
+        yield AttemptLock(attempts_dir=attempts_dir, path=claimed, claimed_name=claimed.name)
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "acquire_attempt", fake_acquire)
 
     assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []
-    assert not pending._attempt_dir.exists()
+    assert not (fixed_run(pending).parent.parent / "attempts" / pending._artifact_hash / "result").exists()
 
 
 def test_empty_list_returns_empty_list() -> None:

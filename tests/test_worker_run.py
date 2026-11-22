@@ -28,17 +28,17 @@ from furu.execution.launch import missing
 from furu.execution.manager import Manager, _Lease, _Script
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
-from furu.locking import lock
 from furu.logging import _display_path
 from furu.snapshot import CodeLocation
 from furu.storage import events
 from furu.storage._layout import (
-    attempt_dir_in,
+    attempt_parent_in,
     execution_log_path_in,
-    lock_path_in,
     log_path_in,
+    resolve_attempt_dir,
     run_name,
 )
+from furu.storage.attempt_lock import acquire_attempt
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import SlurmResources
@@ -1170,7 +1170,7 @@ def _stopped_sweep(count: int) -> tuple[Manager, list[str]]:
 def _old_folder(ids: Sequence[str]) -> str:
     """The working folder of the batch that stopped: specs 1 to 5."""
     name = run_name([spec.rpartition(":")[2] for spec in ids[:5]])
-    return str(attempt_dir_in(SweepLeaf(value=1)._class_dir, name))
+    return str(resolve_attempt_dir(SweepLeaf(value=1)._class_dir, name))
 
 
 @pytest.mark.parametrize(
@@ -1219,11 +1219,13 @@ def test_a_new_manager_takes_up_the_working_folders_on_disk_once_their_lock_is_f
     specs = [SweepLeaf(value=value) for value in range(4)]
     # A batch that a worker of another manager opened, in its order.
     started = [specs[2], specs[0]]
-    folder = working_folder(started)
+    run = run_name([spec._artifact_hash for spec in started])
+    parent = attempt_parent_in(started[0]._class_dir, run)
+    folder = parent / "free__seed"
     folder.mkdir(parents=True)
     events.start(folder, [spec._artifact_hash for spec in started], _plan(), _plan())
 
-    with lock(lock_path_in(folder.parent.parent, folder.name)):
+    with acquire_attempt(parent, run):
         manager = _manager(specs, backends=[SMALL])
         assert _leased(manager, SMALL).specs == _ids([specs[1], specs[3]])
         # Its worker is alive: nothing to hand out.
@@ -1237,7 +1239,8 @@ def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_is_not_resume
 ):
     first = ChainedBatchedLeaf(value=0)
     then = ChainedBatchedLeaf(value=1, previous=first)
-    folder = working_folder([first, then])
+    run = run_name([first._artifact_hash, then._artifact_hash])
+    folder = attempt_parent_in(first._class_dir, run) / "free__seed"
     folder.mkdir(parents=True)
     events.start(folder, [first._artifact_hash, then._artifact_hash], _plan(), _plan())
 

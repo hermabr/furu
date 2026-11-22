@@ -1,5 +1,6 @@
 import os
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 
 from furu.utils import _hash_dict_deterministically
@@ -9,8 +10,7 @@ from furu.utils import _hash_dict_deterministically
 # @furu.dependency(remember=True) method. The class name is one path component,
 # so the folders under it are exactly its class parts.
 #
-#   attempts/<run>/           the working folder of a run in progress
-#   attempts/<run>.lock       its lock, beside it so that publishing never moves it
+#   attempts/<run>/<lock>/    the working folder of a run in progress; its name is the lock
 #   <code version>/trace.json which code its runs ran; "fixed" has none
 #   <code version>/runs/<run> a published run, which never changes again
 #   remembered/               what such methods returned, a file per launch
@@ -40,12 +40,35 @@ def attempts_dir_in(class_dir: Path) -> Path:
     return class_dir / "attempts"
 
 
-def attempt_dir_in(class_dir: Path, run: str) -> Path:
+def attempt_parent_in(class_dir: Path, run: str) -> Path:
     return attempts_dir_in(class_dir) / run
 
 
-def lock_path_in(class_dir: Path, run: str) -> Path:
-    return attempts_dir_in(class_dir) / f"{run}.lock"
+def revalidated_listdir(path: Path) -> list[str]:
+    """List ``path``, refreshing parent caches so NFS negative lookups do not stick."""
+    try:
+        return os.listdir(path)
+    except FileNotFoundError:
+        for folder in reversed(path.parents[:4]):
+            with suppress(FileNotFoundError):
+                os.listdir(folder)
+        try:
+            return os.listdir(path)
+        except FileNotFoundError:
+            return []
+
+
+def resolve_attempt_dir(class_dir: Path, run: str) -> Path:
+    """Return the active/released folder in ``attempts/<run>/``, or ``attempts/<run>/``."""
+    parent = attempt_parent_in(class_dir, run)
+    entries = sorted(
+        name for name in revalidated_listdir(parent) if not name.startswith(".")
+    )
+    for name in entries:
+        candidate = parent / name
+        if candidate.is_dir():
+            return candidate
+    return parent
 
 
 def version_dirs_in(class_dir: Path) -> list[Path]:
