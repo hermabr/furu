@@ -6,7 +6,9 @@ Channel "measure twice, cut once", "yagni" and "one-liner solutions". Fight scop
 
 Furu is pre-release with no users. Prefer solutions that will improve the long term maintainability of the codebase. Never keep a feature just because it already exists. Break APIs freely and don't add deprecation shims.
 
-Furu is an all-in-one experiment runner (DAG definition, execution, and provenance) built primarily for AI agents, with humans as secondary users. Favor strict guarantees over convenience, requiring clean, committed git state is cheap for an agent, and keep everything needed to reproduce an artifact in repo source rather than external state/code. Prefer declarative DAGs the manager can plan up front, while keeping dynamic discovery inside `create()` possible.
+Furu is an all-in-one experiment runner (DAG definition, execution, and provenance) built primarily for AI agents, with humans as secondary users. Its goal is to make defining and running reproducible experiments as simple as possible: provide small, flexible, composable building blocks so users write only what is specific to their experiment and get strong, reproducible results by default. Make it easy to express how experiments run (workers, placement, batching) while letting authors mostly think about one DAG node at a time.
+
+Favor strict guarantees over convenience—requiring clean, committed git state is cheap for an agent—and keep everything needed to reproduce an artifact in repo source rather than external state/code. Prefer declarative DAGs the manager can plan up front, while keeping dynamic discovery inside `create()` possible.
 
 Think of these instructions less as "hard rules", more as "good defaults". If a rule here fights the task in front of you, say so loudly and get a human sign-off before breaking it.
 
