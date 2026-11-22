@@ -517,16 +517,16 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
     spec = _spec(lemma=str)(lemma="comer")
     spec.create()
     path = schema_path_in(spec._class_dir)
-    lock = schema.lock
+    short_lock = schema.short_lock
 
     @contextmanager
     def another_process_first(lock_path: Path):
-        with lock(lock_path) as has_lock:
+        with short_lock(lock_path):
             with path.open("a") as file:
                 file.write('{"added":"min_overlap","default":0.5}\n')
-            yield has_lock
+            yield
 
-    monkeypatch.setattr(schema, "lock", another_process_first)
+    monkeypatch.setattr(schema, "short_lock", another_process_first)
 
     with pytest.raises(MigrationError, match="recorded 0.5"):
         _ = after(lemma="comer").done

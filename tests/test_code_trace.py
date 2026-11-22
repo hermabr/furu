@@ -22,6 +22,7 @@ from furu.storage._layout import (
     scratch_dir_in,
     trace_path_in,
 )
+from furu.storage.attempt_lock import current
 from furu.testing import override_config
 from furu.worker.execute import ChildSlot
 from furu.worker.messages import JobCompletedResult, JobFailedResult
@@ -1172,7 +1173,7 @@ def test_preempted_traced_spec_resumes_when_its_code_is_unchanged(
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
     assert not spec.done
-    log = (spec._attempt_dir / "trace.log").read_text()
+    log = (current(spec._attempt_dir) / "trace.log").read_text()
     assert '"ran", "' + f"{repo.package}/resumable.py" + '", "step_one"]' in log
 
     # Unrelated edits don't count: the code that ran is unchanged.
@@ -1217,7 +1218,7 @@ def test_fixed_retry_resumes_without_a_check(
     monkeypatch.setenv("FURU_TEST_PREEMPT", "1")
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
-    assert scratch_dir_in(spec._attempt_dir).is_dir()
+    assert scratch_dir_in(current(spec._attempt_dir)).is_dir()
 
     repo.edit("resumable.py", "return 1", "return 10")
     spec = repo.load("resumable").Resumable(name="a")

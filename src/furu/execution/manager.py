@@ -34,14 +34,13 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu import plan
 from furu.dag import Dag
-from furu.locking import is_active_lock
 from furu.logging import _group_label, get_logger
 from furu.storage._layout import (
     attempt_dir_in,
     attempts_dir_in,
-    lock_path_in,
     run_name,
 )
+from furu.storage.attempt_lock import current, holder
 from furu.storage.events import read_events
 from furu.worker.backends.local import LocalThreadPool
 from furu.worker.backends.protocol import WorkerPool
@@ -75,7 +74,7 @@ from furu.worker.messages import (
 logger = get_logger("manager")
 
 # How often an idle worker's handler checks that the worker is still there,
-# and how long a stopped batch whose lock is held waits for the next look.
+# and how long a stopped batch whose folder is held waits for the next look.
 _IDLE_CHECK_INTERVAL_S = 5.0
 # Not part of a pool's key: its first script sets them and later ones must agree.
 _SETTINGS = {"job_name", "idle_timeout_seconds"}
@@ -127,7 +126,7 @@ class _Stopped:
     run: str
     # Whether the script that answers for it has yet to say that it runs again.
     held: bool
-    # When its lock, found held, is next looked at.
+    # When its working folder, found held, is next looked at.
     look_at: float = 0.0
 
 
@@ -336,7 +335,7 @@ class Manager:
         none of which waits for another.
 
         They were left by workers this manager did not hand them to, or
-        does not remember. One whose worker is still alive holds its lock.
+        does not remember. One whose worker is still alive holds its folder.
         """
         try:
             runs = [
@@ -350,7 +349,7 @@ class Manager:
         for run in runs:
             hashes = [
                 spec
-                for opened in read_events(attempt_dir_in(class_dir, run))[:1]
+                for opened in read_events(current(attempt_dir_in(class_dir, run)))[:1]
                 for spec in opened.get("specs", ())
             ]
             if hashes and all(
@@ -637,7 +636,7 @@ class Manager:
                 return None
             lead = self.placed[stopped.specs[0]]
         specs = self._fill(unstarted, pool, lead)
-        if not specs:  # the stopped batch's lock was taken since
+        if not specs:  # the stopped batch's folder was taken since
             return None
         throttle = self.placed[specs[0]].throttle
         lease = self.leases[connection] = _Lease(
@@ -692,8 +691,8 @@ class Manager:
         """The stopped batches that can go out now, oldest first.
 
         ``wanted`` says whether the caller has a use for a batch, given its
-        first spec. A batch whose working folder is locked is still being
-        computed, or its worker died less than a lock's lifetime ago.
+        first spec. A batch whose working folder a worker holds, or may, is
+        still being computed, or its worker cannot be shown to have stopped.
         """
         now = time.monotonic()
         for stopped in list(self.stopped):
@@ -705,7 +704,7 @@ class Manager:
             ):
                 continue
             class_dir = self.placed[stopped.specs[0]].class_dir
-            if is_active_lock(lock_path_in(class_dir, stopped.run)):
+            if holder(attempt_dir_in(class_dir, stopped.run)):
                 stopped.look_at = now + _IDLE_CHECK_INTERVAL_S
             else:
                 yield stopped

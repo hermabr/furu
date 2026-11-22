@@ -1,34 +1,24 @@
 """Real processes racing for the same results. Children are forked, so they
 share this test's furu config and data directories."""
 
-import json
 import os
 import time
 from multiprocessing import get_context
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 
-import pytest
-
 import furu
-import furu.locking as locking_module
 from furu import Spec
 from furu.config import get_config
 from furu.execution.load_or_create import _load_or_create
 from furu.result.bundle import load_result_bundle
 from furu.storage._layout import data_dir_in
+from furu.storage.attempt_lock import HeldError
 
 OVERLAP_SLEEP_S = 0.01
-POLL_INTERVAL_S = 0.005
 # Only bounds a hung test; passing runs never wait for it, so keep it generous.
 TIMEOUT_S = 10.0
 ctx = get_context("fork")
-
-
-@pytest.fixture(autouse=True)
-def _fast_lock_polling(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Forked children inherit this, so the loser notices the release quickly.
-    monkeypatch.setattr(locking_module, "DEFAULT_ACQUIRE_POLL_INTERVAL_S", 0.005)
 
 
 class SlowProbe(Spec):
@@ -64,20 +54,6 @@ class SlowBatchProbe(furu.Spec):
         return [obj.key * 10 for obj in objs]
 
 
-class MidRunTakeoverProbe(Spec):
-    key: int
-    entered_path: str
-    release_path: str
-
-    def create(self) -> int:
-        Path(self.entered_path).touch()
-        deadline = time.monotonic() + TIMEOUT_S
-        while not Path(self.release_path).exists():
-            assert time.monotonic() < deadline
-            time.sleep(POLL_INTERVAL_S)
-        return 42
-
-
 def _worker(marker_dir: str, start_evt, out_q) -> None:
     obj = SlowProbe(key=1, marker_dir=marker_dir)
     out_q.put(("ready", os.getpid()))
@@ -85,8 +61,8 @@ def _worker(marker_dir: str, start_evt, out_q) -> None:
     try:
         value = obj.create()
         out_q.put(("ok", os.getpid(), value))
-    except RuntimeError as exc:
-        out_q.put(("err", os.getpid(), type(exc).__name__))
+    except HeldError as exc:
+        out_q.put(("held", os.getpid(), str(exc)))
 
 
 def _batch_worker(marker_dir: str, keys: list[int], start_evt, out_q) -> None:
@@ -100,36 +76,11 @@ def _batch_worker(marker_dir: str, keys: list[int], start_evt, out_q) -> None:
         out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
 
 
-def _takeover_worker(entered_path: str, release_path: str, out_q) -> None:
-    obj = MidRunTakeoverProbe(
-        key=1,
-        entered_path=entered_path,
-        release_path=release_path,
-    )
-    try:
-        value = obj.create()
-        out_q.put(("ok", os.getpid(), value))
-    except BaseException as exc:
-        out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
-
-
 def _start(target, *args) -> BaseProcess:
     # daemon: a failed test must not leave children that hang pytest at exit.
     proc = ctx.Process(target=target, args=args, daemon=True)
     proc.start()
     return proc
-
-
-def _steal_lock(lock: Path) -> None:
-    claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
-    manifest = {"claim_path": str(claim_path)}
-    fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(manifest, f)
-        f.flush()
-        os.fsync(f.fileno())
-    lock.unlink()
-    os.link(claim_path, lock)
 
 
 def _race(target, *argss: tuple) -> list[tuple]:
@@ -153,7 +104,9 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
 
     results = _race(_worker, (marker_dir,), (marker_dir,))
 
-    assert [result[0] for result in results] == ["ok", "ok"], results
+    # One computes it. The other finds it computing and stops, or finds it done.
+    assert sorted(result[0] for result in results) in (["held", "ok"], ["ok", "ok"])
+    assert next(result[2] for result in results if result[0] == "ok") == 42
     assert len(list(Path(marker_dir).glob("*.marker"))) == 1
     manifest_paths = list(data_dir.glob("**/result/manifest.json"))
     assert len(manifest_paths) == 1
@@ -174,34 +127,6 @@ def test_overlapping_batches_in_two_processes_each_publish_one_run(tmp_path):
 
     assert [result[0] for result in results] == ["ok", "ok"], results
     assert sorted(result[2] for result in results) == [[10, 20], [20, 30]]
-    # Each batch has its own lock, so the spec they share may be computed twice.
+    # Each batch has its own folder, so the spec they share may be computed twice.
     assert [len(list(marker_dir.glob(f"{key}-*.marker"))) for key in (1, 3)] == [1, 1]
     assert len(list(data_dir.glob("**/result/manifest.json"))) == 2
-
-
-def test_lock_is_taken_over_mid_create(tmp_path):
-    data_dir = get_config().directories.objects
-    entered_path = tmp_path / "entered"
-    release_path = tmp_path / "release"
-    out_q = ctx.Queue()
-    proc = _start(_takeover_worker, str(entered_path), str(release_path), out_q)
-
-    deadline = time.monotonic() + TIMEOUT_S
-    while not entered_path.exists():
-        assert time.monotonic() < deadline
-        time.sleep(POLL_INTERVAL_S)
-    (lock_path,) = data_dir.glob("**/attempts/*.lock")
-    _steal_lock(lock_path)
-    release_path.touch()
-
-    result = out_q.get(timeout=TIMEOUT_S)
-    proc.join(timeout=TIMEOUT_S)
-    assert proc.exitcode == 0
-    assert result[0] == "err"
-    assert result[2] == RuntimeError.__name__
-    assert result[3].endswith("before writing the result")
-    assert list(data_dir.glob("**/runs/*")) == []
-    (log,) = data_dir.glob("**/attempts/*/log")
-    log_text = log.read_text(encoding="utf-8")
-    assert "create failed" in log_text
-    assert "before writing the result" in log_text

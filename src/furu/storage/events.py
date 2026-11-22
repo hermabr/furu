@@ -4,7 +4,7 @@ One JSON object per line, each with ``event`` and ``at`` (UTC), of three kinds:
 ``opened`` once, with the hashes of the run's specs in row order; then per
 attempt a ``start`` before create(), with the machine and the two files that
 hold everything else, and an ``end`` after it. A start with no end was killed
-or is still running. Only the worker that holds the run's lock appends, and
+or is still running. Only the worker that holds the working folder appends, and
 nothing else is in the file: what create() wrote is in ``log``.
 """
 

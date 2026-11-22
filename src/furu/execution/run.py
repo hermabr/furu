@@ -28,6 +28,7 @@ from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
 from furu.storage._layout import log_path_in
+from furu.storage.attempt_lock import current
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.messages import (
@@ -196,7 +197,7 @@ class Run:
             return []
         # The log of that call: its batch's.
         ran = [self.specs[spec] for spec in message.object_ids if spec in self.specs]
-        log = log_path_in(working_folder(ran))
+        log = log_path_in(current(working_folder(ran)))
         replies: list[_Reply]
         match message.result:
             case JobCompletedResult():

@@ -7,6 +7,7 @@ from typing import Any
 from furu import Spec
 from furu.core import working_folder
 from furu.storage._layout import FIXED, log_path_in, run_dir_in
+from furu.storage.attempt_lock import current
 from furu.storage.events import read_events
 from furu.storage.stored import stored_row
 
@@ -27,7 +28,7 @@ def _folder(specs: Spec | Sequence[Spec]) -> Path:
     """The run of a spec, or of a batch: published, or else its working folder."""
     batch = [specs] if isinstance(specs, Spec) else specs
     row = stored_row(batch[0])
-    return row.run if row is not None else working_folder(batch)
+    return row.run if row is not None else current(working_folder(batch))
 
 
 def log_of(specs: Spec | Sequence[Spec]) -> str:

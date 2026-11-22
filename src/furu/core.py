@@ -4,6 +4,7 @@ import logging
 import shutil
 from abc import ABC
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import cached_property
 from inspect import get_annotations
@@ -30,7 +31,6 @@ from furu.dependencies import (
     remembers,
     returned_attributes,
 )
-from furu.locking import lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
@@ -40,18 +40,14 @@ from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
     attempt_dir_in,
-    attempts_dir_in,
-    lock_path_in,
     run_dir_in,
     run_name,
     version_dirs_in,
 )
+from furu.storage.attempt_lock import HeldError, entries, holder, token
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Stored, load_rows, stored_row
-from furu.utils import (
-    _hash_dict_deterministically,
-    nfs_safe_unique_name,
-)
+from furu.utils import _hash_dict_deterministically
 
 if TYPE_CHECKING:
     from typing import dataclass_transform
@@ -235,7 +231,9 @@ class Spec(_FuruDataclassTransform, ABC):
                 "create(specs, directory). Name the files you write per spec by "
                 "the spec's fields, since the same spec can land in another batch."
             )
-        return SpecDirectory(self._attempt_dir)
+        attempt = creation().attempt_dir
+        assert attempt is not None  # set wherever specs is
+        return SpecDirectory(attempt)
 
     @final
     @cached_property
@@ -278,6 +276,7 @@ class Spec(_FuruDataclassTransform, ABC):
         A traced class keeps each version's trace.json, so what was built on
         the deleted results stays done. A spec with ``@furu.batched`` is a row
         in a run that other specs share, so this raises and names that run.
+        A working folder that a worker holds, or may, is left, and this raises.
         """
         if is_batched(type(self)):
             row = stored_row(self)
@@ -293,25 +292,32 @@ class Spec(_FuruDataclassTransform, ABC):
             )
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
-        attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
-            folders = [self._attempt_dir] + [
-                run_dir_in(version, self._artifact_hash)
-                for version in version_dirs_in(self._class_dir)
-            ]
-            folders = [folder for folder in folders if folder.is_dir()]
-            if not folders:
+        attempts = self._attempt_dir
+        found = entries(attempts)
+        if why := holder(attempts, found):
+            raise HeldError(f"{self.object_id}.delete(): {why}")
+        runs = [
+            run_dir_in(version, self._artifact_hash)
+            for version in version_dirs_in(self._class_dir)
+        ]
+        folders = [attempts / name for name in found] + [
+            run for run in runs if run.is_dir()
+        ]
+        if not folders:
+            return False
+        if mode == "prompt":
+            listed = ", ".join(map(str, folders))
+            answer = input(f"Do you want to delete {listed}? [y/N] ")
+            if answer.strip().lower() != "y":
                 return False
-            if mode == "prompt":
-                listed = ", ".join(map(str, folders))
-                answer = input(f"Do you want to delete {listed}? [y/N] ")
-                if answer.strip().lower() != "y":
-                    return False
-            for folder in folders:
-                # Renamed first, so no reader finds half a run.
-                tombstone = nfs_safe_unique_name(folder, name="deleting")
-                folder.rename(tombstone)
-                shutil.rmtree(tombstone)
+        for folder in folders:
+            # Renamed first, so no reader finds half a run. A working folder
+            # a worker took since it was listed is gone from its name.
+            tombstone = folder.with_name(f".deleting__{token()}")
+            folder.rename(tombstone)
+            shutil.rmtree(tombstone)
+        with suppress(OSError):
+            attempts.rmdir()
         return True
 
     @final
@@ -381,7 +387,10 @@ class Spec(_FuruDataclassTransform, ABC):
 
 
 def working_folder(specs: Sequence[Spec]) -> Path:
-    """Where the run that holds ``specs`` as its rows does its work."""
+    """attempts/<run>/ of the run that holds ``specs`` as its rows.
+
+    Its one working folder is in it, named for who holds it.
+    """
     return attempt_dir_in(
         specs[0]._class_dir, run_name([spec._artifact_hash for spec in specs])
     )

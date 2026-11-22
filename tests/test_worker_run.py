@@ -28,14 +28,12 @@ from furu.execution.launch import missing
 from furu.execution.manager import Manager, _Lease, _Script
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
-from furu.locking import lock
 from furu.logging import _display_path
 from furu.snapshot import CodeLocation
 from furu.storage import events
 from furu.storage._layout import (
     attempt_dir_in,
     execution_log_path_in,
-    lock_path_in,
     log_path_in,
     run_name,
 )
@@ -1212,22 +1210,22 @@ def test_a_worker_is_filled_with_unstarted_specs_then_stopped_batches(
     assert _sent(manager) == []
 
 
-def test_a_new_manager_takes_up_the_working_folders_on_disk_once_their_lock_is_free(
+def test_a_new_manager_takes_up_the_working_folders_on_disk_once_they_are_free(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(manager_module, "_IDLE_CHECK_INTERVAL_S", 0.0)
     specs = [SweepLeaf(value=value) for value in range(4)]
     # A batch that a worker of another manager opened, in its order.
     started = [specs[2], specs[0]]
-    folder = working_folder(started)
+    folder = working_folder(started) / "local__elsewhere__1__0f"
     folder.mkdir(parents=True)
     events.start(folder, [spec._artifact_hash for spec in started], _plan(), _plan())
 
-    with lock(lock_path_in(folder.parent.parent, folder.name)):
-        manager = _manager(specs, backends=[SMALL])
-        assert _leased(manager, SMALL).specs == _ids([specs[1], specs[3]])
-        # Its worker is alive: nothing to hand out.
-        assert _lease(manager, SMALL) is None
+    manager = _manager(specs, backends=[SMALL])
+    assert _leased(manager, SMALL).specs == _ids([specs[1], specs[3]])
+    # Its worker may be alive: nothing to hand out.
+    assert _lease(manager, SMALL) is None
+    folder.rename(folder.with_name("free__manual"))
     assert _leased(manager, SMALL).specs == _ids(started)
     assert _sent(manager) == []
 
@@ -1237,7 +1235,7 @@ def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_is_not_resume
 ):
     first = ChainedBatchedLeaf(value=0)
     then = ChainedBatchedLeaf(value=1, previous=first)
-    folder = working_folder([first, then])
+    folder = working_folder([first, then]) / "free__seed"
     folder.mkdir(parents=True)
     events.start(folder, [first._artifact_hash, then._artifact_hash], _plan(), _plan())
 

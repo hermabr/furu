@@ -131,7 +131,7 @@ class Stored:
         self._live: dict[tuple[Path, str], list[Path]] = {}
         self._listed: dict[tuple[Path, bool], dict[str, _First]] = {}
 
-    def _versions(self, obj: Spec) -> list[Path]:
+    def live(self, obj: Spec) -> list[Path]:
         """The code versions whose runs count for obj: the live ones."""
         class_dir, code_version = obj._class_dir, obj._metadata.code_version
         if (class_dir, code_version) not in self._live:
@@ -153,7 +153,7 @@ class Stored:
             return self.listed(obj)
         held = [
             run
-            for version in self._versions(obj)
+            for version in self.live(obj)
             if (run := run_dir_in(version, name)).is_dir()
         ]
         if len(held) > 1:  # the one published first, as for a batch
@@ -167,7 +167,7 @@ class Stored:
         each batch run this process has not read yet.
         """
         held = []
-        for version in self._versions(obj):
+        for version in self.live(obj):
             if (version, batches) not in self._listed:
                 self._listed[version, batches] = _listed(version, batches)
             if (
