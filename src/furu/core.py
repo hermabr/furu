@@ -4,6 +4,7 @@ import logging
 import shutil
 from abc import ABC
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import cached_property
 from inspect import get_annotations
@@ -30,7 +31,6 @@ from furu.dependencies import (
     remembers,
     returned_attributes,
 )
-from furu.locking import lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
@@ -39,13 +39,12 @@ from furu.serializer.artifact import field_fingerprints, is_default
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
-    attempt_dir_in,
-    attempts_dir_in,
-    lock_path_in,
+    attempt_parent_in,
     run_dir_in,
     run_name,
     version_dirs_in,
 )
+from furu.storage.attempts import acquire_attempt, resolve_attempt_dir
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Stored, load_rows, stored_row
 from furu.utils import (
@@ -219,7 +218,8 @@ class Spec(_FuruDataclassTransform, ABC):
     @final
     @property
     def directory(self) -> SpecDirectory:
-        if self.object_id not in creation().specs:
+        current = creation()
+        if self.object_id not in current.specs:
             raise RuntimeError(
                 f"{self.object_id}.directory is only available inside this "
                 "spec's own create() hook. To use files another spec produced, "
@@ -235,7 +235,8 @@ class Spec(_FuruDataclassTransform, ABC):
                 "create(specs, directory). Name the files you write per spec by "
                 "the spec's fields, since the same spec can land in another batch."
             )
-        return SpecDirectory(self._attempt_dir)
+        assert current.attempt_dir is not None
+        return SpecDirectory(current.attempt_dir)
 
     @final
     @cached_property
@@ -293,25 +294,45 @@ class Spec(_FuruDataclassTransform, ABC):
             )
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
-        attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
-            folders = [self._attempt_dir] + [
-                run_dir_in(version, self._artifact_hash)
+        run = self._artifact_hash
+        with acquire_attempt(self._class_dir, run, check_published=False) as claimed:
+            assert claimed is not None
+            published = [
+                folder
                 for version in version_dirs_in(self._class_dir)
+                if (folder := run_dir_in(version, run)).is_dir()
             ]
-            folders = [folder for folder in folders if folder.is_dir()]
+            folders = ([] if claimed.was_created else [claimed.path]) + published
             if not folders:
+                if claimed.was_created:
+                    claimed.path.rmdir()
+                    with suppress(OSError):
+                        claimed.parent.rmdir()
+                    claimed.mark_gone()
                 return False
             if mode == "prompt":
                 listed = ", ".join(map(str, folders))
                 answer = input(f"Do you want to delete {listed}? [y/N] ")
                 if answer.strip().lower() != "y":
+                    if claimed.was_created:
+                        claimed.path.rmdir()
+                        with suppress(OSError):
+                            claimed.parent.rmdir()
+                        claimed.mark_gone()
                     return False
             for folder in folders:
-                # Renamed first, so no reader finds half a run.
-                tombstone = nfs_safe_unique_name(folder, name="deleting")
+                # Renamed first (dotted so attempts/ and runs/ ignore it), so
+                # no reader finds half a run.
+                tombstone = folder.with_name(
+                    f".{nfs_safe_unique_name(folder, name='deleting').name}"
+                )
                 folder.rename(tombstone)
                 shutil.rmtree(tombstone)
+            if claimed.was_created:
+                claimed.path.rmdir()
+            claimed.mark_gone()
+            with suppress(OSError):
+                claimed.parent.rmdir()
         return True
 
     @final
@@ -382,6 +403,7 @@ class Spec(_FuruDataclassTransform, ABC):
 
 def working_folder(specs: Sequence[Spec]) -> Path:
     """Where the run that holds ``specs`` as its rows does its work."""
-    return attempt_dir_in(
+    parent = attempt_parent_in(
         specs[0]._class_dir, run_name([spec._artifact_hash for spec in specs])
     )
+    return resolve_attempt_dir(parent) or parent

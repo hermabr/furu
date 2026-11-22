@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
-from furu.locking import lock, read_text_or_none
+from furu.locking import read_text_or_none, short_lock
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -101,11 +101,14 @@ def _append(path: Path, lines: list[dict[str, Any]]) -> None:
 
 
 def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
-    return {
-        (line.get("nested"), line.get("class_part"), line["added"]): line["default"]
-        for line in lines
-        if "added" in line
-    }
+    recorded: dict[_Step, JsonValue] = {}
+    for line in lines:
+        if "added" in line:
+            recorded.setdefault(
+                (line.get("nested"), line.get("class_part"), line["added"]),
+                line["default"],
+            )
+    return recorded
 
 
 def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
@@ -123,7 +126,7 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
     lines = _read(path) if declared or record else None
     if lines is not None or record:
         if not lines or declared.keys() - _recorded_defaults(lines).keys():
-            with lock(schema_lock_path_in(class_dir)):
+            with short_lock(schema_lock_path_in(class_dir)):
                 lines = _read(path) or []
                 recorded = _recorded_defaults(lines)
                 new: list[dict[str, Any]] = [
@@ -194,7 +197,7 @@ def record_nested_names(class_dir: Path, holds: dict[type, tuple[str, ...]]) -> 
         ]
 
     if unrecorded():
-        with lock(schema_lock_path_in(class_dir)):
+        with short_lock(schema_lock_path_in(class_dir)):
             if new := unrecorded():
                 _append(schema_path_in(class_dir), new)
     _nested_recorded.update(lines)

@@ -16,7 +16,6 @@ it goes out alone.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from collections import Counter, OrderedDict
@@ -34,13 +33,16 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu import plan
 from furu.dag import Dag
-from furu.locking import is_active_lock
 from furu.logging import _group_label, get_logger
 from furu.storage._layout import (
-    attempt_dir_in,
+    attempt_parent_in,
     attempts_dir_in,
-    lock_path_in,
     run_name,
+)
+from furu.storage.attempts import (
+    is_attempt_held,
+    resolve_attempt_dir,
+    revalidated_listdir,
 )
 from furu.storage.events import read_events
 from furu.worker.backends.local import LocalThreadPool
@@ -338,19 +340,21 @@ class Manager:
         They were left by workers this manager did not hand them to, or
         does not remember. One whose worker is still alive holds its lock.
         """
-        try:
-            runs = [
-                name
-                for name in os.listdir(attempts_dir_in(class_dir))
-                if "." not in name
-            ]
-        except FileNotFoundError:
+        runs = [
+            name
+            for name in revalidated_listdir(attempts_dir_in(class_dir))
+            if "." not in name
+        ]
+        if not runs:
             return
         by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
         for run in runs:
+            attempt_dir = resolve_attempt_dir(attempt_parent_in(class_dir, run))
+            if attempt_dir is None:
+                continue
             hashes = [
                 spec
-                for opened in read_events(attempt_dir_in(class_dir, run))[:1]
+                for opened in read_events(attempt_dir)[:1]
                 for spec in opened.get("specs", ())
             ]
             if hashes and all(
@@ -705,7 +709,7 @@ class Manager:
             ):
                 continue
             class_dir = self.placed[stopped.specs[0]].class_dir
-            if is_active_lock(lock_path_in(class_dir, stopped.run)):
+            if is_attempt_held(attempt_parent_in(class_dir, stopped.run)):
                 stopped.look_at = now + _IDLE_CHECK_INTERVAL_S
             else:
                 yield stopped
@@ -755,11 +759,13 @@ class Manager:
         run = run_name([spec.rpartition(":")[2] for spec in specs])
         for stopped in used:
             if stopped.run != run:
+                parent = attempt_parent_in(placed.class_dir, stopped.run)
+                attempt = resolve_attempt_dir(parent) or parent
                 reason = (
                     f"{label} starts in a new working folder: it holds specs of a "
                     "batch that stopped and is not that batch alone, so what the "
                     "batch had done is dropped. Its working folder stays in "
-                    f"attempts/: {attempt_dir_in(placed.class_dir, stopped.run)}"
+                    f"attempts/: {attempt}"
                 )
                 logger.warning("%s", reason)
                 self.outbox.append((script, WarningMessage(reason=reason)))

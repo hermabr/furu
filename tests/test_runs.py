@@ -3,6 +3,7 @@
 A batch is one run with a row per spec, found again by listing runs/.
 """
 
+import errno
 import re
 import shutil
 import socket
@@ -20,17 +21,17 @@ from furu.config import get_config
 from furu.core import working_folder
 from furu.dependencies import creating
 from furu.execution import load_or_create
-from furu.locking import is_active_lock
 from furu.storage import stored
 from furu.storage._layout import (
     FIXED,
+    attempt_parent_in,
     attempts_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     run_name,
     runs_dir_in,
 )
+from furu.storage.attempts import is_attempt_held, resolve_attempt_dir
 
 
 class Leaf(Spec):
@@ -54,8 +55,11 @@ class Weights(Spec):
 
     @furu.batched(lambda spec, worker: (None, 100))
     def create(specs: list["Weights"], directory: furu.SpecDirectory) -> list[Any]:
-        attempts = attempts_dir_in(specs[0]._class_dir)
-        Weights.locks += [path.name for path in attempts.glob("*.lock")]
+        run = run_name([spec._artifact_hash for spec in specs])
+        Weights.locks += [
+            path.name
+            for path in attempt_parent_in(specs[0]._class_dir, run).iterdir()
+        ]
         return [np.full(3, spec.seed) for spec in specs]
 
 
@@ -104,8 +108,12 @@ class FailsAsABatch(Spec):
 
 class LosesItsLock(Spec):
     def create(self) -> int:
-        # As if paused past the stale window, so that a successor took over.
-        lock_path_in(self._class_dir, self._artifact_hash).unlink()
+        # As if a successor took over: the folder is renamed away.
+        attempt = resolve_attempt_dir(
+            attempt_parent_in(self._class_dir, self._artifact_hash)
+        )
+        assert attempt is not None
+        attempt.rename(attempt.with_name("free__stolen"))
         return 1
 
 
@@ -136,8 +144,8 @@ def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
         if self == spec._attempt_dir:
             seen["files"] = sorted(path.name for path in self.iterdir())
             seen["ends"] = ends_of(spec)
-            seen["locked"] = is_active_lock(
-                lock_path_in(spec._class_dir, spec._artifact_hash)
+            seen["locked"] = is_attempt_held(
+                attempt_parent_in(spec._class_dir, spec._artifact_hash)
             )
             seen["done"] = spec.done
         return rename(self, target)
@@ -201,7 +209,7 @@ def test_a_batch_is_one_run_with_a_row_per_spec_and_one_file_per_array() -> None
     ]
     assert events_of(specs[0])[0]["specs"] == [spec._artifact_hash for spec in specs]
     # One working folder under one lock, both gone once it is published.
-    assert Weights.locks == [f"{name}.lock"]
+    assert len(Weights.locks) == 1 and Weights.locks[0].startswith(("local__", "slurm__"))
     assert list(attempts_dir_in(specs[0]._class_dir).iterdir()) == []
 
 
@@ -213,8 +221,7 @@ def test_the_same_specs_in_the_same_order_are_refused_and_another_order_is_kept(
     run = run_of(specs[0])
     published = events_path_in(run).read_text()
 
-    with pytest.raises(OSError, match="Directory not empty|File exists"):
-        _compute_again(specs, monkeypatch)
+    _compute_again(specs, monkeypatch)
     _compute_again(specs[::-1], monkeypatch)
 
     assert events_path_in(run).read_text() == published
@@ -222,6 +229,74 @@ def test_the_same_specs_in_the_same_order_are_refused_and_another_order_is_kept(
     assert sorted(path.name for path in run.parent.iterdir()) == sorted(
         [run_name(hashes), run_name(hashes[::-1])]
     )
+
+
+class ScratchPublishSpec(Spec):
+    name: str
+
+    def create(self) -> str:
+        (self.directory.scratch / "tmp.txt").write_text("temp", encoding="utf-8")
+        return self.name
+
+
+def test_publish_renames_scratch_to_trash_before_moving_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = ScratchPublishSpec(name="ok")
+    seen_renames: list[tuple[str, str]] = []
+    real_rename = Path.rename
+
+    def spy(self: Path, target: Path) -> Path:
+        seen_renames.append((self.name, target.name))
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", spy)
+    assert spec.create() == "ok"
+
+    assert len(seen_renames) == 2
+    assert seen_renames[0][0] == "scratch"
+    assert seen_renames[0][1].startswith(".trash__")
+    assert seen_renames[1][0].startswith(("local__", "slurm__"))
+    assert seen_renames[1][1] == spec._artifact_hash
+    assert list(attempts_dir_in(spec._class_dir).iterdir()) == []
+
+
+def test_transient_oserror_during_publish_preserves_attempt_while_winner_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = Leaf(n=99)
+    real_rename = Path.rename
+
+    def fail_transient(self: Path, target: Path) -> Path:
+        if self == spec._attempt_dir and target.parent.name == "runs":
+            raise OSError(errno.ESTALE, "stale handle")
+        return real_rename(self, target)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "rename", fail_transient)
+        with pytest.raises(OSError, match="stale handle"):
+            spec.create()
+
+    # Attempt is preserved (released to free__) and not deleted.
+    attempt = resolve_attempt_dir(
+        attempt_parent_in(spec._class_dir, spec._artifact_hash)
+    )
+    assert attempt is not None and attempt.name.startswith("free__")
+    assert not spec.done
+
+    # Simulate another worker winning into runs/ right before our rename fails.
+    def publish_winner_then_fail(self: Path, target: Path) -> Path:
+        if self == spec._attempt_dir and target.parent.name == "runs":
+            shutil.copytree(self, target)
+            raise OSError(errno.ENOTEMPTY, "Directory not empty")
+        return real_rename(self, target)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "rename", publish_winner_then_fail)
+        assert spec.create() == 99
+
+    assert spec.done
+    assert list(attempts_dir_in(spec._class_dir).iterdir()) == []
 
 
 def test_a_spec_in_two_runs_is_read_from_the_one_published_first(
@@ -388,8 +463,9 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
 
 def test_an_attempt_killed_in_the_middle_of_a_line_costs_only_that_line() -> None:
     spec = Leaf(n=4)
-    spec._attempt_dir.mkdir(parents=True)
-    events_path_in(spec._attempt_dir).write_text(
+    attempt = attempt_parent_in(spec._class_dir, spec._artifact_hash) / "free__seed"
+    attempt.mkdir(parents=True)
+    events_path_in(attempt).write_text(
         f'\n{{"event":"opened","at":"2026-11-14T14:02:09Z","specs":["{spec._artifact_hash}"]}}\n'
         '{"event":"start","at":"2026-11-14T14:02:11Z","attempt":1,"host":"jagupard26"}\n'
         '{"event":"end","at":"2026-11-14T15:4'

@@ -34,12 +34,13 @@ from furu.execution.load_or_create import _load_or_create
 from furu.logging import _execution_log
 from furu.result.bundle import _save_result_bundle
 from furu.storage._layout import (
+    attempt_parent_in,
     data_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     result_dir_in,
 )
+from furu.storage.attempts import ClaimedAttempt
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -1247,7 +1248,11 @@ def test_a_batch_has_one_directory_and_a_spec_of_it_has_none() -> None:
 
 def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
     obj = ScratchWritingValue(name="payload")
-    scratch_dir = obj._attempt_dir / "scratch"
+    scratch_dir = (
+        attempt_parent_in(obj._class_dir, obj._artifact_hash)
+        / "free__seed"
+        / "scratch"
+    )
     scratch_dir.mkdir(parents=True)
     (scratch_dir / "download.csv").write_text("from-previous-attempt", encoding="utf-8")
 
@@ -1255,6 +1260,19 @@ def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
 
     assert not scratch_dir.exists()
     assert not (run_of(obj) / "scratch").exists()
+
+
+def test_spec_directory_refuses_to_recreate_vanished_attempt_parent(
+    tmp_path: Path,
+) -> None:
+    missing_attempt = tmp_path / "missing-parent" / "local__h__1__tok"
+    directory = furu.SpecDirectory(missing_attempt)
+
+    with pytest.raises(FileNotFoundError):
+        _ = directory.data
+    with pytest.raises(FileNotFoundError):
+        _ = directory.scratch
+    assert not missing_attempt.exists()
 
 
 def test_a_spec_is_done_only_once_its_run_is_published() -> None:
@@ -1460,8 +1478,8 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
     obj = NoCreateHookValue(key=3)
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(obj._class_dir, obj._artifact_hash)
+    def fake_acquire(class_dir: Path, run: str, **_: object):
+        assert (class_dir, run) == (obj._class_dir, obj._artifact_hash)
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
@@ -1469,9 +1487,12 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
         )
-        yield lambda: True
+        parent = attempt_parent_in(class_dir, run)
+        path = parent / "local__test__1__0000000000000000"
+        path.mkdir(parents=True, exist_ok=True)
+        yield ClaimedAttempt(parent=parent, path=path, name=path.name, was_created=True)
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "acquire_attempt", fake_acquire)
 
     assert furu.create(obj) == "cached-after-lock:1"
 
@@ -1613,17 +1634,19 @@ def test_existing_items_are_skipped_before_locking(
 
     assert existing.create() == "single:1"
 
-    lock_calls: list[Path] = []
+    acquire_calls: list[tuple[Path, str]] = []
+    real_acquire = execution_module.acquire_attempt
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        lock_calls.append(lock_path)
-        yield lambda: True
+    def spy_acquire(class_dir: Path, run: str, **kwargs: Any):
+        acquire_calls.append((class_dir, run))
+        with real_acquire(class_dir, run, **kwargs) as claimed:
+            yield claimed
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "acquire_attempt", spy_acquire)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [lock_path_in(missing._class_dir, missing._artifact_hash)]
+    assert acquire_calls == [(missing._class_dir, missing._artifact_hash)]
 
 
 def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
@@ -1632,8 +1655,8 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
     pending = CountedSingleValue(key=5)
 
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(pending._class_dir, pending._artifact_hash)
+    def fake_acquire(class_dir: Path, run: str, **_: object):
+        assert (class_dir, run) == (pending._class_dir, pending._artifact_hash)
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
@@ -1641,9 +1664,12 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",
         )
-        yield lambda: True
+        parent = attempt_parent_in(class_dir, run)
+        path = parent / "local__test__1__0000000000000000"
+        path.mkdir(parents=True, exist_ok=True)
+        yield ClaimedAttempt(parent=parent, path=path, name=path.name, was_created=True)
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "acquire_attempt", fake_acquire)
 
     assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []
