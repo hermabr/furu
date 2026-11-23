@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 import secrets
 import shutil
 import time
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Generator, Iterable, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -29,28 +30,29 @@ from furu.dependencies import (
     any_under_creation,
     checked,
     creating,
+    creation,
     missing_dependencies,
     record_loaded,
 )
 from furu.execution.launch import ask, held_in
 from furu.execution.launch import missing as missing_under
-from furu.locking import lock
 from furu.logging import _group_label, _log_scope, get_logger
 from furu.migration.schema import check_defaults, record_nested_names
 from furu.provenance import _require_uv, capture_submit_provenance
 from furu.resources import Worker
 from furu.result.bundle import _save_result_bundle
 from furu.serializer.artifact import remembering
-from furu.storage import events
+from furu.storage import attempt_lock, events
 from furu.storage._layout import (
     FIXED,
+    attempt_parent_in,
     attempts_dir_in,
     data_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     result_dir_in,
     run_dir_in,
+    run_name,
     scratch_dir_in,
     trace_log_path_in,
     trace_path_in,
@@ -64,8 +66,6 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from furu.worker.backends.protocol import WorkerBackend
-
-type HasLock = Callable[[], bool]
 
 
 @contextmanager
@@ -105,7 +105,11 @@ def _recording(
             if run is not None:
                 run.loaded(folder)
 
-        with creating(specs=frozenset(obj.object_id for obj in group), on_load=on_load):
+        with creating(
+            specs=frozenset(obj.object_id for obj in group),
+            on_load=on_load,
+            attempt_dir=attempt,
+        ):
             yield run, loaded
 
 
@@ -159,12 +163,21 @@ def _ensure_group_result(objs: Sequence[Spec]) -> None:
     for obj in objs:
         record_nested_names(class_dir, held_in(obj))
 
-    with lock(lock_path_in(class_dir, working_folder(objs).name)) as has_lock:
-        # Whoever held the lock before may have published the run and taken
-        # its working folder with it.
-        look = Stored()
-        if any(look.row(obj) is None for obj in objs):
-            _create_and_store_group(list(objs), has_lock=has_lock)
+    run = run_name([obj._artifact_hash for obj in objs])
+    parent = attempt_parent_in(class_dir, run)
+
+    def published() -> bool:
+        fresh = Stored()
+        return all(fresh.row(obj) is not None for obj in objs)
+
+    claim = attempt_lock.acquire(
+        parent,
+        published,
+        token=creation().attempt_token,
+    )
+    if claim is None:
+        return
+    _create_and_store_group(list(objs), run=run, claim=claim)
 
 
 # Python cannot map Creates[T] -> T through an arbitrary structure, so the shapes
@@ -420,17 +433,17 @@ def _create_in_process(group: list[Spec]) -> None:
     """Create one group in this process, announced on the terminal."""
     lead = group[0]
     label = _group_label(lead.object_id, len(group))
-    lead.logger.info(
-        "creating %s", label, extra={"path": log_path_in(working_folder(group))}
-    )
+    lead.logger.info("creating %s", label, extra={"path": working_folder(group)})
     started_at = time.monotonic()
     _ensure_group_result(group)
     duration = format_duration(time.monotonic() - started_at)
     lead.logger.info("finished %s ok · %s", label, duration)
 
 
-def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
-    """Run the group's create() in its one working folder, then publish it.
+def _create_and_store_group(
+    group: list[Spec], *, run: str, claim: attempt_lock.Claim
+) -> None:
+    """Run the group's create() in its claimed working folder, then publish it.
 
     events.jsonl gets this attempt's start and end, and what create() writes
     goes to the folder's log: one call, one folder, one log. The run is added
@@ -441,115 +454,112 @@ def _create_and_store_group(group: list[Spec], *, has_lock: HasLock) -> None:
     cls = type(lead)
     metadata = lead._metadata  # a batch has one Metadata
     label = _group_label(lead.object_id, len(group))
-    attempt = working_folder(group)
-    attempt.mkdir(exist_ok=True)
-    with _log_scope(log_path_in(attempt)):
-        # Go on from what earlier attempts in the folder ran. A fixed class
-        # continues with what they left there. A traced one does only if the
-        # code an attempt ran (recorded in trace.log) is unchanged on disk;
-        # otherwise the files it wrote are dropped.
-        traced = metadata.code_version == "traced"
-        if traced and (why := why_rerun(lead._class_dir, attempt.name)):
-            lead.logger.info("rerunning %s: %s", label, why)
-        resumed = LogState()
-        if traced and events_path_in(attempt).exists():
-            logged = LogState.read(trace_log_path_in(attempt))
-            if why := why_not_resumable(logged, storage_root=metadata.storage):
-                lead.logger.info("starting %s over: %s", label, why)
-                shutil.rmtree(data_dir_in(attempt), ignore_errors=True)
-                shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
-                trace_log_path_in(attempt).unlink(missing_ok=True)
-            else:
-                assert logged is not None
-                resumed = logged
-
-        started = events.start(
-            attempt,
-            [obj._artifact_hash for obj in group],
-            plan.listing(),
-            record.own().path,
-        )
-        try:
-            # Run the group's one create() call: on the whole batch, or on its one spec.
-            hook = getattr(cls, "_furu_create_hook", None)
-            if hook is None:
-                raise TypeError(
-                    f"{cls.__qualname__} cannot create missing results "
-                    "because it does not define create()"
-                )
-            with _recording(group, attempt, resumed) as (run, loaded):
-                if isinstance(hook, _BatchedHook):
-                    results = hook.func(group, SpecDirectory(attempt))
+    attempt = claim.path
+    try:
+        with _log_scope(log_path_in(attempt)):
+            # Go on from what earlier attempts in the folder ran. A fixed class
+            # continues with what they left there. A traced one does only if the
+            # code an attempt ran (recorded in trace.log) is unchanged on disk;
+            # otherwise the files it wrote are dropped.
+            traced = metadata.code_version == "traced"
+            if traced and (why := why_rerun(lead._class_dir, run)):
+                lead.logger.info("rerunning %s: %s", label, why)
+            resumed = LogState()
+            if traced and events_path_in(attempt).exists():
+                logged = LogState.read(trace_log_path_in(attempt))
+                if why := why_not_resumable(logged, storage_root=metadata.storage):
+                    lead.logger.info("starting %s over: %s", label, why)
+                    shutil.rmtree(data_dir_in(attempt), ignore_errors=True)
+                    shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
+                    trace_log_path_in(attempt).unlink(missing_ok=True)
                 else:
-                    (obj,) = group
-                    results = [hook(obj)]
-            if not isinstance(results, list):
-                raise TypeError(f"{cls.__name__}.create() must return a list")
-            if len(results) != len(group):
-                raise TypeError(
-                    f"{cls.__name__} returned {len(results)} results for {len(group)} objects"
-                )
+                    assert logged is not None
+                    resumed = logged
 
-            # Write the results into the working folder, a row per spec.
-            if not has_lock():
-                raise RuntimeError(
-                    f"lost the lock on {attempt} before writing the result"
-                )
-            result_dir = result_dir_in(attempt)
-            shutil.rmtree(
-                result_dir, ignore_errors=True
-            )  # left by a crash before publishing
-            _save_result_bundle(
-                results,
-                result_dir,
-                spec_classes=[type(obj) for obj in group],
-                data_dir=data_dir_in(attempt),
-                label=cls.__name__,
+            started = events.start(
+                attempt,
+                [obj._artifact_hash for obj in group],
+                plan.listing(),
+                record.own().path,
             )
-            trace = None
-            if run is not None:
-                trace = build_trace(run, label=label, warn=lead.logger.warning)
-            shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
-            trace_log_path_in(attempt).unlink(missing_ok=True)
-        except _DependencyNotReady as exc:
-            # Without the lock the folder is a successor's, or published.
-            if has_lock():
-                waiting_on = [dep.object_id for dep in exc.dependencies]
-                events.end(attempt, "blocked", waiting_on=waiting_on)
-            raise
-        except BaseException as exc:
-            if isinstance(exc, Exception):
-                lead.logger.exception("create failed for %s", label)
-            if has_lock():
-                error = ": ".join([type(exc).__name__, *str(exc).splitlines()[:1]])
-                events.end(attempt, "failed", error=error)
-            raise
-        ended = events.end(attempt, "ok")
-        version = lead._class_dir / (FIXED if trace is None else trace.version)
-        record.batch(
-            group,
-            run=attempt.name,
-            version=version.name,
-            start=started,
-            end=ended,
-            loaded=loaded,
-        )
-
-        # Publish: rename the working folder into runs/ of its code version,
-        # name unchanged. The lock is held through the rename, so nobody else
-        # is in the folder, and readers see the whole run or none of it. A run
-        # that is already there is never replaced.
-        published = run_dir_in(version, attempt.name)
-        published.parent.mkdir(parents=True, exist_ok=True)
-        if trace is not None:
-            trace_path = trace_path_in(version)
             try:
-                Trace.model_validate_json(trace_path.read_bytes())
-            except (OSError, ValueError):  # missing, or cut short when it was written
-                atomic_write_text(
-                    trace_path, trace.model_dump_json(indent=2, exclude_none=True)
+                # Run the group's one create() call: on the whole batch, or on its one spec.
+                hook = getattr(cls, "_furu_create_hook", None)
+                if hook is None:
+                    raise TypeError(
+                        f"{cls.__qualname__} cannot create missing results "
+                        "because it does not define create()"
+                    )
+                with _recording(group, attempt, resumed) as (rec, loaded):
+                    if isinstance(hook, _BatchedHook):
+                        results = hook.func(group, SpecDirectory(attempt))
+                    else:
+                        (obj,) = group
+                        results = [hook(obj)]
+                if not isinstance(results, list):
+                    raise TypeError(f"{cls.__name__}.create() must return a list")
+                if len(results) != len(group):
+                    raise TypeError(
+                        f"{cls.__name__} returned {len(results)} results for {len(group)} objects"
+                    )
+
+                # Write the results into the working folder, a row per spec.
+                result_dir = result_dir_in(attempt)
+                shutil.rmtree(
+                    result_dir, ignore_errors=True
+                )  # left by a crash before publishing
+                _save_result_bundle(
+                    results,
+                    result_dir,
+                    spec_classes=[type(obj) for obj in group],
+                    data_dir=data_dir_in(attempt),
+                    label=cls.__name__,
                 )
-        if not has_lock():
-            raise RuntimeError(f"lost the lock on {attempt} before publishing")
-        lead.logger.debug("publishing %s under %s", label, version.name)
-        attempt.rename(published)
+                trace = None
+                if rec is not None:
+                    trace = build_trace(rec, label=label, warn=lead.logger.warning)
+                trace_log_path_in(attempt).unlink(missing_ok=True)
+            except _DependencyNotReady as exc:
+                waiting_on = [dep.object_id for dep in exc.dependencies]
+                with suppress(FileNotFoundError):
+                    events.end(attempt, "blocked", waiting_on=waiting_on)
+                raise
+            except BaseException as exc:
+                if isinstance(exc, Exception):
+                    lead.logger.exception("create failed for %s", label)
+                error = ": ".join([type(exc).__name__, *str(exc).splitlines()[:1]])
+                with suppress(FileNotFoundError):
+                    events.end(attempt, "failed", error=error)
+                raise
+            ended = events.end(attempt, "ok")
+            version = lead._class_dir / (FIXED if trace is None else trace.version)
+            record.batch(
+                group,
+                run=run,
+                version=version.name,
+                start=started,
+                end=ended,
+                loaded=loaded,
+            )
+
+            published = run_dir_in(version, run)
+            published.parent.mkdir(parents=True, exist_ok=True)
+            if trace is not None:
+                trace_path = trace_path_in(version)
+                try:
+                    Trace.model_validate_json(trace_path.read_bytes())
+                except (
+                    OSError,
+                    ValueError,
+                ):  # missing, or cut short when it was written
+                    atomic_write_text(
+                        trace_path, trace.model_dump_json(indent=2, exclude_none=True)
+                    )
+            lead.logger.debug("publishing %s under %s", label, version.name)
+        # Publish after _log_scope closes so no fd remains open in the working folder.
+        attempt_lock.publish(attempt, published, claim.stat)
+    except BaseException:
+        with suppress(OSError):
+            if os.path.samestat(attempt.stat(), claim.stat):
+                attempt_lock.release(attempt)
+        raise

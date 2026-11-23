@@ -27,7 +27,6 @@ from furu.dependencies import missing_dependencies
 from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
-from furu.storage._layout import log_path_in
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.messages import (
@@ -71,10 +70,10 @@ class Run:
     # Gave up on, and the ones that wait for those.
     failed: set[str] = field(default_factory=set)
     blocked: list[str] = field(default_factory=list)
-    # Each failed attempt's error, per spec not yet completed, and the log of
-    # the last one: its batch's.
+    # Each failed attempt's error, per spec not yet completed, and the stable
+    # attempts/<run>/ folder of the last one: its batch's.
     failures: dict[str, list[str]] = field(default_factory=dict)
-    logs: dict[str, Path] = field(default_factory=dict)
+    folders: dict[str, Path] = field(default_factory=dict)
     # When each spec first found missing each dependency this run sees built,
     # since it last got anywhere.
     unseen: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -194,9 +193,9 @@ class Run:
         if not ids:
             logger.info("ignoring result for %s: not running", message.object_ids[0])
             return []
-        # The log of that call: its batch's.
+        # The attempts/<run>/ folder of that call: its batch's.
         ran = [self.specs[spec] for spec in message.object_ids if spec in self.specs]
-        log = log_path_in(working_folder(ran))
+        folder = working_folder(ran)
         replies: list[_Reply]
         match message.result:
             case JobCompletedResult():
@@ -213,10 +212,10 @@ class Run:
                     )
                 replies = []
             case JobFailedResult(error=error):
-                replies = self._failed(ids, error, log)
+                replies = self._failed(ids, error, folder)
             case JobBlockedResult() as blocked:
                 for spec in ids:
-                    self.logs[spec] = log
+                    self.folders[spec] = folder
                     logger.info(
                         "blocked %s · %s",
                         self.specs[spec].object_id,
@@ -233,12 +232,12 @@ class Run:
             self._progress()
         return replies
 
-    def _failed(self, ids: Sequence[str], error: str, log: Path) -> list[_Reply]:
+    def _failed(self, ids: Sequence[str], error: str, folder: Path) -> list[_Reply]:
         """Count a failed attempt for each spec; rerun the ones with retries left."""
         rerun, gave_up = [], []
         for spec in ids:
             self.unseen.pop(spec, None)  # its earlier misses are behind it
-            self.logs[spec] = log
+            self.folders[spec] = folder
             errors = self.failures.setdefault(spec, [])
             errors.append(error)
             will_retry = len(errors) <= self.max_retries_per_object
@@ -254,7 +253,7 @@ class Run:
                 len(errors),
                 self.max_retries_per_object + 1,
                 summary,
-                extra={"path": log},
+                extra={"path": folder},
             )
         replies: list[_Reply] = []
         if gave_up:
@@ -320,7 +319,7 @@ class Run:
                     "failed %s · %s",
                     self.specs[spec].object_id,
                     why,
-                    extra={"path": self.logs[spec]},
+                    extra={"path": self.folders[spec]},
                 )
             return [self._give_up(ids, why)]
         if not unbuilt:
@@ -348,7 +347,7 @@ class Run:
         return GaveUpMessage(
             specs=list(ids),
             error=error,
-            log=self.logs[ids[0]],
+            folder=self.folders[ids[0]],
             attempts={spec: len(self.failures[spec]) for spec in ids},
         )
 
@@ -360,12 +359,12 @@ class Run:
                 self.failed.add(spec)
                 if spec not in self.failures:  # another launch gave up on it
                     self.failures[spec] = [message.error] * message.attempts[spec]
-                    self.logs[spec] = message.log
+                    self.folders[spec] = message.folder
                     logger.error(
                         "failed %s · %s",
                         self.specs[spec].object_id,
                         error_summary(message.error),
-                        extra={"path": message.log},
+                        extra={"path": message.folder},
                     )
         for spec in message.blocked:
             if spec in self.left:
@@ -410,7 +409,7 @@ class Run:
                 f"  {obj.object_id} · {len(errors)} attempt"
                 f"{'' if len(errors) == 1 else 's'} · "
                 f"{error_summary(errors[-1])} → "
-                f"{_display_path(self.logs[obj.object_id])}"
+                f"{_display_path(self.folders[obj.object_id])}"
             )
         lines += [f"  {self.specs[spec].object_id} · blocked" for spec in self.blocked]
 

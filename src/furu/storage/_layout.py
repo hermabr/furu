@@ -1,5 +1,7 @@
+import errno
 import os
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 
 from furu.utils import _hash_dict_deterministically
@@ -9,20 +11,46 @@ from furu.utils import _hash_dict_deterministically
 # @furu.dependency(remember=True) method. The class name is one path component,
 # so the folders under it are exactly its class parts.
 #
-#   attempts/<run>/           the working folder of a run in progress
-#   attempts/<run>.lock       its lock, beside it so that publishing never moves it
-#   <code version>/trace.json which code its runs ran; "fixed" has none
-#   <code version>/runs/<run> a published run, which never changes again
-#   remembered/               what such methods returned, a file per launch
+#   attempts/<run>/<state>__<tok>/  the working folder of a run in progress;
+#                                   its folder name is its lock (free, slurm, local)
+#   <code version>/trace.json       which code its runs ran; "fixed" has none
+#   <code version>/runs/<run>       a published run, which never changes again
+#   remembered/                     what such methods returned, a file per launch
 #
-# A working folder is renamed into runs/ under the same name, so both share
-# the run layout below. A run holds one row per spec: the specs of one batch,
-# or the one spec of a class without @furu.batched.
+# A working folder is renamed into runs/<run>, so both share the run layout
+# below. A run holds one row per spec: the specs of one batch, or the one spec
+# of a class without @furu.batched.
 
 FIXED = "fixed"
 REMEMBERED = "remembered"
 # Starts the name of a run with more than one row; a spec hash is hex only.
 BATCH = "batch-"
+
+
+def _is_missing(exc: OSError) -> bool:
+    return exc.errno in (errno.ENOENT, errno.ESTALE)
+
+
+def list_names(directory: Path) -> list[str]:
+    """Entry names in ``directory``; empty when it does not exist.
+
+    On ENOENT or ESTALE, lists up to four ancestors from the top down so NFS
+    clients drop negative lookup caches before retrying.
+    """
+    try:
+        return os.listdir(directory)
+    except OSError as exc:
+        if not _is_missing(exc):
+            raise
+        for ancestor in reversed(directory.parents[:4]):
+            with suppress(OSError):
+                os.listdir(ancestor)
+        try:
+            return os.listdir(directory)
+        except OSError as retry_exc:
+            if _is_missing(retry_exc):
+                return []
+            raise
 
 
 def run_name(spec_hashes: Sequence[str]) -> str:
@@ -40,23 +68,15 @@ def attempts_dir_in(class_dir: Path) -> Path:
     return class_dir / "attempts"
 
 
-def attempt_dir_in(class_dir: Path, run: str) -> Path:
+def attempt_parent_in(class_dir: Path, run: str) -> Path:
     return attempts_dir_in(class_dir) / run
-
-
-def lock_path_in(class_dir: Path, run: str) -> Path:
-    return attempts_dir_in(class_dir) / f"{run}.lock"
 
 
 def version_dirs_in(class_dir: Path) -> list[Path]:
     """The class's code-version folders: not attempts/, remembered/ or the schema files."""
-    try:
-        names = sorted(os.listdir(class_dir))
-    except FileNotFoundError:
-        return []
     return [
         class_dir / name
-        for name in names
+        for name in sorted(list_names(class_dir))
         if name not in ("attempts", REMEMBERED) and "." not in name
     ]
 

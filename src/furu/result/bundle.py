@@ -311,6 +311,20 @@ def _dump_artifact(
     return {WRAPPER_KEY: body}
 
 
+def _mkdir_under(base: Path, rel: Path) -> Path:
+    """Create ``base / rel`` step by step without ``parents=True``.
+
+    Refuses to recreate ``base`` if the attempt folder was renamed away.
+    """
+    cur = base
+    for part in rel.parts[:-1]:
+        cur = cur / part
+        cur.mkdir(exist_ok=True)
+    cur = cur / rel.parts[-1]
+    cur.mkdir(exist_ok=False)
+    return cur
+
+
 def _save_columns(
     columns: dict[ValuePath, list[_Cell]],
     bundle_dir: Path,
@@ -334,7 +348,7 @@ def _save_columns(
         if all(cell.codec is codec for cell in cells) and not any(
             position[:i] in clashing for i in range(1, len(position) + 1)
         ):
-            (bundle_dir / shared).mkdir(parents=True)
+            _mkdir_under(bundle_dir, shared)
             metadatas = codec.save_many(
                 [cell.value for cell in cells], bundle_dir / shared
             )
@@ -347,7 +361,7 @@ def _save_columns(
         if metadatas is None:
             paths = [Path(ROWS_DIR_NAME, str(cell.row), *position) for cell in cells]
             for path in paths:
-                (bundle_dir / path).mkdir(parents=True)
+                _mkdir_under(bundle_dir, path)
             metadatas = [
                 cell.codec.save(cell.value, bundle_dir / path)
                 for cell, path in zip(cells, paths)
@@ -546,7 +560,7 @@ def _save_result_bundle(
 
     ``label`` names the results in a warning.
     """
-    bundle_dir.mkdir(parents=True, exist_ok=False)
+    bundle_dir.mkdir(exist_ok=False)
 
     writer = _Writer(data_dir)
     manifest: list[JsonValue] = []

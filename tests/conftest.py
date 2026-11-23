@@ -9,8 +9,12 @@ import pytest
 from gitrepo import init_repo
 from tracedrepo import Repo
 
-from furu import provenance
+from furu import provenance, slurm
 from furu.config import _project_anchor
+
+# Never inherit a Slurm job environment into tests (or xdist / subprocess children).
+for _key in [key for key in os.environ if key.startswith("SLURM_")]:
+    del os.environ[_key]
 
 # Set once here so xdist workers and every child process they start inherit it.
 os.environ.update(
@@ -34,6 +38,17 @@ os.environ.update(
         "PYDANTIC_DISABLE_PLUGINS": "__all__",
     }
 )
+
+
+@pytest.fixture(autouse=True)
+def _clean_slurm_env() -> Iterator[None]:
+    for key in [key for key in os.environ if key.startswith("SLURM_")]:
+        del os.environ[key]
+    slurm.clear_cluster_cache()
+    yield
+    for key in [key for key in os.environ if key.startswith("SLURM_")]:
+        del os.environ[key]
+    slurm.clear_cluster_cache()
 
 
 @pytest.fixture

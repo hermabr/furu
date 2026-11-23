@@ -20,6 +20,7 @@ from websockets.sync.client import connect
 
 import furu
 import furu.execution.run_on_workers as run_module
+import furu.slurm as slurm_module
 import furu.worker.backends.slurm.pool as pool_module
 from furu.config import get_config
 from furu.execution.manager import Manager
@@ -753,7 +754,7 @@ def test_slurm_pool_retries_an_sbatch_timeout_without_failing_scripts(
         pool._stop_event.set()
         raise subprocess.TimeoutExpired(argv, 60.0)
 
-    monkeypatch.setattr(pool_module.subprocess, "run", run)
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
     pool._scale_loop()
 
     assert manager.notes == []

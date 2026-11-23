@@ -249,11 +249,16 @@ def test_storage_that_cannot_be_written_to_still_loads() -> None:
 
 
 def _name_then_launch(named: Any, launch: Any) -> None:
+    from contextlib import suppress
+
+    from furu.storage.attempt_lock import HeldError
+
     table = LooTable(data=Cifar(split="race"), seeds=2)
     assert table.object_id
     named.release()
     launch.wait(timeout=10)
-    furu.create(table)
+    with suppress(HeldError):
+        furu.create(table)
 
 
 def test_two_launches_at_once_each_save_a_file() -> None:

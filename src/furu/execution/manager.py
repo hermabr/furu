@@ -16,7 +16,6 @@ it goes out alone.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from collections import Counter, OrderedDict
@@ -34,12 +33,12 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu import plan
 from furu.dag import Dag
-from furu.locking import is_active_lock
 from furu.logging import _group_label, get_logger
+from furu.storage import attempt_lock
 from furu.storage._layout import (
-    attempt_dir_in,
+    attempt_parent_in,
     attempts_dir_in,
-    lock_path_in,
+    list_names,
     run_name,
 )
 from furu.storage.events import read_events
@@ -74,9 +73,10 @@ from furu.worker.messages import (
 
 logger = get_logger("manager")
 
-# How often an idle worker's handler checks that the worker is still there,
-# and how long a stopped batch whose lock is held waits for the next look.
+# How often an idle worker's handler checks that the worker is still there.
 _IDLE_CHECK_INTERVAL_S = 5.0
+# How long a stopped batch waits between attempt-lock probes.
+_HELD_CHECK_INTERVAL_S = 30.0
 # Not part of a pool's key: its first script sets them and later ones must agree.
 _SETTINGS = {"job_name", "idle_timeout_seconds"}
 
@@ -127,7 +127,11 @@ class _Stopped:
     run: str
     # Whether the script that answers for it has yet to say that it runs again.
     held: bool
-    # When its lock, found held, is next looked at.
+    # Whether the last attempt-lock probe saw the folder free.
+    free: bool = False
+    # Last held reason reported to the script (for warning deduplication).
+    why: str | None = None
+    # When its attempt lock is next probed.
     look_at: float = 0.0
 
 
@@ -336,21 +340,19 @@ class Manager:
         none of which waits for another.
 
         They were left by workers this manager did not hand them to, or
-        does not remember. One whose worker is still alive holds its lock.
+        does not remember. One whose worker is still alive holds its attempt lock.
         """
-        try:
-            runs = [
-                name
-                for name in os.listdir(attempts_dir_in(class_dir))
-                if "." not in name
-            ]
-        except FileNotFoundError:
-            return
+        runs = [
+            name for name in list_names(attempts_dir_in(class_dir)) if "." not in name
+        ]
         by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
         for run in runs:
+            folder = attempt_lock.current(attempt_parent_in(class_dir, run))
+            if folder is None:
+                continue
             hashes = [
                 spec
-                for opened in read_events(attempt_dir_in(class_dir, run))[:1]
+                for opened in read_events(folder)[:1]
                 for spec in opened.get("specs", ())
             ]
             if hashes and all(
@@ -544,7 +546,9 @@ class Manager:
         while (lease := self._lease(connection, pool=hello.pool)) is not None:
             self._flush()
             job = lease.job
-            logger.info("leased %s to %s", job.label, worker, extra={"path": job.log})
+            logger.info(
+                "leased %s to %s", job.label, worker, extra={"path": job.folder}
+            )
             result: JobResult
             try:
                 connection.send(job.model_dump_json())
@@ -595,12 +599,79 @@ class Manager:
             self.outbox.append((script, message))
 
     def _lease(self, connection: ServerConnection, *, pool: str) -> _Lease | None:
-        with self.lock:
-            while not self.stopping and connection.state is State.OPEN:
+        while True:
+            with self.lock:
+                if self.stopping or connection.state is not State.OPEN:
+                    return None
+                due = self._reserve_due_stopped(pool)
+                if not due:
+                    if (lease := self._hand_out(connection, pool)) is not None:
+                        return lease
+                    self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
+                    continue
+            self._probe_stopped(due)
+            self._flush()
+            with self.lock:
+                if self.stopping or connection.state is not State.OPEN:
+                    return None
                 if (lease := self._hand_out(connection, pool)) is not None:
                     return lease
+                if any(
+                    not stopped.held
+                    and not stopped.free
+                    and stopped.look_at == 0.0
+                    and pool in self.placed[stopped.specs[0]].pools
+                    and not any(map(self.dag.waits, stopped.specs))
+                    for stopped in self.stopped
+                ):
+                    continue
                 self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
-            return None
+
+    def _reserve_due_stopped(
+        self, pool: str | None = None
+    ) -> list[tuple[_Stopped, Path]]:
+        """Reserve due stopped batches under ``self.lock`` so probes are throttled."""
+        now = time.monotonic()
+        due: list[tuple[_Stopped, Path]] = []
+        for stopped in self.stopped:
+            if (
+                stopped.held
+                or stopped.free
+                or now < stopped.look_at
+                or any(map(self.dag.waits, stopped.specs))
+            ):
+                continue
+            placed = self.placed[stopped.specs[0]]
+            if pool is not None and pool not in placed.pools:
+                continue
+            stopped.look_at = now + _HELD_CHECK_INTERVAL_S
+            due.append((stopped, attempt_parent_in(placed.class_dir, stopped.run)))
+        return due
+
+    def _probe_stopped(self, due: list[tuple[_Stopped, Path]]) -> bool:
+        """Probe ``attempt_lock.held()`` outside ``self.lock`` and store results."""
+        probed = [(stopped, attempt_lock.held(parent)) for stopped, parent in due]
+        freed = False
+        with self.lock:
+            for stopped, why in probed:
+                if stopped not in self.stopped:
+                    continue
+                if why is None:
+                    stopped.free = True
+                    stopped.why = None
+                    freed = True
+                else:
+                    stopped.free = False
+                    if why != stopped.why:
+                        stopped.why = why
+                        label = _group_label(stopped.specs[0], len(stopped.specs))
+                        reason = f"waiting to resume {label}: {why}"
+                        logger.warning("%s", reason)
+                        script = self.asked_by[stopped.specs[0]][0]
+                        self.outbox.append((script, WarningMessage(reason=reason)))
+            if freed:
+                self.lock.notify_all()
+        return freed
 
     def _hand_out(self, connection: ServerConnection, pool: str) -> _Lease | None:
         """Give a worker of ``pool`` its next job, if there is one for it.
@@ -692,23 +763,17 @@ class Manager:
         """The stopped batches that can go out now, oldest first.
 
         ``wanted`` says whether the caller has a use for a batch, given its
-        first spec. A batch whose working folder is locked is still being
-        computed, or its worker died less than a lock's lifetime ago.
+        first spec. Only reads ``free``: probing happens outside ``self.lock``.
         """
-        now = time.monotonic()
         for stopped in list(self.stopped):
             if (
                 stopped.held
-                or now < stopped.look_at
+                or not stopped.free
                 or any(map(self.dag.waits, stopped.specs))
                 or not wanted(stopped.specs[0])
             ):
                 continue
-            class_dir = self.placed[stopped.specs[0]].class_dir
-            if is_active_lock(lock_path_in(class_dir, stopped.run)):
-                stopped.look_at = now + _IDLE_CHECK_INTERVAL_S
-            else:
-                yield stopped
+            yield stopped
 
     def _fill(self, specs: list[str], pool: str, placed: _Placed) -> list[str]:
         """Make ``specs``, unstarted, the job of a worker of ``pool``, filled from stopped batches.
@@ -759,7 +824,7 @@ class Manager:
                     f"{label} starts in a new working folder: it holds specs of a "
                     "batch that stopped and is not that batch alone, so what the "
                     "batch had done is dropped. Its working folder stays in "
-                    f"attempts/: {attempt_dir_in(placed.class_dir, stopped.run)}"
+                    f"attempts/: {attempt_parent_in(placed.class_dir, stopped.run)}"
                 )
                 logger.warning("%s", reason)
                 self.outbox.append((script, WarningMessage(reason=reason)))

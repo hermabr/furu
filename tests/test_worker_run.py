@@ -28,15 +28,12 @@ from furu.execution.launch import missing
 from furu.execution.manager import Manager, _Lease, _Script
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
-from furu.locking import lock
 from furu.logging import _display_path
 from furu.snapshot import CodeLocation
-from furu.storage import events
+from furu.storage import attempt_lock, events
 from furu.storage._layout import (
-    attempt_dir_in,
+    attempt_parent_in,
     execution_log_path_in,
-    lock_path_in,
-    log_path_in,
     run_name,
 )
 from furu.worker.backends.local import LocalThreadWorkerBackend
@@ -149,7 +146,7 @@ def _gave_up(objs: Sequence[Spec], error: str, attempts: int = 1) -> GaveUpMessa
     return GaveUpMessage(
         specs=_ids(objs),
         error=error,
-        log=log_path_in(working_folder(objs)),
+        folder=working_folder(objs),
         attempts=dict.fromkeys(_ids(objs), attempts),
     )
 
@@ -200,7 +197,12 @@ def _manager(
 def _lease(
     manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL
 ) -> _Lease | None:
-    return manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
+    with manager.lock:
+        due = manager._reserve_due_stopped(backend.pool_key)
+    if due:
+        manager._probe_stopped(due)
+    with manager.lock:
+        return manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
 
 
 def _leased(manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL) -> _Lease:
@@ -625,7 +627,7 @@ def test_a_failed_attempt_reruns_until_its_retries_run_out(
     assert [record.levelno for record in failed] == [logging.WARNING] * 3 + [
         logging.ERROR
     ]
-    assert failed[0].__dict__["path"] == log_path_in(leaf._attempt_dir)
+    assert failed[0].__dict__["path"] == leaf._attempt_dir
     # The last attempt is never one that retries.
     assert [message for message in caplog.messages if "progress" in message] == [
         *["progress 0/1 · 1 retrying"] * 3,
@@ -669,7 +671,7 @@ def test_the_runs_error_lists_each_spec_it_gave_up_on_and_each_that_waits_for_on
         "2 specs failed, 1 blocked",
         *(
             f"  {obj.object_id} · 1 attempt · ValueError: {obj.value} → "
-            f"{_display_path(log_path_in(obj._attempt_dir))}"
+            f"{_display_path(obj._attempt_dir)}"
             for obj in (first, second)
         ),
         f"  {parent.object_id} · blocked",
@@ -681,7 +683,7 @@ def test_a_failed_batch_counts_for_each_spec_and_points_at_the_batchs_log(
 ) -> None:
     objs = [BatchedRunLeaf(value=value) for value in range(2)]
     run, _ = _new_run(objs, max_retries_per_object=1)
-    log = log_path_in(working_folder(objs))
+    folder = working_folder(objs)
 
     assert run.result(_result(objs, JobFailedResult(error="boom"))) == [
         RerunMessage(specs=_ids(objs))
@@ -701,9 +703,9 @@ def test_a_failed_batch_counts_for_each_spec_and_points_at_the_batchs_log(
         record.__dict__["path"]
         for record in caplog.records
         if record.message.startswith("failed ")
-    ] == [log] * 6
+    ] == [folder] * 6
     assert all(
-        line.endswith(f"→ {_display_path(log)}")
+        line.endswith(f"→ {_display_path(folder)}")
         for line in str(excinfo.value).splitlines()[1:]
     )
 
@@ -920,7 +922,7 @@ def test_specs_with_one_batch_key_are_one_job_up_to_the_cap() -> None:
     assert manager.demand(CPU_POOL.pool_key) == 3
     lease = _leased(manager)
     assert lease.specs == _ids([first_x, more_x[0]])
-    assert lease.job.log == log_path_in(working_folder([first_x, more_x[0]]))
+    assert lease.job.folder == working_folder([first_x, more_x[0]])
     assert _leased(manager).specs == [more_x[1].object_id]
     assert _leased(manager).specs == [only_y.object_id]
     assert _lease(manager) is None
@@ -1170,7 +1172,7 @@ def _stopped_sweep(count: int) -> tuple[Manager, list[str]]:
 def _old_folder(ids: Sequence[str]) -> str:
     """The working folder of the batch that stopped: specs 1 to 5."""
     name = run_name([spec.rpartition(":")[2] for spec in ids[:5]])
-    return str(attempt_dir_in(SweepLeaf(value=1)._class_dir, name))
+    return str(attempt_parent_in(SweepLeaf(value=1)._class_dir, name))
 
 
 @pytest.mark.parametrize(
@@ -1215,19 +1217,35 @@ def test_a_worker_is_filled_with_unstarted_specs_then_stopped_batches(
 def test_a_new_manager_takes_up_the_working_folders_on_disk_once_their_lock_is_free(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(manager_module, "_IDLE_CHECK_INTERVAL_S", 0.0)
+    now = [100.0]
+    monkeypatch.setattr(
+        manager_module, "time", SimpleNamespace(monotonic=lambda: now[0])
+    )
     specs = [SweepLeaf(value=value) for value in range(4)]
     # A batch that a worker of another manager opened, in its order.
     started = [specs[2], specs[0]]
     folder = working_folder(started)
-    folder.mkdir(parents=True)
-    events.start(folder, [spec._artifact_hash for spec in started], _plan(), _plan())
+    claim = attempt_lock.acquire(folder, lambda: False)
+    assert claim is not None
+    events.start(
+        claim.path, [spec._artifact_hash for spec in started], _plan(), _plan()
+    )
 
-    with lock(lock_path_in(folder.parent.parent, folder.name)):
-        manager = _manager(specs, backends=[SMALL])
-        assert _leased(manager, SMALL).specs == _ids([specs[1], specs[3]])
-        # Its worker is alive: nothing to hand out.
-        assert _lease(manager, SMALL) is None
+    manager = _manager(specs, backends=[SMALL])
+    assert _leased(manager, SMALL).specs == _ids([specs[1], specs[3]])
+    # Its worker is alive: nothing to hand out, and one warning is queued.
+    assert _lease(manager, SMALL) is None
+    warnings = _sent(manager)
+    assert len(warnings) == 1
+    assert isinstance(warnings[0], WarningMessage)
+
+    attempt_lock.release(claim.path)
+    # Within the 30s throttle window, it is not probed again yet.
+    now[0] += 10.0
+    assert _lease(manager, SMALL) is None
+
+    # After 30s, the probe sees it free and hands it out.
+    now[0] += 25.0
     assert _leased(manager, SMALL).specs == _ids(started)
     assert _sent(manager) == []
 
@@ -1237,7 +1255,7 @@ def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_is_not_resume
 ):
     first = ChainedBatchedLeaf(value=0)
     then = ChainedBatchedLeaf(value=1, previous=first)
-    folder = working_folder([first, then])
+    folder = working_folder([first, then]) / "free__prev"
     folder.mkdir(parents=True)
     events.start(folder, [first._artifact_hash, then._artifact_hash], _plan(), _plan())
 
@@ -1538,9 +1556,7 @@ def test_run_writes_log_to_its_execution_dir() -> None:
     lines = log_path.read_text(encoding="utf-8").splitlines()
     assert any(f" planned exec {executor_dir.name[:5]} · " in line for line in lines)
     assert any(
-        line.endswith(
-            f" leased {leaf.object_id} to w0 → {log_path_in(leaf._attempt_dir)}"
-        )
+        line.endswith(f" leased {leaf.object_id} to w0 → {leaf._attempt_dir}")
         for line in lines
     )
     assert any(" D w0    spawned child " in line for line in lines)
@@ -1690,7 +1706,7 @@ def test_worker_with_its_own_log_notes_what_it_ran_there(
     ]
     assert worker_records == [
         (logging.INFO, "serving exec e1", job.execution_log),
-        (logging.INFO, f"running {leaf.object_id} ×2", job.log),
+        (logging.INFO, f"running {leaf.object_id} ×2", job.folder),
         (logging.INFO, "manager closed the connection; exiting", None),
     ]
 

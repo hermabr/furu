@@ -15,7 +15,7 @@ from furu.config import _Config
 from furu.logging import _group_label
 from furu.snapshot import CodeLocation
 from furu.spec_metadata import Metadata, Reuse
-from furu.storage._layout import attempt_dir_in, log_path_in, run_name
+from furu.storage._layout import attempt_parent_in, run_name
 
 
 class _Message(BaseModel):
@@ -64,16 +64,18 @@ class Job(Launch):
     # the spec class.
     class_dir: Path
     process: ProcessSettings
+    # Per-request attempt-lock token minted by the worker before dispatching to its child.
+    claim: str | None = None
 
     @property
     def label(self) -> str:
         return _group_label(self.specs[0], len(self.specs))
 
     @property
-    def log(self) -> Path:
-        """Where its create() writes: the log in the working folder of its run."""
+    def folder(self) -> Path:
+        """Where its create() works: the stable ``attempts/<run>/`` folder."""
         run = run_name([spec.rpartition(":")[2] for spec in self.specs])
-        return log_path_in(attempt_dir_in(self.class_dir, run))
+        return attempt_parent_in(self.class_dir, run)
 
 
 class CancelMessage(_Message):
@@ -209,8 +211,8 @@ class GaveUpMessage(_Message):
     kind: Literal["gave_up"] = "gave_up"
     specs: list[str]
     error: str
-    # The log of their last attempt, and how many attempts each had.
-    log: Path
+    # The attempts/<run>/ folder of their last attempt, and how many attempts each had.
+    folder: Path
     attempts: dict[str, int]
     blocked: list[str] = []
 

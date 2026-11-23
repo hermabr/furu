@@ -517,16 +517,16 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
     spec = _spec(lemma=str)(lemma="comer")
     spec.create()
     path = schema_path_in(spec._class_dir)
-    lock = schema.lock
+    real_lock = schema.short_lock
 
     @contextmanager
     def another_process_first(lock_path: Path):
-        with lock(lock_path) as has_lock:
+        with real_lock(lock_path):
             with path.open("a") as file:
                 file.write('{"added":"min_overlap","default":0.5}\n')
-            yield has_lock
+            yield
 
-    monkeypatch.setattr(schema, "lock", another_process_first)
+    monkeypatch.setattr(schema, "short_lock", another_process_first)
 
     with pytest.raises(MigrationError, match="recorded 0.5"):
         _ = after(lemma="comer").done
@@ -534,6 +534,40 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
         {"names": ["lemma"]},
         {"added": "min_overlap", "default": 0.5},
     ]
+
+
+def test_schema_first_line_wins_and_re_reads_after_append(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    after = _spec(
+        lemma=str,
+        min_overlap=(float, 0.6),
+        migrations=(Added("min_overlap", default=0.6),),
+    )
+    spec = _spec(lemma=str)(lemma="comer")
+    spec.create()
+
+    # First-line-wins: if two lines exist for the same Added step, the first wins.
+    recorded = schema._recorded_defaults(
+        [
+            {"added": "min_overlap", "default": 0.5},
+            {"added": "min_overlap", "default": 0.6},
+        ]
+    )
+    assert recorded[(None, None, "min_overlap")] == 0.5
+
+    # Even if another writer raced after our pre-append read and appended first,
+    # the post-append re-read sees the first line and rejects our conflicting default.
+    real_append = schema._append
+
+    def racing_append(target: Path, new_lines: list[dict[str, object]]) -> None:
+        with target.open("a", encoding="utf-8") as file:
+            file.write('{"added":"min_overlap","default":0.5}\n')
+        real_append(target, new_lines)
+
+    monkeypatch.setattr(schema, "_append", racing_append)
+    with pytest.raises(MigrationError, match="recorded 0.5"):
+        _ = after(lemma="comer").done
 
 
 def test_a_line_cut_short_is_skipped_and_the_next_writer_starts_a_new_line() -> None:

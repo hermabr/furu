@@ -2,7 +2,6 @@ import logging
 import re
 import sys
 import types
-from contextlib import contextmanager
 from dataclasses import (
     FrozenInstanceError,
     dataclass,
@@ -33,10 +32,11 @@ from furu.execution.launch import missing
 from furu.execution.load_or_create import _load_or_create
 from furu.logging import _execution_log
 from furu.result.bundle import _save_result_bundle
+from furu.storage import attempt_lock
 from furu.storage._layout import (
+    attempt_parent_in,
     data_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     result_dir_in,
 )
@@ -122,7 +122,8 @@ class DoneProbe(Spec):
 
 class DirectoryPeekingValue(Spec):
     def create(self) -> str:
-        assert self.directory.data == self._attempt_dir / "data"
+        assert self.directory.data.parent.parent == self._attempt_dir
+        assert self.directory.data.name == "data"
         with pytest.raises(RuntimeError, match=r"only available inside"):
             _ = Node(name="other").directory
         return "ok"
@@ -138,7 +139,8 @@ class BatchedDirectoryValue(Spec):
     def create(
         objs: list["BatchedDirectoryValue"], directory: furu.SpecDirectory
     ) -> list[Path]:
-        assert directory.data == working_folder(objs) / "data"
+        assert directory.data.parent.parent == working_folder(objs)
+        assert directory.data.name == "data"
         with pytest.raises(RuntimeError, match=r"create\(specs, directory\)"):
             _ = objs[0].directory
         paths = [directory.data / f"{obj.key}.txt" for obj in objs]
@@ -476,10 +478,12 @@ class MetadataTimingValue(Spec):
     def create(self) -> str:
         sibling_key = 2 if self.key == 1 else 1
         sibling = type(self).siblings_by_key[sibling_key]
+        attempt = attempt_lock.current(self._attempt_dir)
+        assert attempt is not None
         type(self).create_events.append(
             (
                 self.key,
-                events_path_in(self._attempt_dir).exists(),
+                events_path_in(attempt).exists(),
                 sibling.done,
             )
         )
@@ -1247,7 +1251,7 @@ def test_a_batch_has_one_directory_and_a_spec_of_it_has_none() -> None:
 
 def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
     obj = ScratchWritingValue(name="payload")
-    scratch_dir = obj._attempt_dir / "scratch"
+    scratch_dir = obj._attempt_dir / "free__prev" / "scratch"
     scratch_dir.mkdir(parents=True)
     (scratch_dir / "download.csv").write_text("from-previous-attempt", encoding="utf-8")
 
@@ -1432,6 +1436,7 @@ def test_create_hook_flavor_validation() -> None:
 
 def test_no_create_hook_loads_cached_result() -> None:
     obj = NoCreateHookValue(key=1)
+    fixed_run(obj).mkdir(parents=True, exist_ok=True)
     _save_result_bundle(
         ["cached:1"],
         result_dir_in(fixed_run(obj)),
@@ -1458,10 +1463,11 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     obj = NoCreateHookValue(key=3)
+    real_acquire = attempt_lock.acquire
 
-    @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(obj._class_dir, obj._artifact_hash)
+    def acquire_after_concurrent_publish(run: Path, published, *, token=None):
+        assert run == attempt_parent_in(obj._class_dir, obj._artifact_hash)
+        fixed_run(obj).mkdir(parents=True, exist_ok=True)
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
@@ -1469,9 +1475,9 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
         )
-        yield lambda: True
+        return real_acquire(run, published, token=token)
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(attempt_lock, "acquire", acquire_after_concurrent_publish)
 
     assert furu.create(obj) == "cached-after-lock:1"
 
@@ -1614,26 +1620,27 @@ def test_existing_items_are_skipped_before_locking(
     assert existing.create() == "single:1"
 
     lock_calls: list[Path] = []
+    real_acquire = attempt_lock.acquire
 
-    @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        lock_calls.append(lock_path)
-        yield lambda: True
+    def spy_acquire(run: Path, published, *, token=None):
+        lock_calls.append(run)
+        return real_acquire(run, published, token=token)
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(attempt_lock, "acquire", spy_acquire)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [lock_path_in(missing._class_dir, missing._artifact_hash)]
+    assert lock_calls == [attempt_parent_in(missing._class_dir, missing._artifact_hash)]
 
 
 def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pending = CountedSingleValue(key=5)
+    real_acquire = attempt_lock.acquire
 
-    @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(pending._class_dir, pending._artifact_hash)
+    def acquire_after_concurrent_publish(run: Path, published, *, token=None):
+        assert run == attempt_parent_in(pending._class_dir, pending._artifact_hash)
+        fixed_run(pending).mkdir(parents=True, exist_ok=True)
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
@@ -1641,9 +1648,9 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",
         )
-        yield lambda: True
+        return real_acquire(run, published, token=token)
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(attempt_lock, "acquire", acquire_after_concurrent_publish)
 
     assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []
