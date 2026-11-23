@@ -314,7 +314,8 @@ class Spec(_FuruDataclassTransform, ABC):
             parent.parent.mkdir(exist_ok=True)
             for run in runs:
                 # Renamed first, so no reader finds half a run.
-                attempt_lock.trash(run, into=parent.parent)
+                if (err := attempt_lock.trash(run, into=parent.parent)) is not None:
+                    raise err
         return True
 
     @final

@@ -1384,6 +1384,24 @@ def test_delete_keeps_every_run_when_a_worker_takes_the_folder_while_it_asks() -
     assert taken.is_dir() and node.done
 
 
+def test_delete_raises_when_trashing_a_published_run_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = Node(name="protected")
+    assert node.create() == "Node(protected)"
+    run = run_of(node)
+
+    def deny(src: os.PathLike[str] | str, dst: os.PathLike[str] | str) -> None:
+        raise PermissionError(f"cannot rename {src} to {dst}")
+
+    monkeypatch.setattr(os, "rename", deny)
+
+    with pytest.raises(PermissionError, match="cannot rename"):
+        node.delete(mode="force")
+
+    assert run.is_dir() and node.done
+
+
 def test_delete_returns_false_when_missing() -> None:
     assert not Node(name="x").delete(mode="force")
 
