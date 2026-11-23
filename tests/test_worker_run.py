@@ -200,8 +200,7 @@ def _lease(
 ) -> _Lease | None:
     # As Manager._lease does: the stopped batches that are due are looked at
     # first, without the lock.
-    if due := manager._due(backend.pool_key):
-        manager._look(due)
+    manager._look(backend.pool_key)
     return manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
 
 
@@ -1258,13 +1257,13 @@ def test_a_working_folder_is_looked_at_again_only_after_half_a_minute(
 ) -> None:
     now = 1000.0
     monkeypatch.setattr(manager_module.time, "monotonic", lambda: now)
-    held, looked = attempt_lock.held, []
+    takeable, looked = attempt_lock.takeable, []
 
-    def look(run: Path) -> str | None:
+    def look(run: Path) -> Path | None:
         looked.append(run)
-        return held(run)
+        return takeable(run)
 
-    monkeypatch.setattr(attempt_lock, "held", look)
+    monkeypatch.setattr(attempt_lock, "takeable", look)
     started = [SweepLeaf(value=0), SweepLeaf(value=1)]
     folder = attempt_parent(started) / "local__node7__4242__9f3c2a7d51b0e6a4"
     folder.mkdir(parents=True)
@@ -1289,7 +1288,7 @@ def test_slurm_is_asked_about_a_jobs_working_folder_without_the_managers_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     started = [SweepLeaf(value=0), SweepLeaf(value=1)]
-    folder = attempt_parent(started) / "slurm__sc__123__0__9f3c2a7d51b0e6a4"
+    folder = attempt_parent(started) / "slurm__sc__123__9f3c2a7d51b0e6a4"
     folder.mkdir(parents=True)
     events.start(folder, [spec._artifact_hash for spec in started], _plan(), _plan())
     manager = _manager(started, backends=[SMALL])
@@ -1335,13 +1334,13 @@ def test_a_slow_probe_does_not_starve_handing_out_a_lease(
     probes = 0
     monkeypatch.setattr(manager_module.time, "monotonic", lambda: now[0])
 
-    def slow_held(path: Path) -> str | None:
+    def slow_held(path: Path) -> Path | None:
         nonlocal probes
         probes += 1
         now[0] += manager_module._HELD_CHECK_INTERVAL_S + 1.0
         return None
 
-    monkeypatch.setattr(attempt_lock, "held", slow_held)
+    monkeypatch.setattr(attempt_lock, "takeable", slow_held)
     connection = cast(ServerConnection, type("Open", (), {"state": State.OPEN})())
 
     lease = manager._lease(connection, pool=SMALL.pool_key)

@@ -122,7 +122,7 @@ def test_the_controller_is_asked_for_the_cluster_once_it_has_answered(
     assert [slurm.cluster() for _ in range(6)] == [None, None, None, *["other"] * 3]
     assert ran == [("scontrol", "show", "config")] * 4
 
-    slurm.forget_cluster()
+    monkeypatch.setattr(slurm, "_cluster", None)
     answers.append(config.replace("other", "third"))
     assert slurm.cluster() == "third"
 

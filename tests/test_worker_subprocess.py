@@ -37,7 +37,6 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.snapshot import CodeLocation
-from furu.storage import attempt_lock
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
@@ -271,7 +270,7 @@ def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
     assert [event["event"] for event in events_of(crashing)] == ["opened", "start"]
     assert child_slot._child is None
     # The worker saw its child die, so the folder is free for the next attempt.
-    (left,) = attempt_lock.entries(attempt_parent([crashing]))
+    (left,) = os.listdir(attempt_parent([crashing]))
     assert left.startswith("free__")
 
     follow_up = SubprocessEnvLeaf(

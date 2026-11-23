@@ -4,7 +4,6 @@ import re
 import shutil
 import sys
 import types
-from collections.abc import Callable
 from dataclasses import (
     FrozenInstanceError,
     dataclass,
@@ -1327,7 +1326,7 @@ def test_delete_refuses_a_working_folder_that_may_be_at_work_and_touches_nothing
         node.delete(mode="force")
 
     assert str(refused.value).startswith(
-        f"{node.object_id}.delete(): {held} is the working folder of process 4242"
+        f"{held} is the working folder of process 4242"
     )
     assert held.is_dir() and node.done
 
@@ -1670,11 +1669,9 @@ def test_a_stored_spec_gets_no_working_folder(
     acquire = attempt_lock.acquire
     acquired: list[Path] = []
 
-    def spy(
-        run: Path, published: Callable[[], bool], *, token: str | None = None
-    ) -> tuple[Path, os.stat_result] | None:
+    def spy(run: Path, token: str | None = None) -> tuple[Path, os.stat_result]:
         acquired.append(run)
-        return acquire(run, published, token=token)
+        return acquire(run, token)
 
     monkeypatch.setattr(attempt_lock, "acquire", spy)
 

@@ -21,7 +21,7 @@ _GONE = frozenset(
 )
 
 # The cluster the controller named, once it has: asked at most once a process.
-_cluster: list[str] = []
+_cluster: str | None = None
 
 
 def run(*argv: str) -> str:
@@ -52,9 +52,10 @@ def cluster() -> str | None:
 
     A job has it in its environment; any other machine asks the controller.
     """
+    global _cluster
     if name := os.environ.get("SLURM_CLUSTER_NAME"):
         return name
-    if not _cluster:
+    if _cluster is None:
         try:
             config = run("scontrol", "show", "config")
         except (OSError, subprocess.SubprocessError):
@@ -62,14 +63,9 @@ def cluster() -> str | None:
         for line in config.splitlines():
             key, _, value = line.partition("=")
             if key.strip() == "ClusterName" and value.strip():
-                _cluster.append(value.strip())
+                _cluster = value.strip()
                 break
-    return _cluster[0] if _cluster else None
-
-
-def forget_cluster() -> None:
-    """Ask the controller again the next time: for tests."""
-    _cluster.clear()
+    return _cluster
 
 
 def gone(cluster_name: str, job: str) -> bool:

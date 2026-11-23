@@ -27,6 +27,7 @@ from furu.storage._layout import (
     FIXED,
     attempts_dir_in,
     events_path_in,
+    list_names,
     log_path_in,
     run_name,
     runs_dir_in,
@@ -54,7 +55,7 @@ class Weights(Spec):
 
     @furu.batched(lambda spec, worker: (None, 100))
     def create(specs: list["Weights"], directory: furu.SpecDirectory) -> list[Any]:
-        Weights.folders += attempt_lock.entries(attempt_parent(specs))
+        Weights.folders += list_names(attempt_parent(specs))
         return [np.full(3, spec.seed) for spec in specs]
 
 
@@ -143,7 +144,6 @@ def test_a_run_is_whole_and_still_its_workers_when_one_rename_publishes_it(
             seen["files"] = sorted(path.name for path in self.iterdir())
             seen["ends"] = ends_of(spec)
             seen["holder"] = self.name.rpartition("__")[0]
-            seen["free"] = attempt_lock.held(self.parent) is None
             seen["done"] = spec.done
         rename(self, target)
 
@@ -156,7 +156,6 @@ def test_a_run_is_whole_and_still_its_workers_when_one_rename_publishes_it(
         "files": files,
         "ends": [{"outcome": "ok"}],
         "holder": attempt_lock.me(),
-        "free": False,
         "done": False,
     }
     assert sorted(path.name for path in run_of(spec).iterdir()) == files
@@ -307,6 +306,43 @@ def test_a_batch_is_one_run_with_a_row_per_spec_and_one_file_per_array() -> None
     assert list(attempts_dir_in(specs[0]._class_dir).iterdir()) == []
 
 
+@pytest.mark.parametrize("left_over", [False, True])
+def test_a_run_published_while_its_folder_was_taken_is_not_computed_again(
+    monkeypatch: pytest.MonkeyPatch, left_over: bool
+) -> None:
+    spec = Leaf(n=1)
+    parent = attempt_parent([spec])
+    if left_over:
+        (parent / "free__manual").mkdir(parents=True)
+        (parent / "free__manual" / "checkpoint").write_text("step 7")
+    acquire = attempt_lock.acquire
+
+    def after_another_published(
+        run: Path, token: str | None = None
+    ) -> tuple[Path, os.stat_result]:
+        patched.undo()
+        other = parent.with_name("elsewhere")  # the other worker's folder
+        if left_over:
+            os.rename(parent, other)
+        assert spec.create() == 1
+        if left_over:
+            os.rename(other, parent)
+        return acquire(run, token)
+
+    with monkeypatch.context() as patched, creating(plan=_launch_plan()):
+        patched.setattr(attempt_lock, "acquire", after_another_published)
+        load_or_create._ensure_group_result([spec])
+
+    assert ends_of(spec) == [{"outcome": "ok"}]  # one attempt
+    if left_over:
+        # What is in a folder that was taken stays, free again.
+        (freed,) = os.listdir(parent)
+        assert freed.startswith("free__") and freed != "free__manual"
+        assert (parent / freed / "checkpoint").read_text() == "step 7"
+    else:
+        assert list(attempts_dir_in(spec._class_dir).iterdir()) == []
+
+
 def test_a_published_run_is_never_replaced_and_another_order_is_another_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -440,7 +476,7 @@ def test_a_worker_whose_folder_was_taken_publishes_nothing_and_makes_no_folder()
     assert not spec.done
     # The folder is as it was taken: nothing was made again under the old
     # name, and the events are left to whoever has it now.
-    assert attempt_lock.entries(attempt_parent([spec])) == ["free__manual"]
+    assert list_names(attempt_parent([spec])) == ["free__manual"]
     assert ends_of(spec) == []
     assert not (working_folder(spec) / "result").exists()
 
