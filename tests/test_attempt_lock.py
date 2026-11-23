@@ -58,7 +58,7 @@ def test_this_process_is_named_by_host_and_pid_outside_slurm() -> None:
     assert attempt_lock._me() == f"local__{HOST}__{PID}"
 
 
-@pytest.mark.parametrize(("restart", "named"), [(None, "0"), ("3", "3")])
+@pytest.mark.parametrize(("restart", "named"), [(None, "0"), ("", "0"), ("3", "3")])
 def test_this_process_is_named_by_its_slurm_job_and_restart_count(
     monkeypatch: pytest.MonkeyPatch, restart: str | None, named: str
 ) -> None:
@@ -78,6 +78,23 @@ def test_a_slurm_job_that_cannot_tell_its_cluster_fails_loudly(
     monkeypatch.setattr(slurm, "cluster", lambda: None)
 
     with pytest.raises(RuntimeError, match="SLURM_JOB_ID=18609579.*SLURM_CLUSTER_NAME"):
+        attempt_lock._me()
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"SLURM_JOB_ID": "not-a-job"},
+        {"SLURM_JOB_ID": "123", "SLURM_CLUSTER_NAME": "sc", "SLURM_RESTART_COUNT": "x"},
+    ],
+)
+def test_me_rejects_non_numeric_slurm_ids(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
+) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    with pytest.raises(ValueError, match="SLURM_JOB_ID"):
         attempt_lock._me()
 
 
@@ -378,10 +395,10 @@ def test_a_rename_that_failed_leaves_the_run_as_it_was(
 
     _renames(monkeypatch, fail)
 
-    with pytest.raises(HeldError, match="did not get") as refused:
+    with pytest.raises(OSError, match="Disk quota exceeded") as refused:
         attempt_lock.acquire(run)
 
-    assert ("is now" if there else "is gone") in str(refused.value)
+    assert refused.value.errno == errno.EDQUOT
     assert list_names(run) == (["free__manual"] if there else [])
     assert os.listdir(run.parent) == ([run.name] if there else [])
 

@@ -48,7 +48,7 @@ def run(*argv: str) -> str:
 
 
 def cluster() -> str | None:
-    """The Slurm cluster this machine belongs to, if it can be told.
+    """The Slurm cluster this machine belongs to, or None without Slurm.
 
     A job has it in its environment; any other machine asks the controller.
     """
@@ -58,13 +58,15 @@ def cluster() -> str | None:
     if _cluster is None:
         try:
             config = run("scontrol", "show", "config")
-        except (OSError, subprocess.SubprocessError):
+        except FileNotFoundError:
             return None
         for line in config.splitlines():
             key, _, value = line.partition("=")
             if key.strip() == "ClusterName" and value.strip():
                 _cluster = value.strip()
                 break
+        else:
+            raise ValueError("scontrol show config did not report ClusterName")
     return _cluster
 
 
@@ -72,8 +74,8 @@ def gone(cluster_name: str, job: str) -> bool:
     """Whether Slurm says that ``job`` ended and left no process behind.
 
     True only when the queue no longer runs the job and accounting has a clean
-    end for it. A command that fails, an answer that is not understood and a
-    job of another cluster are all False: the job may be alive.
+    end for it. Raises if a Slurm command fails, times out, or prints
+    unexpected output.
     """
     if cluster_name != cluster():
         return False
@@ -86,10 +88,8 @@ def gone(cluster_name: str, job: str) -> bool:
     except subprocess.CalledProcessError as exc:
         # How the queue answers for a job it no longer remembers.
         if (exc.stdout or "").strip() or "Invalid job id" not in (exc.stderr or ""):
-            return False
+            raise
         queued = ""
-    except (OSError, subprocess.SubprocessError):
-        return False
     for line in queued.splitlines():
         match line.split():
             case [job_id, state]:
@@ -97,15 +97,12 @@ def gone(cluster_name: str, job: str) -> bool:
                 if job_id == job and state not in _GONE:
                     return False
             case _:
-                return False
+                raise ValueError(f"unexpected squeue output: {line!r}")
     # -D: a requeued job has a row for each time it ran.
-    try:
-        accounted = run(
-            *("sacct", "-D", "-X", "--noheader", "--parsable2"),
-            *("-o", "JobIDRaw,State,Reason", "-j", job),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
+    accounted = run(
+        *("sacct", "-D", "-X", "--noheader", "--parsable2"),
+        *("-o", "JobIDRaw,State,Reason", "-j", job),
+    )
     states = []
     for line in accounted.splitlines():
         match line.split("|", 2):
@@ -117,7 +114,7 @@ def gone(cluster_name: str, job: str) -> bool:
                     return False
                 states.append(state.partition(" ")[0])  # "CANCELLED by <uid>"
             case _:
-                return False
+                raise ValueError(f"unexpected sacct output: {line!r}")
     # A row that says the job was requeued is no end: accounting can have it
     # before the row of the run that followed. Without any row it is behind
     # the queue.

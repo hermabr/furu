@@ -118,8 +118,13 @@ def test_the_controller_is_asked_for_the_cluster_once_it_has_answered(
 
     monkeypatch.setattr(slurm, "run", fake)
 
-    # No answer is not remembered: the controller may answer the next time.
-    assert [slurm.cluster() for _ in range(6)] == [None, None, None, *["other"] * 3]
+    # No Slurm returns None; scontrol errors fail loudly and are not cached.
+    assert slurm.cluster() is None
+    with pytest.raises(subprocess.TimeoutExpired):
+        slurm.cluster()
+    with pytest.raises(ValueError, match="ClusterName"):
+        slurm.cluster()
+    assert [slurm.cluster() for _ in range(3)] == ["other"] * 3
     assert ran == [("scontrol", "show", "config")] * 4
 
     slurm._cluster = None
@@ -194,8 +199,6 @@ def test_a_job_the_queue_still_remembers_as_ended_is_gone(
         "123 BOOT_FAIL\n",
         "123 SOMETHING_NEW\n",
         "122 COMPLETED\n123 RUNNING\n",
-        "123\n",
-        "123 RUNNING extra\n",
     ],
 )
 def test_a_job_the_queue_lists_as_anything_else_is_not_gone(
@@ -223,8 +226,6 @@ def test_a_job_the_queue_lists_as_anything_else_is_not_gone(
         "123|NODE_FAIL|None\n123|COMPLETED|None\n",
         "123|SOMETHING_NEW|None\n",
         "124|COMPLETED|None\n",  # another job's row only
-        "123|COMPLETED\n",
-        "123|COMPLETED|None\nnot a row at all\n",
     ],
 )
 def test_an_end_accounting_does_not_call_clean_is_not_gone(
@@ -236,34 +237,60 @@ def test_an_end_accounting_does_not_call_clean_is_not_gone(
 
 
 @pytest.mark.parametrize(
-    "table",
+    ("table", "error"),
     [
         # The queue fails for another reason than a forgotten job.
-        {
-            "squeue": _failed("squeue", "slurm_load_jobs error: Socket timed out"),
-            "sacct": "123|COMPLETED|None\n",
-        },
+        (
+            {
+                "squeue": _failed("squeue", "slurm_load_jobs error: Socket timed out"),
+                "sacct": "123|COMPLETED|None\n",
+            },
+            subprocess.CalledProcessError,
+        ),
         # It printed something before it failed.
-        {
-            "squeue": _failed("squeue", FORGOTTEN, stdout="123 RUNNING\n"),
-            "sacct": "123|COMPLETED|None\n",
-        },
-        {
-            "squeue": subprocess.TimeoutExpired("squeue", 60.0),
-            "sacct": "123|COMPLETED|None\n",
-        },
-        {"squeue": "", "sacct": _failed("sacct", "sacct: error")},
-        {"squeue": "", "sacct": subprocess.TimeoutExpired("sacct", 60.0)},
-        {"squeue": ""},  # a machine without sacct
-        {},  # a machine without Slurm
+        (
+            {
+                "squeue": _failed("squeue", FORGOTTEN, stdout="123 RUNNING\n"),
+                "sacct": "123|COMPLETED|None\n",
+            },
+            subprocess.CalledProcessError,
+        ),
+        (
+            {
+                "squeue": subprocess.TimeoutExpired("squeue", 60.0),
+                "sacct": "123|COMPLETED|None\n",
+            },
+            subprocess.TimeoutExpired,
+        ),
+        (
+            {"squeue": "", "sacct": _failed("sacct", "sacct: error")},
+            subprocess.CalledProcessError,
+        ),
+        (
+            {"squeue": "", "sacct": subprocess.TimeoutExpired("sacct", 60.0)},
+            subprocess.TimeoutExpired,
+        ),
+        ({"squeue": ""}, FileNotFoundError),  # a Slurm machine without sacct
+        ({}, FileNotFoundError),  # a Slurm machine without squeue
+        ({"squeue": "123\n", "sacct": "123|COMPLETED|None\n"}, ValueError),
+        (
+            {"squeue": "123 RUNNING extra\n", "sacct": "123|COMPLETED|None\n"},
+            ValueError,
+        ),
+        ({"squeue": "", "sacct": "123|COMPLETED\n"}, ValueError),
+        (
+            {"squeue": "", "sacct": "123|COMPLETED|None\nnot a row at all\n"},
+            ValueError,
+        ),
     ],
 )
-def test_a_job_slurm_does_not_answer_for_is_not_gone(
-    table: dict[str, str | Exception], answers: Answers
+def test_a_slurm_failure_or_unexpected_output_raises(
+    table: dict[str, str | Exception], error: type[Exception], answers: Answers
 ) -> None:
     answers(**table)
 
-    assert not slurm.gone("sc", "123")
+    with pytest.raises(error):
+        slurm.gone("sc", "123")
 
 
 @pytest.mark.parametrize("cluster", ["other", None])

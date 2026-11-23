@@ -16,6 +16,7 @@ it goes out alone.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 from collections import Counter, OrderedDict
@@ -640,7 +641,7 @@ class Manager:
         for _, folder in due:
             try:
                 attempt_lock.free(folder)
-            except attempt_lock.HeldError as exc:
+            except (attempt_lock.HeldError, OSError, subprocess.SubprocessError) as exc:
                 whys.append(str(exc))
             else:
                 whys.append(None)
