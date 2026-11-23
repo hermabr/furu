@@ -25,6 +25,7 @@ import os
 import secrets
 import shutil
 import socket
+import subprocess
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -34,14 +35,7 @@ from furu.logging import get_logger
 from furu.storage._layout import list_names, scratch_dir_in
 
 logger = get_logger()
-
-# Errnos from os.rename() that can be caused by another worker winning the race.
-# Any other OSError (e.g. EACCES, EROFS, ENOSPC, EDQUOT, EXDEV) is re-raised
-# when the subsequent listing confirms the rename did not land.
-_TAKE_RACE_ERRNOS = frozenset({errno.ENOENT, errno.ESTALE})
-_SEED_RACE_ERRNOS = frozenset(
-    {errno.EEXIST, errno.ENOTEMPTY, errno.ENOENT, errno.ESTALE}
-)
+_RACE = frozenset({errno.EEXIST, errno.ENOTEMPTY, errno.ENOENT, errno.ESTALE})
 
 
 class HeldError(RuntimeError):
@@ -52,32 +46,22 @@ def new_token() -> str:
     return secrets.token_hex(8)
 
 
-def _check_part(label: str, value: str) -> str:
-    if not value or "__" in value or "/" in value:
-        raise RuntimeError(f"invalid {label} {value!r} for attempt folder name")
-    return value
-
-
 def me() -> str:
     """This process as an owner: the Slurm job it runs in, if it runs in one."""
     if job := os.environ.get("SLURM_JOB_ID"):
-        if not job.isdigit():
-            raise RuntimeError(f"SLURM_JOB_ID={job!r} is not a numeric Slurm job id")
+        restart = os.environ.get("SLURM_RESTART_COUNT") or "0"
+        if not job.isdigit() or not restart.isdigit():
+            raise ValueError(
+                f"invalid SLURM_JOB_ID={job!r} or SLURM_RESTART_COUNT={restart!r}"
+            )
         cluster = slurm.cluster()
         if not cluster:
             raise RuntimeError(
                 f"SLURM_JOB_ID={job} is set, but the Slurm cluster name could not "
                 "be determined from SLURM_CLUSTER_NAME or `scontrol show config`"
             )
-        _check_part("Slurm cluster name", cluster)
-        restart = os.environ.get("SLURM_RESTART_COUNT") or "0"
-        if not restart.isdigit():
-            raise RuntimeError(
-                f"SLURM_RESTART_COUNT={restart!r} is not a numeric restart count"
-            )
         return f"slurm__{cluster}__{job}__{restart}"
-    host = _check_part("hostname", socket.gethostname())
-    return f"local__{host}__{os.getpid()}"
+    return f"local__{socket.gethostname()}__{os.getpid()}"
 
 
 def entries(run: Path) -> list[str]:
@@ -111,11 +95,12 @@ def _why_held(run: Path, name: str) -> str | None:
         case ["slurm", cluster, job, restart, tok] if (
             cluster and job.isdigit() and restart.isdigit() and tok
         ):
-            if (reason := slurm.why_not_gone(cluster, job)) is None:
+            if slurm.gone(cluster, job):
                 return None
             whose = (
-                f"is the working folder of Slurm job {job} on cluster {cluster} "
-                f"({reason})"
+                f"is the working folder of Slurm job {job} on cluster {cluster}, "
+                "which Slurm does not report from here as ended with all its "
+                "processes gone"
             )
         case ["local", host, pid, tok] if host and pid.isdigit() and tok:
             whose = (
@@ -135,7 +120,7 @@ def held(run: Path) -> str | None:
     try:
         name = _only(run)
         return _why_held(run, name) if name else None
-    except (HeldError, slurm.SlurmError) as exc:
+    except (HeldError, OSError, subprocess.SubprocessError) as exc:
         return str(exc)
 
 
@@ -178,10 +163,8 @@ def acquire(
     the folder's name: a worker gives its child one, to find the folder by if
     the child dies.
     """
-    tok = _check_part("token", token) if token is not None else new_token()
-    mine = run / f"{me()}__{tok}"
+    mine = run / f"{me()}__{token or new_token()}"
     existed, err = _take(run, mine)
-    race_errnos = _TAKE_RACE_ERRNOS
     if not existed:
         # Made whole beside the run's folder and renamed onto it, which works
         # only while that is missing or empty: of the workers that start a run
@@ -190,14 +173,13 @@ def acquire(
         seed = run.parent / f".seed__{new_token()}"
         seed.mkdir()
         (seed / mine.name).mkdir()
-        race_errnos = _SEED_RACE_ERRNOS
         try:
             os.rename(seed, run)
         except OSError as exc:
             err = exc
         shutil.rmtree(seed, ignore_errors=True)
     if (name := _only(run)) != mine.name:
-        if err is not None and err.errno not in race_errnos:
+        if err is not None and err.errno not in _RACE:
             raise err
         now = f"is now {run / name}" if name else "is gone"
         raise HeldError(
@@ -299,7 +281,7 @@ def discard(run: Path) -> None:
     if existed:
         shutil.rmtree(trash, ignore_errors=True)
     if names := entries(run):
-        if err is not None and err.errno not in _TAKE_RACE_ERRNOS:
+        if err is not None and err.errno not in _RACE:
             raise err
         raise HeldError(
             f"the working folder of {run} was not deleted: a worker may have "
