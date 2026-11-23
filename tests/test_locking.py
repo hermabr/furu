@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import furu.locking as locking_module
-from furu.locking import short_lock
+import furu.migration.schema as locking_module
+from furu.migration.schema import short_lock
 
 
 def test_the_lock_is_a_file_that_is_there_while_the_body_runs(tmp_path: Path) -> None:

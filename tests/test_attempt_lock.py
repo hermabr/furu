@@ -22,16 +22,6 @@ THEIRS = "local__jagupard26__4242__9f3c2a7d51b0e6a4"
 JOB = "slurm__sc__123__0__9f3c2a7d51b0e6a4"
 
 
-def unpublished() -> bool:
-    return False
-
-
-def _take(run: Path, token: str | None = None) -> tuple[Path, os.stat_result]:
-    claim = attempt_lock.acquire(run, unpublished, token=token)
-    assert claim is not None
-    return claim
-
-
 @pytest.fixture
 def run(tmp_path: Path) -> Path:
     """Where a run's working folder goes: attempts/<run>, not made yet."""
@@ -65,7 +55,7 @@ def _renames(
 
 
 def test_this_process_is_named_by_host_and_pid_outside_slurm() -> None:
-    assert attempt_lock.me() == f"local__{HOST}__{PID}"
+    assert attempt_lock._me() == f"local__{HOST}__{PID}"
 
 
 @pytest.mark.parametrize(("restart", "named"), [(None, "0"), ("3", "3")])
@@ -77,7 +67,7 @@ def test_this_process_is_named_by_its_slurm_job_and_restart_count(
     if restart is not None:
         monkeypatch.setenv("SLURM_RESTART_COUNT", restart)
 
-    assert attempt_lock.me() == f"slurm__sc__18609579__{named}"
+    assert attempt_lock._me() == f"slurm__sc__18609579__{named}"
 
 
 def test_a_slurm_job_that_cannot_tell_its_cluster_fails_loudly(
@@ -88,22 +78,22 @@ def test_a_slurm_job_that_cannot_tell_its_cluster_fails_loudly(
     monkeypatch.setattr(slurm, "cluster", lambda: None)
 
     with pytest.raises(RuntimeError, match="SLURM_JOB_ID=18609579.*SLURM_CLUSTER_NAME"):
-        attempt_lock.me()
+        attempt_lock._me()
 
 
 @pytest.mark.parametrize("name", ["free__manual", "free__9f3c2a7d51b0e6a4"])
 def test_a_free_folder_holds_nothing(run: Path, name: str) -> None:
     (run / name).mkdir(parents=True)
 
-    assert attempt_lock.held(run) is None
+    assert attempt_lock.free(run) == run / name
     assert attempt_lock.current(run) == run / name
 
 
 def test_a_run_without_a_working_folder_holds_nothing(run: Path) -> None:
-    assert attempt_lock.held(run) is None
+    assert attempt_lock.free(run) is None
     assert attempt_lock.current(run) is None
     run.mkdir(parents=True)
-    assert attempt_lock.held(run) is None
+    assert attempt_lock.free(run) is None
     assert attempt_lock.current(run) is None
 
 
@@ -113,9 +103,10 @@ def test_a_process_holds_its_folder_whatever_became_of_it(run: Path, name: str) 
     (run / name).mkdir(parents=True)
     host, pid = name.split("__")[1:3]
 
-    why = attempt_lock.held(run)
+    with pytest.raises(HeldError) as refused:
+        attempt_lock.free(run)
 
-    assert why is not None
+    why = str(refused.value)
     assert f"{run / name} is the working folder of process {pid} on {host}" in why
     assert why.endswith(f"free it by hand: mv {run / name} {run}/free__manual")
 
@@ -146,11 +137,10 @@ def test_a_name_of_another_shape_holds_the_run_and_slurm_is_not_asked(
     asked = job_is(True)
     (run / name).mkdir(parents=True)
 
-    why = attempt_lock.held(run)
-
-    assert why is not None and "does not say whose working folder it is" in why
     with pytest.raises(HeldError, match="does not say whose working folder it is"):
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.free(run)
+    with pytest.raises(HeldError, match="does not say whose working folder it is"):
+        attempt_lock.acquire(run)
     assert asked == []  # nothing from the name reaches a command line
     assert os.listdir(run) == [name]
 
@@ -162,18 +152,19 @@ def test_a_slurm_jobs_folder_is_held_until_slurm_calls_the_job_gone(
     (run / JOB / "checkpoint").write_text("step 7")
 
     asked = job_is(False)
-    why = attempt_lock.held(run)
-    assert why is not None
+    with pytest.raises(HeldError) as refused:
+        attempt_lock.free(run)
+    why = str(refused.value)
     assert f"{run / JOB} is the working folder of Slurm job 123 on cluster sc" in why
     assert f"mv {run / JOB} {run}/free__manual" in why
     with pytest.raises(HeldError, match="Slurm job 123 on cluster sc"):
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.acquire(run)
     assert asked == [("sc", "123")] * 2
     assert os.listdir(run) == [JOB]
 
     job_is(True)
-    assert attempt_lock.held(run) is None
-    attempt, _ = _take(run)
+    assert attempt_lock.free(run) == run / JOB
+    attempt, _ = attempt_lock.acquire(run)
 
     assert (attempt / "checkpoint").read_text() == "step 7"
     assert os.listdir(run) == [attempt.name]
@@ -183,12 +174,12 @@ def test_two_folders_hold_the_run_however_they_are_named(run: Path) -> None:
     (run / "free__manual").mkdir(parents=True)
     (run / "free__other").mkdir()
 
-    why = attempt_lock.held(run)
+    with pytest.raises(HeldError) as refused:
+        attempt_lock.free(run)
 
-    assert why is not None
-    assert f"{run} holds 2 folders, free__manual, free__other" in why
+    assert f"{run} holds 2 folders, free__manual, free__other" in str(refused.value)
     with pytest.raises(HeldError, match="holds 2 folders"):
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.acquire(run)
     assert sorted(os.listdir(run)) == ["free__manual", "free__other"]
 
 
@@ -196,7 +187,7 @@ def test_two_folders_hold_the_run_however_they_are_named(run: Path) -> None:
 
 
 def test_the_first_worker_makes_the_folder_and_takes_it(run: Path) -> None:
-    attempt, claimed = _take(run)
+    attempt, claimed = attempt_lock.acquire(run)
 
     assert attempt.parent == run
     assert attempt.name.startswith(f"local__{HOST}__{PID}__")
@@ -207,11 +198,12 @@ def test_the_first_worker_makes_the_folder_and_takes_it(run: Path) -> None:
 
 
 def test_a_folder_is_named_with_the_token_it_is_taken_with(run: Path) -> None:
-    attempt, _ = _take(run, token="0b1c2d3e4f5a6b7c")
+    attempt, _ = attempt_lock.acquire(run, token="0b1c2d3e4f5a6b7c")
     assert attempt.name == f"local__{HOST}__{PID}__0b1c2d3e4f5a6b7c"
 
+    (attempt / "checkpoint").write_text("step 1")
     attempt_lock.release(attempt)
-    again, _ = _take(run, token="a1b2c3d4e5f60718")
+    again, _ = attempt_lock.acquire(run, token="a1b2c3d4e5f60718")
     assert again.name == f"local__{HOST}__{PID}__a1b2c3d4e5f60718"
 
 
@@ -222,7 +214,7 @@ def test_a_folder_another_process_holds_is_refused_and_says_what_to_do(
     held.mkdir(parents=True)
 
     with pytest.raises(HeldError) as refused:
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.acquire(run)
 
     message = str(refused.value)
     assert f"{held} is the working folder of process 4242 on jagupard26" in message
@@ -232,14 +224,14 @@ def test_a_folder_another_process_holds_is_refused_and_says_what_to_do(
 
     # Done by hand, as the message says.
     held.rename(run / "free__manual")
-    assert _take(run)[0].name.startswith("local__")
+    assert attempt_lock.acquire(run)[0].name.startswith("local__")
 
 
 def test_this_process_is_refused_its_own_folder_too(run: Path) -> None:
-    _take(run)
+    attempt_lock.acquire(run)
 
     with pytest.raises(HeldError, match=f"process {PID} on {HOST}"):
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.acquire(run)
 
 
 def test_of_the_workers_that_start_a_run_at_once_one_gets_its_folder(run: Path) -> None:
@@ -251,7 +243,7 @@ def test_of_the_workers_that_start_a_run_at_once_one_gets_its_folder(run: Path) 
     def start() -> None:
         together.wait()
         try:
-            got.append(_take(run)[0])
+            got.append(attempt_lock.acquire(run)[0])
         except HeldError as exc:
             refused.append(exc)
 
@@ -281,7 +273,7 @@ def test_a_folder_made_too_late_does_not_land_beside_the_one_that_is_there(
     _renames(monkeypatch, late)
 
     with pytest.raises(HeldError, match="did not get") as refused:
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.acquire(run)
 
     assert f"Its working folder is now {run / THEIRS}" in str(refused.value)
     assert os.listdir(run) == [THEIRS]
@@ -303,7 +295,7 @@ def test_of_two_workers_that_find_the_folder_free_one_takes_it(
     _renames(monkeypatch, lose)
 
     with pytest.raises(HeldError, match="did not get"):
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.acquire(run)
 
     assert os.listdir(run) == [THEIRS]
     assert os.listdir(run.parent) == [run.name]
@@ -323,7 +315,7 @@ def test_a_listing_taken_during_a_rename_is_taken_again(
 
     monkeypatch.setattr(attempt_lock, "list_names", both_names_once)
 
-    attempt, _ = _take(run)
+    attempt, _ = attempt_lock.acquire(run)
 
     assert os.listdir(run) == [attempt.name]
 
@@ -341,7 +333,7 @@ def test_a_run_that_keeps_listing_two_folders_is_given_up_on_after_three_listing
     monkeypatch.setattr(attempt_lock, "list_names", both_names)
 
     with pytest.raises(HeldError, match="holds 2 folders"):
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.acquire(run)
 
     assert listings == [run] * 3
     assert os.listdir(run) == ["free__manual"]
@@ -366,7 +358,7 @@ def test_a_rename_that_happened_but_reported_an_error_is_found_in_the_listing(
 
     _renames(monkeypatch, answer_lost)
 
-    attempt, _ = _take(run)
+    attempt, _ = attempt_lock.acquire(run)
 
     assert calls == 1
     assert os.listdir(run) == [attempt.name]
@@ -387,54 +379,58 @@ def test_a_rename_that_failed_leaves_the_run_as_it_was(
     _renames(monkeypatch, fail)
 
     with pytest.raises(HeldError, match="did not get") as refused:
-        attempt_lock.acquire(run, unpublished)
+        attempt_lock.acquire(run)
 
     assert ("is now" if there else "is gone") in str(refused.value)
     assert list_names(run) == (["free__manual"] if there else [])
     assert os.listdir(run.parent) == ([run.name] if there else [])
 
 
-# --- a run that was published meanwhile --------------------------------------
-
-
-def test_a_run_published_before_its_folder_was_made_is_not_started_again(
-    run: Path,
+def test_a_failing_stat_in_acquire_releases_fresh_or_adopted_claim(
+    run: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen: list[list[str]] = []
+    real_stat = Path.stat
 
-    def published() -> bool:
-        seen.append(os.listdir(run))  # asked once the folder is this process's
-        return True
+    def boom(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self.parent == run:
+            raise OSError(errno.ESTALE, "Stale file handle")
+        return real_stat(self, follow_symlinks=follow_symlinks)
 
-    assert attempt_lock.acquire(run, published, token="0b1c2d3e4f5a6b7c") is None
+    monkeypatch.setattr(Path, "stat", boom)
 
-    assert seen == [[f"local__{HOST}__{PID}__0b1c2d3e4f5a6b7c"]]
-    assert os.listdir(run.parent) == []  # the folder made here is gone again
+    # Fresh claim is removed rather than stranded under local__.
+    with pytest.raises(OSError, match="Stale file handle"):
+        attempt_lock.acquire(run)
+    assert not run.exists()
 
-
-def test_a_run_published_before_its_folder_was_taken_keeps_what_is_in_the_folder(
-    run: Path,
-) -> None:
-    (run / "free__manual").mkdir(parents=True)
-    (run / "free__manual" / "checkpoint").write_text("step 7")
-
-    assert attempt_lock.acquire(run, lambda: True) is None
-
+    # Adopted claim with checkpoints is released back to free__ with contents intact.
+    (run / "free__manual" / "scratch").mkdir(parents=True)
+    (run / "free__manual" / "scratch" / "ckpt").write_text("step 5")
+    with pytest.raises(OSError, match="Stale file handle"):
+        attempt_lock.acquire(run)
     (freed,) = os.listdir(run)
     assert freed.startswith("free__") and freed != "free__manual"
-    assert (run / freed / "checkpoint").read_text() == "step 7"
+    assert (run / freed / "scratch" / "ckpt").read_text() == "step 5"
 
 
 # --- giving a folder up ------------------------------------------------------
 
 
+def test_releasing_an_empty_folder_removes_it_with_its_parent(run: Path) -> None:
+    attempt, _ = attempt_lock.acquire(run)
+
+    attempt_lock.release(attempt)
+
+    assert os.listdir(run.parent) == []
+
+
 def test_a_released_folder_keeps_its_files_under_a_new_free_name(run: Path) -> None:
-    first, _ = _take(run)
+    first, _ = attempt_lock.acquire(run)
     (first / "checkpoint").write_text("step 7")
 
     attempt_lock.release(first)
     (freed,) = os.listdir(run)
-    second, _ = _take(run)
+    second, _ = attempt_lock.acquire(run)
     attempt_lock.release(second)
     (freed_again,) = os.listdir(run)
 
@@ -444,7 +440,7 @@ def test_a_released_folder_keeps_its_files_under_a_new_free_name(run: Path) -> N
 
 
 def test_releasing_a_folder_that_was_taken_by_hand_does_nothing(run: Path) -> None:
-    attempt, _ = _take(run)
+    attempt, _ = attempt_lock.acquire(run)
     attempt.rename(run / "free__manual")
 
     attempt_lock.release(attempt)
@@ -455,7 +451,8 @@ def test_releasing_a_folder_that_was_taken_by_hand_does_nothing(run: Path) -> No
 def test_a_release_that_failed_says_that_the_folder_stays_held(
     run: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    attempt, _ = _take(run)
+    attempt, _ = attempt_lock.acquire(run)
+    (attempt / "checkpoint").write_text("step 7")
     warned: list[str] = []
     monkeypatch.setattr(
         attempt_lock.logger, "warning", lambda text, *args: warned.append(text % args)
@@ -481,9 +478,9 @@ def test_a_worker_frees_the_folder_its_dead_child_held_and_no_other(
     monkeypatch.setenv("SLURM_JOB_ID", "18609579")
     monkeypatch.setenv("SLURM_CLUSTER_NAME", "sc")
     childs, siblings = tmp_path / "attempts" / "3f2a", tmp_path / "attempts" / "77c1"
-    child, _ = _take(childs, token="9f3c2a7d51b0e6a4")
+    child, _ = attempt_lock.acquire(childs, token="9f3c2a7d51b0e6a4")
     (child / "checkpoint").write_text("7")
-    sibling, _ = _take(siblings, token="0b1c2d3e4f5a6b7c")
+    sibling, _ = attempt_lock.acquire(siblings, token="0b1c2d3e4f5a6b7c")
     assert child.name == "slurm__sc__18609579__0__9f3c2a7d51b0e6a4"
     assert sibling.name == "slurm__sc__18609579__0__0b1c2d3e4f5a6b7c"
 
@@ -515,7 +512,7 @@ def test_a_child_that_died_before_it_took_a_folder_left_nothing_to_free(
 def finished(run: Path) -> tuple[Path, Path, os.stat_result]:
     """A taken working folder with a result and scratch in it, and where its
     run is published."""
-    attempt, claimed = _take(run)
+    attempt, claimed = attempt_lock.acquire(run)
     (attempt / "result").write_text("42")
     (attempt / "scratch").mkdir()
     (attempt / "scratch" / "tmp").write_text("left over")
@@ -621,7 +618,7 @@ def test_a_folder_that_was_taken_from_its_process_is_not_published(
 def test_a_create_cannot_make_its_folder_again_through_its_directory(
     run: Path,
 ) -> None:
-    attempt, _ = _take(run)
+    attempt, _ = attempt_lock.acquire(run)
     directory = SpecDirectory(attempt)
     attempt.rename(run / "free__manual")
 
@@ -701,29 +698,10 @@ def test_a_folder_a_worker_took_first_is_not_deleted(
     assert os.listdir(run.parent) == [run.name]
 
 
-def test_a_failing_published_check_undoes_a_fresh_or_adopted_claim(run: Path) -> None:
-    def boom() -> bool:
-        raise RuntimeError("transient lookup error")
-
-    # Fresh claim is removed rather than stranded under local__.
-    with pytest.raises(RuntimeError, match="transient lookup error"):
-        attempt_lock.acquire(run, boom)
-    assert not run.exists()
-
-    # Adopted claim with checkpoints is released back to free__ with contents intact.
-    (run / "free__manual" / "scratch").mkdir(parents=True)
-    (run / "free__manual" / "scratch" / "ckpt").write_text("step 5")
-    with pytest.raises(RuntimeError, match="transient lookup error"):
-        attempt_lock.acquire(run, boom)
-    (freed,) = os.listdir(run)
-    assert freed.startswith("free__") and freed != "free__manual"
-    assert (run / freed / "scratch" / "ckpt").read_text() == "step 5"
-
-
 def test_a_failed_runs_mkdir_in_publish_leaves_scratch_in_place(
     run: Path, tmp_path: Path
 ) -> None:
-    attempt, claimed = _take(run)
+    attempt, claimed = attempt_lock.acquire(run)
     (attempt / "scratch").mkdir()
     (attempt / "scratch" / "ckpt").write_text("step 9")
     # Make dest.parent uncreatable by putting a file where its parent would be.

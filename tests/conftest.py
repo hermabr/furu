@@ -44,9 +44,9 @@ os.environ.update(
 @pytest.fixture(autouse=True)
 def _no_remembered_cluster() -> Iterator[None]:
     """No test finds the Slurm cluster another test's fake controller named."""
-    slurm.forget_cluster()
+    slurm._cluster = None
     yield
-    slurm.forget_cluster()
+    slurm._cluster = None
 
 
 @pytest.fixture

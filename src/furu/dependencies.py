@@ -310,16 +310,13 @@ class Creation:
     ``specs`` are the ids of the specs whose create() runs, ``attempt_dir``
     the working folder it took for their run, ``plan`` the plan file that lists
     them and ``asked`` the stored names of the classes their launch asked
-    about. ``attempt_token`` is what a worker gave its child to end the name
-    of the next working folder with, to find the folder by if the child dies.
-    ``on_load`` is told about each published run the create(), or the traced
-    call of a ``remember=True`` method, loads, and the specs whose rows it
-    loads from it.
+    about. ``on_load`` is told about each published run the create(), or the
+    traced call of a ``remember=True`` method, loads, and the specs whose rows
+    it loads from it.
     """
 
     specs: frozenset[str] = frozenset()
     attempt_dir: Path | None = None
-    attempt_token: str | None = None
     plan: Path | None = None
     asked: frozenset[str] = frozenset()
     on_load: OnLoad = _ignore_loads
@@ -345,7 +342,6 @@ def creating(
     *,
     specs: frozenset[str] | None = None,
     attempt_dir: Path | None = None,
-    attempt_token: str | None = None,
     plan: Path | None = None,
     asked: frozenset[str] | None = None,
     on_load: OnLoad | None = None,
@@ -354,7 +350,6 @@ def creating(
     given = {
         "specs": specs,
         "attempt_dir": attempt_dir,
-        "attempt_token": attempt_token,
         "plan": plan,
         "asked": asked,
         "on_load": on_load,

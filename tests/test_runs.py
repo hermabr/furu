@@ -27,6 +27,7 @@ from furu.storage._layout import (
     FIXED,
     attempts_dir_in,
     events_path_in,
+    list_names,
     log_path_in,
     run_name,
     runs_dir_in,
@@ -54,7 +55,7 @@ class Weights(Spec):
 
     @furu.batched(lambda spec, worker: (None, 100))
     def create(specs: list["Weights"], directory: furu.SpecDirectory) -> list[Any]:
-        Weights.folders += attempt_lock.entries(attempt_parent(specs))
+        Weights.folders += list_names(attempt_parent(specs))
         return [np.full(3, spec.seed) for spec in specs]
 
 
@@ -143,7 +144,11 @@ def test_a_run_is_whole_and_still_its_workers_when_one_rename_publishes_it(
             seen["files"] = sorted(path.name for path in self.iterdir())
             seen["ends"] = ends_of(spec)
             seen["holder"] = self.name.rpartition("__")[0]
-            seen["free"] = attempt_lock.held(self.parent) is None
+            try:
+                attempt_lock.free(self.parent)
+                seen["free"] = True
+            except attempt_lock.HeldError:
+                seen["free"] = False
             seen["done"] = spec.done
         rename(self, target)
 
@@ -155,7 +160,7 @@ def test_a_run_is_whole_and_still_its_workers_when_one_rename_publishes_it(
     assert seen == {
         "files": files,
         "ends": [{"outcome": "ok"}],
-        "holder": attempt_lock.me(),
+        "holder": attempt_lock._me(),
         "free": False,
         "done": False,
     }
@@ -303,7 +308,7 @@ def test_a_batch_is_one_run_with_a_row_per_spec_and_one_file_per_array() -> None
     # One working folder, named for the process that held it and gone once
     # the run is published.
     (held,) = Weights.folders
-    assert held.rpartition("__")[0] == attempt_lock.me()
+    assert held.rpartition("__")[0] == attempt_lock._me()
     assert list(attempts_dir_in(specs[0]._class_dir).iterdir()) == []
 
 
@@ -440,7 +445,7 @@ def test_a_worker_whose_folder_was_taken_publishes_nothing_and_makes_no_folder()
     assert not spec.done
     # The folder is as it was taken: nothing was made again under the old
     # name, and the events are left to whoever has it now.
-    assert attempt_lock.entries(attempt_parent([spec])) == ["free__manual"]
+    assert list_names(attempt_parent([spec])) == ["free__manual"]
     assert ends_of(spec) == []
     assert not (working_folder(spec) / "result").exists()
 
@@ -514,3 +519,72 @@ def test_an_attempt_killed_in_the_middle_of_a_line_costs_only_that_line() -> Non
         ("start", 2, None),
         ("end", None, "ok"),
     ]
+
+
+def test_ensure_group_result_releases_claim_on_post_acquire_cache_hit_or_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = Leaf(n=99)
+    parent = attempt_parent([spec])
+    checks = 0
+    seen_after_acquire: list[list[str]] = []
+
+    def row_published_on_second_check(
+        self: stored.Stored, obj: Spec
+    ) -> stored.Row | None:
+        nonlocal checks
+        checks += 1
+        if checks == 1:
+            return None
+        seen_after_acquire.append(list_names(parent))
+        return stored.Row(fixed_run(obj), 0)
+
+    # Fresh claim is removed when published() becomes true after acquire().
+    with monkeypatch.context() as patched, creating(plan=_launch_plan()):
+        patched.setattr(stored.Stored, "row", row_published_on_second_check)
+        load_or_create._ensure_group_result([spec], token="0b1c2d3e4f5a6b7c")
+    assert seen_after_acquire == [[f"{attempt_lock._me()}__0b1c2d3e4f5a6b7c"]]
+    assert not parent.exists()
+
+    # Adopted non-empty claim is released back to free__ with contents intact.
+    checks = 0
+    (parent / "free__manual" / "scratch").mkdir(parents=True)
+    (parent / "free__manual" / "scratch" / "ckpt").write_text("step 7")
+    with monkeypatch.context() as patched, creating(plan=_launch_plan()):
+        patched.setattr(stored.Stored, "row", row_published_on_second_check)
+        load_or_create._ensure_group_result([spec])
+    (freed,) = list_names(parent)
+    assert freed.startswith("free__") and freed != "free__manual"
+    assert (parent / freed / "scratch" / "ckpt").read_text() == "step 7"
+
+    # A failing post-acquire published() check releases an adopted claim too.
+    def row_raises_on_second_check(self: stored.Stored, obj: Spec) -> stored.Row | None:
+        nonlocal checks
+        checks += 1
+        if checks == 1:
+            return None
+        raise RuntimeError("transient lookup error")
+
+    checks = 0
+    with (
+        monkeypatch.context() as patched,
+        creating(plan=_launch_plan()),
+        pytest.raises(RuntimeError, match="transient lookup error"),
+    ):
+        patched.setattr(stored.Stored, "row", row_raises_on_second_check)
+        load_or_create._ensure_group_result([spec])
+    (freed_again,) = list_names(parent)
+    assert freed_again.startswith("free__") and freed_again != freed
+    assert (parent / freed_again / "scratch" / "ckpt").read_text() == "step 7"
+
+    # And removes a fresh empty claim when the second check fails.
+    attempt_lock.discard(parent)
+    checks = 0
+    with (
+        monkeypatch.context() as patched,
+        creating(plan=_launch_plan()),
+        pytest.raises(RuntimeError, match="transient lookup error"),
+    ):
+        patched.setattr(stored.Stored, "row", row_raises_on_second_check)
+        load_or_create._ensure_group_result([spec])
+    assert not parent.exists()

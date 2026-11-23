@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import signal
 import subprocess
 import threading
@@ -163,7 +164,7 @@ class ChildSlot:
         assert child.process.stdout is not None
         # The child ends the name of the working folder it takes with this,
         # so the folder is found again if the child dies holding it.
-        token = attempt_lock.new_token()
+        token = secrets.token_hex(8)
         try:
             child.process.stdin.write(f"{token} {job.model_dump_json()}\n")
             child.process.stdin.flush()

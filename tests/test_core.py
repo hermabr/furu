@@ -4,7 +4,6 @@ import re
 import shutil
 import sys
 import types
-from collections.abc import Callable
 from dataclasses import (
     FrozenInstanceError,
     dataclass,
@@ -1670,11 +1669,9 @@ def test_a_stored_spec_gets_no_working_folder(
     acquire = attempt_lock.acquire
     acquired: list[Path] = []
 
-    def spy(
-        run: Path, published: Callable[[], bool], *, token: str | None = None
-    ) -> tuple[Path, os.stat_result] | None:
+    def spy(run: Path, *, token: str | None = None) -> tuple[Path, os.stat_result]:
         acquired.append(run)
-        return acquire(run, published, token=token)
+        return acquire(run, token=token)
 
     monkeypatch.setattr(attempt_lock, "acquire", spy)
 

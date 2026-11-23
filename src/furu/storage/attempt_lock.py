@@ -24,7 +24,6 @@ import os
 import secrets
 import shutil
 import socket
-from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
@@ -39,11 +38,7 @@ class HeldError(RuntimeError):
     """A run's working folder is another's, or may be."""
 
 
-def new_token() -> str:
-    return secrets.token_hex(8)
-
-
-def me() -> str:
+def _me() -> str:
     """This process as an owner: the Slurm job it runs in, if it runs in one."""
     job = os.environ.get("SLURM_JOB_ID", "")
     if job.isdigit():
@@ -57,21 +52,16 @@ def me() -> str:
     return f"local__{socket.gethostname()}__{os.getpid()}"
 
 
-def entries(run: Path) -> list[str]:
-    """What is in a run's ``attempts/<run>/`` now: its working folder, or nothing."""
-    return sorted(list_names(run))
-
-
 def current(run: Path) -> Path | None:
     """The run's working folder under the name it has now, if it has one."""
-    names = entries(run)
+    names = sorted(list_names(run))
     return run / names[0] if names else None
 
 
 def _only(run: Path) -> str | None:
     """The name of the run's working folder, if it has one."""
     for _ in range(3):  # a listing taken during a rename can show both names
-        names = entries(run)
+        names = sorted(list_names(run))
         if len(names) <= 1:
             return names[0] if names else None
     raise HeldError(
@@ -80,16 +70,21 @@ def _only(run: Path) -> str | None:
     )
 
 
-def _why_held(run: Path, name: str) -> str | None:
-    """Why the working folder called ``name`` may not be taken; None if it may."""
+def free(run: Path) -> Path | None:
+    """The run's working folder if it may be taken, or None if it has none.
+
+    Raises HeldError if the folder is another's, or may be.
+    """
+    if (name := _only(run)) is None:
+        return None
     match name.split("__"):
         case ["free", tok] if tok:
-            return None
+            return run / name
         case ["slurm", cluster, job, restart, tok] if (
             cluster and job.isdigit() and restart.isdigit() and tok
         ):
             if slurm.gone(cluster, job):
-                return None
+                return run / name
             whose = (
                 f"is the working folder of Slurm job {job} on cluster {cluster}, "
                 "which Slurm does not report from here as ended with all its "
@@ -102,65 +97,39 @@ def _why_held(run: Path, name: str) -> str | None:
             )
         case _:
             whose = "has a name that does not say whose working folder it is"
-    return (
+    raise HeldError(
         f"{run / name} {whose}. If nothing is writing to it, free it by hand: "
         f"mv {run / name} {run}/free__manual"
     )
 
 
-def held(run: Path) -> str | None:
-    """Why the run cannot be started or continued now; None if it can."""
-    try:
-        name = _only(run)
-    except HeldError as exc:
-        return str(exc)
-    return _why_held(run, name) if name else None
-
-
-def _take(run: Path, dest: Path) -> bool:
-    """Rename the run's working folder to ``dest``; False if it has none.
-
-    Raises HeldError if the folder is another's. The rename can lose to
-    another worker's and can land with its answer lost, so the caller lists
-    again to see what happened.
-    """
-    name = _only(run)
-    if name is None:
-        return False
-    if why := _why_held(run, name):
-        raise HeldError(why)
-    with suppress(OSError):
-        os.rename(run / name, dest)
-    return True
-
-
-def _remove(folder: Path) -> None:
-    """Delete a folder: one rename takes it out of sight whole, whatever
+def trash(folder: Path, *, into: Path | None = None) -> None:
+    """Delete ``folder``: one rename takes it out of sight whole, whatever
     becomes of deleting it."""
-    trash = folder.parent.parent / f".trash__{new_token()}"
+    dest = (into or folder.parent.parent) / f".trash__{secrets.token_hex(8)}"
     with suppress(OSError):
-        os.rename(folder, trash)
-    shutil.rmtree(trash, ignore_errors=True)
+        os.rename(folder, dest)
+    shutil.rmtree(dest, ignore_errors=True)
 
 
-def acquire(
-    run: Path, published: Callable[[], bool], *, token: str | None = None
-) -> tuple[Path, os.stat_result] | None:
+def acquire(run: Path, *, token: str | None = None) -> tuple[Path, os.stat_result]:
     """Take the run's working folder for this process, making one if it has none.
 
-    Returns the folder and its stat, which ``publish`` asks for; None when
-    ``published`` says, once the folder is taken, that the run is stored after
-    all. Raises HeldError if the folder is another's, or may be. ``token`` ends
-    the folder's name: a worker gives its child one, to find the folder by if
-    the child dies.
+    Returns the folder and its stat, which ``publish`` asks for. Raises
+    HeldError if the folder is another's, or may be. ``token`` ends the
+    folder's name: a worker gives its child one, to find the folder by if the
+    child dies.
     """
-    mine = run / f"{me()}__{token or new_token()}"
-    if not _take(run, mine):
+    mine = run / f"{_me()}__{token or secrets.token_hex(8)}"
+    if (existing := free(run)) is not None:
+        with suppress(OSError):
+            os.rename(existing, mine)
+    else:
         # Made whole beside the run's folder and renamed onto it, which works
         # only while that is missing or empty: of the workers that start a run
         # at once, one's folder is the one in it.
         run.parent.mkdir(parents=True, exist_ok=True)
-        seed = run.parent / f".seed__{new_token()}"
+        seed = run.parent / f".seed__{secrets.token_hex(8)}"
         seed.mkdir()
         (seed / mine.name).mkdir()
         with suppress(OSError):
@@ -173,43 +142,36 @@ def acquire(
             f"the rename failed. Its working folder {now}"
         )
     try:
-        claimed = mine.stat()
-        # Whoever held the folder before may have published the run since this
-        # process last looked, and a run is published once.
-        already = published()
+        return mine, mine.stat()
     except BaseException:
-        _undo(mine, run)
+        release(mine)
         raise
-    if already:
-        _undo(mine, run)
-        return None
-    return mine, claimed
-
-
-def _undo(mine: Path, run: Path) -> None:
-    try:
-        mine.rmdir()  # made here
-    except OSError:
-        release(mine)  # taken with what earlier attempts left in it
-    with suppress(OSError):
-        run.rmdir()
 
 
 def release(mine: Path) -> None:
-    """Give up a working folder this process took, so that any worker may take
-    it and go on from what is in it."""
+    """Give up a working folder this process took.
+
+    An empty folder is removed; one with files stays under a ``free__`` name
+    so that any worker may take it and go on from what is in it.
+    """
     try:
-        os.rename(mine, mine.with_name(f"free__{new_token()}"))
-    except OSError as exc:
-        if mine.name in entries(mine.parent):
-            logger.warning("could not release %s, which stays held: %s", mine, exc)
+        mine.rmdir()
+    except OSError:
+        try:
+            os.rename(mine, mine.with_name(f"free__{secrets.token_hex(8)}"))
+        except OSError as exc:
+            if mine.name in list_names(mine.parent):
+                logger.warning("could not release %s, which stays held: %s", mine, exc)
+    else:
+        with suppress(OSError):
+            mine.parent.rmdir()
 
 
 def release_child(run: Path, token: str) -> None:
     """Give up the working folder a child died holding, found by the token it
     was given. Only for a child this process killed and waited for: nothing
     else here says that a process is dead."""
-    for name in entries(run):
+    for name in list_names(run):
         if name.endswith(f"__{token}") and not name.startswith("free__"):
             release(run / name)
 
@@ -225,11 +187,12 @@ def publish(mine: Path, dest: Path, claimed: os.stat_result) -> None:
     # A folder that was taken from this process is gone under this name,
     # unless its create() made it again by writing to a path with its parents.
     try:
-        same = os.path.samestat(mine.stat(), claimed)
+        current_stat = mine.stat()
     except FileNotFoundError:
-        same = False
-    if not same:
-        _remove(mine)
+        current_stat = None
+    if current_stat is None or not os.path.samestat(current_stat, claimed):
+        if current_stat is not None:
+            trash(mine)
         raise HeldError(
             f"{mine} is no longer the folder this process took: it was renamed "
             "while its create() ran, so nothing is published from here"
@@ -237,21 +200,21 @@ def publish(mine: Path, dest: Path, claimed: os.stat_result) -> None:
     # Scratch is not part of a run. It is moved out whole, which a crash
     # cannot leave half done as deleting it in place would.
     dest.parent.mkdir(parents=True, exist_ok=True)
-    trash = mine.parent.parent / f".trash__{new_token()}"
+    moved_scratch = mine.parent.parent / f".trash__{secrets.token_hex(8)}"
     with suppress(FileNotFoundError):
-        os.rename(scratch_dir_in(mine), trash)
+        os.rename(scratch_dir_in(mine), moved_scratch)
     try:
         os.rename(mine, dest)
     except OSError:
         if dest.name not in list_names(dest.parent):
             with suppress(OSError):
-                os.rename(trash, scratch_dir_in(mine))
+                os.rename(moved_scratch, scratch_dir_in(mine))
             raise
         # The run is there: this rename happened and its answer was lost, or
         # another worker published the run first and this folder is left over.
-        if mine.name in entries(mine.parent):
-            _remove(mine)
-    shutil.rmtree(trash, ignore_errors=True)
+        if mine.name in list_names(mine.parent):
+            trash(mine)
+    shutil.rmtree(moved_scratch, ignore_errors=True)
     with suppress(OSError):
         mine.parent.rmdir()
 
@@ -262,10 +225,9 @@ def discard(run: Path) -> None:
     Raises HeldError if the folder is another's, or is a worker's by the time
     this is done.
     """
-    trash = run.parent / f".trash__{new_token()}"
-    if _take(run, trash):
-        shutil.rmtree(trash, ignore_errors=True)
-    if names := entries(run):
+    if (existing := free(run)) is not None:
+        trash(existing)
+    if names := list_names(run):
         raise HeldError(
             f"the working folder of {run} was not deleted: a worker may have "
             f"taken the run, which now holds {names[0]}"

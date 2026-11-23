@@ -29,7 +29,6 @@ from furu.dependencies import (
     any_under_creation,
     checked,
     creating,
-    creation,
     missing_dependencies,
     record_loaded,
 )
@@ -147,7 +146,7 @@ def _load_or_create(
     return map_specs(lambda obj: results[obj.object_id], tree)
 
 
-def _ensure_group_result(objs: Sequence[Spec]) -> None:
+def _ensure_group_result(objs: Sequence[Spec], *, token: str | None = None) -> None:
     """Create and publish one create() call's ``objs`` as one run, unless all are stored.
 
     The run is named for all of ``objs``, so one that is stored already is
@@ -172,14 +171,14 @@ def _ensure_group_result(objs: Sequence[Spec]) -> None:
     for obj in objs:
         record_nested_names(class_dir, held_in(obj))
 
-    claim = attempt_lock.acquire(
-        attempt_parent(objs), published, token=creation().attempt_token
-    )
-    if claim is None:  # whoever held the folder before published the run
-        objs[0].logger.info("cache hit for %s", label)
-        return
-    attempt, claimed = claim
+    attempt, claimed = attempt_lock.acquire(attempt_parent(objs), token=token)
     try:
+        # Whoever held the folder before may have published the run since this
+        # process last looked, and a run is published once.
+        if published():
+            objs[0].logger.info("cache hit for %s", label)
+            attempt_lock.release(attempt)
+            return
         attempt_lock.publish(attempt, _create_group(list(objs), attempt), claimed)
     except BaseException:
         # Whoever takes the folder next goes on from what is in it.

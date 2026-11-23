@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from abc import ABC
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -291,9 +290,10 @@ class Spec(_FuruDataclassTransform, ABC):
                 )
             )
         parent = attempt_parent([self])
-        if (why := attempt_lock.held(parent)) is not None:
-            raise attempt_lock.HeldError(f"{self.object_id}.delete(): {why}")
-        attempt = attempt_lock.current(parent)
+        try:
+            attempt = attempt_lock.free(parent)
+        except attempt_lock.HeldError as exc:
+            raise attempt_lock.HeldError(f"{self.object_id}.delete(): {exc}") from None
         runs = [
             run
             for version in version_dirs_in(self._class_dir)
@@ -310,12 +310,11 @@ class Spec(_FuruDataclassTransform, ABC):
         # The working folder first: if a worker took it since, this raises
         # with every published run still there.
         attempt_lock.discard(parent)
-        parent.parent.mkdir(exist_ok=True)
-        for run in runs:
-            # Renamed first, so no reader finds half a run.
-            trash = parent.parent / f".trash__{attempt_lock.new_token()}"
-            run.rename(trash)
-            shutil.rmtree(trash)
+        if runs:
+            parent.parent.mkdir(exist_ok=True)
+            for run in runs:
+                # Renamed first, so no reader finds half a run.
+                attempt_lock.trash(run, into=parent.parent)
         return True
 
     @final
