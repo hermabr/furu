@@ -114,7 +114,7 @@ def worker_loop(
                             logger.info(
                                 "running %s",
                                 job.label,
-                                extra={"path": job.log},
+                                extra={"path": job.folder},
                             )
                         cancelled = threading.Event()
                         _start_job_thread(job, child_slot, cancelled, events)

@@ -29,6 +29,7 @@ from subprocess_objects import (
 import furu
 from furu import Metadata, Spec, plan
 from furu.config import _project_anchor, get_config
+from furu.core import attempt_parent
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -36,6 +37,7 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.snapshot import CodeLocation
+from furu.storage._layout import list_names
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
@@ -268,6 +270,9 @@ def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
     # A start with no end: the attempt was killed.
     assert [event["event"] for event in events_of(crashing)] == ["opened", "start"]
     assert child_slot._child is None
+    # The worker saw its child die, so the folder is free for the next attempt.
+    (left,) = list_names(attempt_parent([crashing]))
+    assert left.startswith("free__")
 
     follow_up = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",

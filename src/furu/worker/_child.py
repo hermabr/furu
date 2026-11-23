@@ -19,12 +19,13 @@ from furu.worker.messages import (
 )
 
 
-def _execute(job: Job) -> JobResult:
+def _execute(job: Job, token: str) -> JobResult:
+    """Run one job; ``token`` ends the name of the working folder it takes."""
     provenance._set_submitted_repo_root(job.code.checkout)
     try:
         specs = plan.Specs(map(json.loads, job.lines))
         with creating(plan=job.plan, asked=job.asked):
-            _ensure_group_result([specs[spec] for spec in job.specs])
+            _ensure_group_result([specs[spec] for spec in job.specs], token=token)
         return JobCompletedResult()
     except _DependencyNotReady as exc:
         return JobBlockedResult(
@@ -54,7 +55,8 @@ def main() -> int:
     _configure_child_logging(worker_stderr)
 
     for line in sys.stdin:
-        result = _execute(Job.model_validate_json(line))
+        token, _, job = line.partition(" ")
+        result = _execute(Job.model_validate_json(job), token)
         protocol_out.write(result.model_dump_json() + "\n")
         protocol_out.flush()
     return 0

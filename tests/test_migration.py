@@ -517,22 +517,72 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
     spec = _spec(lemma=str)(lemma="comer")
     spec.create()
     path = schema_path_in(spec._class_dir)
-    lock = schema.lock
+    short_lock = schema.short_lock
 
     @contextmanager
     def another_process_first(lock_path: Path):
-        with lock(lock_path) as has_lock:
+        with short_lock(lock_path):
             with path.open("a") as file:
                 file.write('{"added":"min_overlap","default":0.5}\n')
-            yield has_lock
+            yield
 
-    monkeypatch.setattr(schema, "lock", another_process_first)
+    monkeypatch.setattr(schema, "short_lock", another_process_first)
 
     with pytest.raises(MigrationError, match="recorded 0.5"):
         _ = after(lemma="comer").done
     assert _schema_lines(spec) == [
         {"names": ["lemma"]},
         {"added": "min_overlap", "default": 0.5},
+    ]
+
+
+def test_the_first_line_of_a_default_is_the_recorded_one() -> None:
+    # Two writers can both add a line: the lock on the file is given up for
+    # stale after a minute, with its holder possibly only slow.
+    def merge(default: float) -> Spec:
+        return _spec(
+            lemma=str,
+            min_overlap=(float, default),
+            migrations=(Added("min_overlap", default=default),),
+        )(lemma="comer")
+
+    spec = _spec(lemma=str)(lemma="comer")
+    spec.create()
+    with schema_path_in(spec._class_dir).open("a") as file:
+        file.write('{"added":"min_overlap","default":0.5}\n')
+        file.write('{"added":"min_overlap","default":0.6}\n')
+
+    assert merge(0.5).done
+    with pytest.raises(MigrationError, match="recorded 0.5"):
+        _ = merge(0.6).done
+
+
+def test_a_default_is_read_back_after_it_is_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    after = _spec(
+        lemma=str,
+        min_overlap=(float, 0.6),
+        migrations=(Added("min_overlap", default=0.6),),
+    )
+    spec = _spec(lemma=str)(lemma="comer")
+    spec.create()
+    append = schema._append
+
+    def another_writer_first(path: Path, lines: list[dict[str, Any]]) -> None:
+        # Its lock was taken for stale: both write, and the other's line is first.
+        with path.open("a") as file:
+            file.write('{"added":"min_overlap","default":0.5}\n')
+        append(path, lines)
+
+    monkeypatch.setattr(schema, "_append", another_writer_first)
+
+    with pytest.raises(MigrationError, match="recorded 0.5"):
+        _ = after(lemma="comer").done
+    assert _schema_lines(spec) == [
+        {"names": ["lemma"]},
+        {"added": "min_overlap", "default": 0.5},
+        {"added": "min_overlap", "default": 0.6},
     ]
 
 

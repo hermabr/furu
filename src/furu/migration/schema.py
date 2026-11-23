@@ -15,19 +15,24 @@ holds the dataclass is created, and the recorded names are what a launch
 compares the source with, as it compares a spec class with its folders.
 
 The file only grows, by whole lines: a writer holds schema.lock and a reader
-takes no lock.
+takes no lock. The first line that records a default is the one that counts,
+so a writer that lost the lock while it held it cannot change one.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import secrets
+import time
 from collections import defaultdict
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
-from furu.locking import lock, read_text_or_none
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -76,10 +81,64 @@ def _declared_defaults(cls: type[Spec]) -> dict[_Step, tuple[str, JsonValue]]:
     return declared
 
 
+# A lock holder is done in milliseconds, so a lock this old was left by a killed one.
+_STALE_S = 60.0
+_POLL_S = 0.05
+
+
+def _missing(exc: OSError) -> bool:
+    return exc.errno in (errno.ENOENT, errno.ESTALE)
+
+
+@contextmanager
+def short_lock(path: Path) -> Generator[None]:
+    """Hold ``path`` while the body runs: creating the file is taking the lock.
+
+    Nothing keeps the lock alive, so a holder that stops for longer than
+    ``_STALE_S`` can find that another took it. What the lock guards has to
+    stay right then too.
+    """
+    mine = secrets.token_hex(8)
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > _STALE_S:
+                    path.unlink()
+                    continue
+            except OSError as exc:  # released since
+                if not _missing(exc):
+                    raise
+            time.sleep(_POLL_S)
+    # Closed before the body: a file removed while it is open stays on the
+    # file server under another name. Writing a token identifies this holder
+    # even if the filesystem reuses the inode number after a stale break.
+    try:
+        os.write(fd, mine.encode())
+    finally:
+        os.close(fd)
+    try:
+        yield
+    finally:
+        # Another's by now if this one was taken for stale.
+        try:
+            if path.read_text(encoding="utf-8") == mine:
+                path.unlink()
+        except OSError as exc:
+            if not _missing(exc):
+                raise
+
+
 def _read(path: Path) -> list[dict[str, Any]] | None:
     """The file's whole lines; None when there is no file."""
-    if (text := read_text_or_none(path)) is None:
-        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        if _missing(exc):
+            return None
+        raise
     lines = []
     for line in text.splitlines():
         try:
@@ -101,11 +160,13 @@ def _append(path: Path, lines: list[dict[str, Any]]) -> None:
 
 
 def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
-    return {
-        (line.get("nested"), line.get("class_part"), line["added"]): line["default"]
-        for line in lines
-        if "added" in line
-    }
+    """The default each step was first recorded with."""
+    recorded: dict[_Step, JsonValue] = {}
+    for line in lines:
+        if "added" in line:
+            step = (line.get("nested"), line.get("class_part"), line["added"])
+            recorded.setdefault(step, line["default"])
+    return recorded
 
 
 def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
@@ -123,7 +184,7 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
     lines = _read(path) if declared or record else None
     if lines is not None or record:
         if not lines or declared.keys() - _recorded_defaults(lines).keys():
-            with lock(schema_lock_path_in(class_dir)):
+            with short_lock(schema_lock_path_in(class_dir)):
                 lines = _read(path) or []
                 recorded = _recorded_defaults(lines)
                 new: list[dict[str, Any]] = [
@@ -136,7 +197,9 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
                     new.insert(0, {"names": list(naming(cls).first_names)})
                 if new:
                     _append(path, new)
-                lines += new
+                    # What counts is what the file holds: a writer that lost
+                    # the lock while it held it can have recorded first.
+                    lines = _read(path) or []
         recorded = _recorded_defaults(lines)
         for step, (label, default) in declared.items():
             if _stable_json_dump(recorded[step]) != _stable_json_dump(default):
@@ -194,7 +257,7 @@ def record_nested_names(class_dir: Path, holds: dict[type, tuple[str, ...]]) -> 
         ]
 
     if unrecorded():
-        with lock(schema_lock_path_in(class_dir)):
+        with short_lock(schema_lock_path_in(class_dir)):
             if new := unrecorded():
                 _append(schema_path_in(class_dir), new)
     _nested_recorded.update(lines)

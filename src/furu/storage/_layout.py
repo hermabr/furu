@@ -1,5 +1,7 @@
+import errno
 import os
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 
 from furu.utils import _hash_dict_deterministically
@@ -9,13 +11,15 @@ from furu.utils import _hash_dict_deterministically
 # @furu.dependency(remember=True) method. The class name is one path component,
 # so the folders under it are exactly its class parts.
 #
-#   attempts/<run>/           the working folder of a run in progress
-#   attempts/<run>.lock       its lock, beside it so that publishing never moves it
+#   attempts/<run>/<owner>/   the working folder of a run in progress, named for
+#                             who holds it (see attempt_lock); nothing else is
+#                             in attempts/<run>/
+#   attempts/.<kind>__<tok>/  a folder on its way in or out: never a run
 #   <code version>/trace.json which code its runs ran; "fixed" has none
 #   <code version>/runs/<run> a published run, which never changes again
 #   remembered/               what such methods returned, a file per launch
 #
-# A working folder is renamed into runs/ under the same name, so both share
+# A working folder is renamed into runs/ under its run's name, so both share
 # the run layout below. A run holds one row per spec: the specs of one batch,
 # or the one spec of a class without @furu.batched.
 
@@ -40,23 +44,38 @@ def attempts_dir_in(class_dir: Path) -> Path:
     return class_dir / "attempts"
 
 
-def attempt_dir_in(class_dir: Path, run: str) -> Path:
+def attempt_parent_in(class_dir: Path, run: str) -> Path:
+    """The folder that holds the run's working folder, and nothing else."""
     return attempts_dir_in(class_dir) / run
 
 
-def lock_path_in(class_dir: Path, run: str) -> Path:
-    return attempts_dir_in(class_dir) / f"{run}.lock"
+def list_names(folder: Path) -> list[str]:
+    """The names in a folder as the file server has them now; none if it is not there."""
+    missing = (errno.ENOENT, errno.ESTALE)
+    try:
+        return os.listdir(folder)
+    except OSError as exc:
+        if exc.errno not in missing:
+            raise
+    # A machine remembers for up to a minute that a folder was not there.
+    # Listing the folder above it makes it look again, so list from the
+    # storage root down: another machine may just have made this one.
+    for above in reversed(folder.parents[:4]):
+        with suppress(OSError):
+            os.listdir(above)
+    try:
+        return os.listdir(folder)
+    except OSError as exc:
+        if exc.errno not in missing:
+            raise
+        return []
 
 
 def version_dirs_in(class_dir: Path) -> list[Path]:
     """The class's code-version folders: not attempts/, remembered/ or the schema files."""
-    try:
-        names = sorted(os.listdir(class_dir))
-    except FileNotFoundError:
-        return []
     return [
         class_dir / name
-        for name in names
+        for name in sorted(list_names(class_dir))
         if name not in ("attempts", REMEMBERED) and "." not in name
     ]
 

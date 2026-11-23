@@ -1021,6 +1021,7 @@ def _install_fake_slurm(
                 print(f"{job_id}_{task_spec} {state}")
         """,
     )
+    _write_executable(bin_dir / "scontrol", 'print("ClusterName             = fake")')
     _write_executable(
         bin_dir / "scancel",
         """
