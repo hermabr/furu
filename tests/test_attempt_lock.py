@@ -80,14 +80,15 @@ def test_this_process_is_named_by_its_slurm_job_and_restart_count(
     assert attempt_lock.me() == f"slurm__sc__18609579__{named}"
 
 
-def test_a_slurm_job_that_cannot_tell_its_cluster_is_named_as_a_process(
+def test_a_slurm_job_that_cannot_tell_its_cluster_fails_loudly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Nobody could ask Slurm about a job without knowing which Slurm to ask.
     monkeypatch.setenv("SLURM_JOB_ID", "18609579")
     monkeypatch.setattr(slurm, "cluster", lambda: None)
 
-    assert attempt_lock.me() == f"local__{HOST}__{PID}"
+    with pytest.raises(RuntimeError, match="SLURM_JOB_ID=18609579.*SLURM_CLUSTER_NAME"):
+        attempt_lock.me()
 
 
 @pytest.mark.parametrize("name", ["free__manual", "free__9f3c2a7d51b0e6a4"])

@@ -46,7 +46,13 @@ def new_token() -> str:
 def me() -> str:
     """This process as an owner: the Slurm job it runs in, if it runs in one."""
     job = os.environ.get("SLURM_JOB_ID", "")
-    if job.isdigit() and (cluster := slurm.cluster()):
+    if job.isdigit():
+        cluster = slurm.cluster()
+        if not cluster:
+            raise RuntimeError(
+                f"SLURM_JOB_ID={job} is set, but the Slurm cluster name could not "
+                "be determined from SLURM_CLUSTER_NAME or `scontrol show config`"
+            )
         return f"slurm__{cluster}__{job}__{os.environ.get('SLURM_RESTART_COUNT', '0')}"
     return f"local__{socket.gethostname()}__{os.getpid()}"
 
