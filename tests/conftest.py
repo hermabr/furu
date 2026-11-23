@@ -9,8 +9,15 @@ import pytest
 from gitrepo import init_repo
 from tracedrepo import Repo
 
-from furu import provenance
+from furu import provenance, slurm
 from furu.config import _project_anchor
+
+# The suite may run inside a Slurm job, and Slurm settings change how workers
+# name the folders they take and what squeue and sacct print.
+for name in [
+    name for name in os.environ if name.startswith(("SLURM_", "SQUEUE_", "SACCT_"))
+]:
+    del os.environ[name]
 
 # Set once here so xdist workers and every child process they start inherit it.
 os.environ.update(
@@ -34,6 +41,13 @@ os.environ.update(
         "PYDANTIC_DISABLE_PLUGINS": "__all__",
     }
 )
+
+
+@pytest.fixture(autouse=True)
+def _forget_slurm_cluster() -> None:
+    # Not through monkeypatch: an autouse request for it would undo each
+    # test's patches only after the other fixtures' teardowns.
+    slurm._cluster = None
 
 
 @pytest.fixture

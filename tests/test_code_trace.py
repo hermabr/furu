@@ -8,7 +8,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from runs import ends_of, run_of
+from runs import ends_of, folder_of, run_of, working
 from tracedrepo import Repo, fresh_process
 
 import furu
@@ -119,7 +119,7 @@ def test_traced_result_is_published_under_its_code_hash(
     assert plot.create() == "loss:[12, 4, 99, 1]"
 
     assert _version(plot) != "fixed"
-    assert not plot._attempt_dir.exists()
+    assert working(plot) is None
     assert sorted(p.name for p in _version_dir(plot).iterdir()) == [
         "runs",
         "trace.json",
@@ -479,7 +479,7 @@ def test_a_restarted_parent_names_the_code_version_of_the_child_it_loaded(
 
     # The missing child blocked the parent's first attempt; the rerun loaded it.
     assert [end["outcome"] for end in ends_of(parent)] == ["blocked", "ok"]
-    assert not parent._attempt_dir.exists()
+    assert working(parent) is None
     child = dependencies.Child(n=1)
     trace = _trace(parent)
     assert trace["built_on"] == [_built_on_name(child)]
@@ -1172,7 +1172,7 @@ def test_preempted_traced_spec_resumes_when_its_code_is_unchanged(
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
     assert not spec.done
-    log = (spec._attempt_dir / "trace.log").read_text()
+    log = (folder_of(spec) / "trace.log").read_text()
     assert '"ran", "' + f"{repo.package}/resumable.py" + '", "step_one"]' in log
 
     # Unrelated edits don't count: the code that ran is unchanged.
@@ -1188,7 +1188,7 @@ def test_preempted_traced_spec_resumes_when_its_code_is_unchanged(
         "step_one",
         "step_two",
     ]
-    assert not spec._attempt_dir.exists()
+    assert working(spec) is None
 
 
 def test_preempted_traced_spec_starts_over_when_code_it_ran_changed(
@@ -1217,7 +1217,7 @@ def test_fixed_retry_resumes_without_a_check(
     monkeypatch.setenv("FURU_TEST_PREEMPT", "1")
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
-    assert scratch_dir_in(spec._attempt_dir).is_dir()
+    assert scratch_dir_in(folder_of(spec)).is_dir()
 
     repo.edit("resumable.py", "return 1", "return 10")
     spec = repo.load("resumable").Resumable(name="a")

@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+from contextlib import suppress
 from dataclasses import InitVar, field
 from multiprocessing import get_context
 from pathlib import Path
@@ -17,6 +18,7 @@ import furu
 from furu import Spec, plan
 from furu.config import get_config
 from furu.storage._layout import remembered_dir_in
+from furu.storage.attempt_lock import HeldError
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 # The seeds of each call of LooTable.runs in this process.
@@ -253,7 +255,10 @@ def _name_then_launch(named: Any, launch: Any) -> None:
     assert table.object_id
     named.release()
     launch.wait(timeout=10)
-    furu.create(table)
+    # The launch that finds a spec taken by the other stops; it has saved its
+    # file by then.
+    with suppress(HeldError):
+        furu.create(table)
 
 
 def test_two_launches_at_once_each_save_a_file() -> None:
@@ -277,6 +282,7 @@ def test_two_launches_at_once_each_save_a_file() -> None:
     first, second = _remembered(table)
     assert first["launch"] != second["launch"]
     assert {**first, "launch": ""} == {**second, "launch": ""}
+    furu.create(table)
     assert table.done
     assert _calls == []
 

@@ -9,7 +9,6 @@ the run holds. No index is kept.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
@@ -26,6 +25,7 @@ from furu.storage._layout import (
     FIXED,
     data_dir_in,
     events_path_in,
+    list_names,
     result_dir_in,
     run_dir_in,
     runs_dir_in,
@@ -68,22 +68,6 @@ def _events(runs: Sequence[Path]) -> list[bytes]:
     return texts
 
 
-def _run_names(runs: Path) -> list[str]:
-    """The folders in a code version's runs/; none when it has no runs yet."""
-    try:
-        return os.listdir(runs)
-    except FileNotFoundError:
-        # A machine remembers for up to a minute that a folder was not there.
-        # Listing the folder above it makes it look again, so list from the
-        # storage root down: another machine may just have published here.
-        try:
-            for folder in reversed(runs.parents[:4]):
-                os.listdir(folder)
-            return os.listdir(runs)
-        except FileNotFoundError:
-            return []
-
-
 def _listed(version: Path, batches: bool) -> dict[str, _First]:
     """The first row of each spec in a code version's runs, as a listing shows now.
 
@@ -91,7 +75,7 @@ def _listed(version: Path, batches: bool) -> dict[str, _First]:
     """
     runs = runs_dir_in(version)
     # A dotted name is a run that is being deleted.
-    names = {name for name in _run_names(runs) if "." not in name}
+    names = {name for name in list_names(runs) if "." not in name}
     read, first = _READ.setdefault(version, (set(), {}))
     if read - names:
         # A run was deleted, and a spec it held may be in another one.
@@ -127,7 +111,11 @@ class Stored:
     per class. Take a new look to see what was published since.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, fresh: bool = False) -> None:
+        # Whether a spec's own run is looked for in a listing of runs/: a
+        # look by name may be answered from what this machine remembers.
+        self._fresh = fresh
+        self._names: dict[Path, set[str]] = {}
         self._live: dict[tuple[Path, str], list[Path]] = {}
         self._listed: dict[tuple[Path, bool], dict[str, _First]] = {}
 
@@ -152,13 +140,20 @@ class Stored:
         if is_batched(type(obj)):
             return self.listed(obj)
         held = [
-            run
+            run_dir_in(version, name)
             for version in self._versions(obj)
-            if (run := run_dir_in(version, name)).is_dir()
+            if self._published(version, name)
         ]
         if len(held) > 1:  # the one published first, as for a batch
             return self.listed(obj)
         return Row(held[0], 0) if held else None
+
+    def _published(self, version: Path, run: str) -> bool:
+        if not self._fresh:
+            return run_dir_in(version, run).is_dir()
+        if version not in self._names:
+            self._names[version] = set(list_names(runs_dir_in(version)))
+        return run in self._names[version]
 
     def listed(self, obj: Spec, *, batches: bool = False) -> Row | None:
         """obj's row in the run published first, among every run of its class.

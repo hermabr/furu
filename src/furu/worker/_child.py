@@ -23,7 +23,7 @@ def _execute(job: Job) -> JobResult:
     provenance._set_submitted_repo_root(job.code.checkout)
     try:
         specs = plan.Specs(map(json.loads, job.lines))
-        with creating(plan=job.plan, asked=job.asked):
+        with creating(plan=job.plan, asked=job.asked, attempt_token=job.token):
             _ensure_group_result([specs[spec] for spec in job.specs])
         return JobCompletedResult()
     except _DependencyNotReady as exc:

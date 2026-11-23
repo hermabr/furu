@@ -311,13 +311,17 @@ class Creation:
     file that lists them and ``asked`` the stored names of the classes their
     launch asked about. ``on_load`` is told about each published run the
     create(), or the traced call of a ``remember=True`` method, loads, and the
-    specs whose rows it loads from it.
+    specs whose rows it loads from it. ``attempt_dir`` is the working folder
+    the create() runs in, and ``attempt_token`` ends the name of the one the
+    next create() takes, so the worker that started this process can find it.
     """
 
     specs: frozenset[str] = frozenset()
     plan: Path | None = None
     asked: frozenset[str] = frozenset()
     on_load: OnLoad = _ignore_loads
+    attempt_dir: Path | None = None
+    attempt_token: str | None = None
 
 
 # TODO: a thread a create() starts sees Creation(), as if no create() ran
@@ -342,9 +346,18 @@ def creating(
     plan: Path | None = None,
     asked: frozenset[str] | None = None,
     on_load: OnLoad | None = None,
+    attempt_dir: Path | None = None,
+    attempt_token: str | None = None,
 ) -> Generator[None]:
     """Run code with ``creation()`` changed in each field that is given."""
-    given = {"specs": specs, "plan": plan, "asked": asked, "on_load": on_load}
+    given = {
+        "specs": specs,
+        "plan": plan,
+        "asked": asked,
+        "on_load": on_load,
+        "attempt_dir": attempt_dir,
+        "attempt_token": attempt_token,
+    }
     changes = {name: value for name, value in given.items() if value is not None}
     token = _creation.set(replace(_creation.get(), **changes))
     try:

@@ -1,3 +1,4 @@
+import errno
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,8 +10,9 @@ from furu.utils import _hash_dict_deterministically
 # @furu.dependency(remember=True) method. The class name is one path component,
 # so the folders under it are exactly its class parts.
 #
-#   attempts/<run>/           the working folder of a run in progress
-#   attempts/<run>.lock       its lock, beside it so that publishing never moves it
+#   attempts/<run>/<owner>/   the working folder of a run in progress, named
+#                             for who works in it (see attempt_lock)
+#   attempts/.<name>          a folder being thrown away
 #   <code version>/trace.json which code its runs ran; "fixed" has none
 #   <code version>/runs/<run> a published run, which never changes again
 #   remembered/               what such methods returned, a file per launch
@@ -40,23 +42,40 @@ def attempts_dir_in(class_dir: Path) -> Path:
     return class_dir / "attempts"
 
 
-def attempt_dir_in(class_dir: Path, run: str) -> Path:
+def attempt_parent_in(class_dir: Path, run: str) -> Path:
+    """attempts/<run>/, which holds the run's working folder while it has one."""
     return attempts_dir_in(class_dir) / run
 
 
-def lock_path_in(class_dir: Path, run: str) -> Path:
-    return attempts_dir_in(class_dir) / f"{run}.lock"
+def _listed(folder: Path) -> list[str] | None:
+    try:
+        return os.listdir(folder)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ESTALE):
+            return None
+        raise
+
+
+def list_names(folder: Path) -> list[str]:
+    """What a listing of ``folder`` shows now; nothing when there is no folder.
+
+    A machine remembers for up to a minute that a folder was not there, where
+    a listing asks the server. A missing folder is listed again after the
+    four folders above it, top down: another machine may just have made it.
+    """
+    names = _listed(folder)
+    if names is None:
+        for above in reversed(folder.parents[:4]):
+            _listed(above)
+        names = _listed(folder)
+    return names or []
 
 
 def version_dirs_in(class_dir: Path) -> list[Path]:
     """The class's code-version folders: not attempts/, remembered/ or the schema files."""
-    try:
-        names = sorted(os.listdir(class_dir))
-    except FileNotFoundError:
-        return []
     return [
         class_dir / name
-        for name in names
+        for name in sorted(list_names(class_dir))
         if name not in ("attempts", REMEMBERED) and "." not in name
     ]
 

@@ -30,7 +30,6 @@ from furu.dependencies import (
     remembers,
     returned_attributes,
 )
-from furu.locking import lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
@@ -38,20 +37,17 @@ from furu.resources import Worker
 from furu.serializer.artifact import field_fingerprints, is_default
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
+from furu.storage import attempt_lock
 from furu.storage._layout import (
-    attempt_dir_in,
+    attempt_parent_in,
     attempts_dir_in,
-    lock_path_in,
     run_dir_in,
     run_name,
     version_dirs_in,
 )
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Stored, load_rows, stored_row
-from furu.utils import (
-    _hash_dict_deterministically,
-    nfs_safe_unique_name,
-)
+from furu.utils import _hash_dict_deterministically
 
 if TYPE_CHECKING:
     from typing import dataclass_transform
@@ -235,7 +231,9 @@ class Spec(_FuruDataclassTransform, ABC):
                 "create(specs, directory). Name the files you write per spec by "
                 "the spec's fields, since the same spec can land in another batch."
             )
-        return SpecDirectory(self._attempt_dir)
+        attempt = creation().attempt_dir
+        assert attempt is not None  # set with specs
+        return SpecDirectory(attempt)
 
     @final
     @cached_property
@@ -278,6 +276,8 @@ class Spec(_FuruDataclassTransform, ABC):
         A traced class keeps each version's trace.json, so what was built on
         the deleted results stays done. A spec with ``@furu.batched`` is a row
         in a run that other specs share, so this raises and names that run.
+        Raises HeldError, deleting nothing, when a worker holds the working
+        folder, or may.
         """
         if is_batched(type(self)):
             row = stored_row(self)
@@ -293,25 +293,33 @@ class Spec(_FuruDataclassTransform, ABC):
             )
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
-        attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
-            folders = [self._attempt_dir] + [
-                run_dir_in(version, self._artifact_hash)
-                for version in version_dirs_in(self._class_dir)
-            ]
-            folders = [folder for folder in folders if folder.is_dir()]
-            if not folders:
+        parent = attempt_parent_in(self._class_dir, self._artifact_hash)
+        if why := attempt_lock.held(parent):
+            raise attempt_lock.HeldError(f"{self.object_id}.delete(): {why}")
+        runs = [
+            run
+            for version in version_dirs_in(self._class_dir)
+            if (run := run_dir_in(version, self._artifact_hash)).is_dir()
+        ]
+        working = attempt_lock.current(parent)
+        folders = runs if working is None else [working, *runs]
+        if not folders:
+            return False
+        if mode == "prompt":
+            listed = ", ".join(map(str, folders))
+            answer = input(f"Do you want to delete {listed}? [y/N] ")
+            if answer.strip().lower() != "y":
                 return False
-            if mode == "prompt":
-                listed = ", ".join(map(str, folders))
-                answer = input(f"Do you want to delete {listed}? [y/N] ")
-                if answer.strip().lower() != "y":
-                    return False
-            for folder in folders:
-                # Renamed first, so no reader finds half a run.
-                tombstone = nfs_safe_unique_name(folder, name="deleting")
-                folder.rename(tombstone)
-                shutil.rmtree(tombstone)
+        # The working folder first: a worker that takes it meanwhile stops
+        # this before a run is touched.
+        attempt_lock.discard(parent)
+        attempts = attempts_dir_in(self._class_dir)
+        attempts.mkdir(exist_ok=True)
+        for run in runs:
+            # Moved out first, so no reader finds half a run.
+            trash = attempts / f".trash__{attempt_lock.new_token()}"
+            run.rename(trash)
+            shutil.rmtree(trash)
         return True
 
     @final
@@ -374,14 +382,9 @@ class Spec(_FuruDataclassTransform, ABC):
     def _class_dir(self) -> Path:
         return self._metadata.storage / self._stored_name / self._class_part
 
-    @final
-    @property
-    def _attempt_dir(self) -> Path:
-        return working_folder([self])
 
-
-def working_folder(specs: Sequence[Spec]) -> Path:
-    """Where the run that holds ``specs`` as its rows does its work."""
-    return attempt_dir_in(
+def attempt_parent(specs: Sequence[Spec]) -> Path:
+    """attempts/<run>/ of the run that holds ``specs`` as its rows."""
+    return attempt_parent_in(
         specs[0]._class_dir, run_name([spec._artifact_hash for spec in specs])
     )
