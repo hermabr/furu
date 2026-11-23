@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from abc import ABC
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -30,7 +29,6 @@ from furu.dependencies import (
     remembers,
     returned_attributes,
 )
-from furu.locking import lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
@@ -39,18 +37,18 @@ from furu.serializer.artifact import field_fingerprints, is_default
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
-    attempt_dir_in,
-    attempts_dir_in,
-    lock_path_in,
+    attempt_parent_in,
+    listed_names,
     run_dir_in,
     run_name,
+    runs_dir_in,
     version_dirs_in,
 )
+from furu.storage.attempt import claim_attempt, current_attempt, discard
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import Stored, load_rows, stored_row
 from furu.utils import (
     _hash_dict_deterministically,
-    nfs_safe_unique_name,
 )
 
 if TYPE_CHECKING:
@@ -235,7 +233,9 @@ class Spec(_FuruDataclassTransform, ABC):
                 "create(specs, directory). Name the files you write per spec by "
                 "the spec's fields, since the same spec can land in another batch."
             )
-        return SpecDirectory(self._attempt_dir)
+        attempt = creation().attempt_dir
+        assert attempt is not None
+        return SpecDirectory(attempt)
 
     @final
     @cached_property
@@ -293,25 +293,29 @@ class Spec(_FuruDataclassTransform, ABC):
             )
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
-        attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
-            folders = [self._attempt_dir] + [
+        with claim_attempt(attempt_parent([self])) as attempt:
+            assert attempt is not None
+            folders = [
                 run_dir_in(version, self._artifact_hash)
                 for version in version_dirs_in(self._class_dir)
+                if self._artifact_hash in listed_names(runs_dir_in(version))
             ]
-            folders = [folder for folder in folders if folder.is_dir()]
+            if any(attempt.iterdir()):
+                folders.append(attempt)
             if not folders:
+                attempt.rmdir()
                 return False
             if mode == "prompt":
                 listed = ", ".join(map(str, folders))
                 answer = input(f"Do you want to delete {listed}? [y/N] ")
                 if answer.strip().lower() != "y":
+                    if attempt not in folders:
+                        attempt.rmdir()
                     return False
             for folder in folders:
-                # Renamed first, so no reader finds half a run.
-                tombstone = nfs_safe_unique_name(folder, name="deleting")
-                folder.rename(tombstone)
-                shutil.rmtree(tombstone)
+                discard(folder)
+            if attempt not in folders:
+                attempt.rmdir()
         return True
 
     @final
@@ -382,6 +386,11 @@ class Spec(_FuruDataclassTransform, ABC):
 
 def working_folder(specs: Sequence[Spec]) -> Path:
     """Where the run that holds ``specs`` as its rows does its work."""
-    return attempt_dir_in(
+    parent = attempt_parent(specs)
+    return current_attempt(parent) or parent / "free__seed"
+
+
+def attempt_parent(specs: Sequence[Spec]) -> Path:
+    return attempt_parent_in(
         specs[0]._class_dir, run_name([spec._artifact_hash for spec in specs])
     )

@@ -16,7 +16,6 @@ it goes out alone.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from collections import Counter, OrderedDict
@@ -34,14 +33,14 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu import plan
 from furu.dag import Dag
-from furu.locking import is_active_lock
 from furu.logging import _group_label, get_logger
 from furu.storage._layout import (
-    attempt_dir_in,
+    attempt_parent_in,
     attempts_dir_in,
-    lock_path_in,
+    listed_names,
     run_name,
 )
+from furu.storage.attempt import current_attempt, held
 from furu.storage.events import read_events
 from furu.worker.backends.local import LocalThreadPool
 from furu.worker.backends.protocol import WorkerPool
@@ -338,19 +337,17 @@ class Manager:
         They were left by workers this manager did not hand them to, or
         does not remember. One whose worker is still alive holds its lock.
         """
-        try:
-            runs = [
-                name
-                for name in os.listdir(attempts_dir_in(class_dir))
-                if "." not in name
-            ]
-        except FileNotFoundError:
-            return
+        runs = [
+            name for name in listed_names(attempts_dir_in(class_dir)) if "." not in name
+        ]
         by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
         for run in runs:
+            attempt = current_attempt(attempt_parent_in(class_dir, run))
+            if attempt is None:
+                continue
             hashes = [
                 spec
-                for opened in read_events(attempt_dir_in(class_dir, run))[:1]
+                for opened in read_events(attempt)[:1]
                 for spec in opened.get("specs", ())
             ]
             if hashes and all(
@@ -693,7 +690,7 @@ class Manager:
 
         ``wanted`` says whether the caller has a use for a batch, given its
         first spec. A batch whose working folder is locked is still being
-        computed, or its worker died less than a lock's lifetime ago.
+        computed, or its owner has yet to be confirmed stopped.
         """
         now = time.monotonic()
         for stopped in list(self.stopped):
@@ -705,7 +702,14 @@ class Manager:
             ):
                 continue
             class_dir = self.placed[stopped.specs[0]].class_dir
-            if is_active_lock(lock_path_in(class_dir, stopped.run)):
+            parent = attempt_parent_in(class_dir, stopped.run)
+            if held(parent):
+                if stopped.look_at == 0:
+                    logger.warning(
+                        "Waiting for the attempt in %s. If its local writer has stopped, "
+                        "rename its local__ folder to free__seed to resume.",
+                        parent,
+                    )
                 stopped.look_at = now + _IDLE_CHECK_INTERVAL_S
             else:
                 yield stopped
@@ -755,11 +759,12 @@ class Manager:
         run = run_name([spec.rpartition(":")[2] for spec in specs])
         for stopped in used:
             if stopped.run != run:
+                parent = attempt_parent_in(placed.class_dir, stopped.run)
                 reason = (
                     f"{label} starts in a new working folder: it holds specs of a "
                     "batch that stopped and is not that batch alone, so what the "
                     "batch had done is dropped. Its working folder stays in "
-                    f"attempts/: {attempt_dir_in(placed.class_dir, stopped.run)}"
+                    f"attempts/: {current_attempt(parent) or parent}"
                 )
                 logger.warning("%s", reason)
                 self.outbox.append((script, WarningMessage(reason=reason)))

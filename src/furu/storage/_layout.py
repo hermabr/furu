@@ -9,13 +9,12 @@ from furu.utils import _hash_dict_deterministically
 # @furu.dependency(remember=True) method. The class name is one path component,
 # so the folders under it are exactly its class parts.
 #
-#   attempts/<run>/           the working folder of a run in progress
-#   attempts/<run>.lock       its lock, beside it so that publishing never moves it
+#   attempts/<run>/<owner>/   the working folder; renaming it transfers ownership
 #   <code version>/trace.json which code its runs ran; "fixed" has none
 #   <code version>/runs/<run> a published run, which never changes again
 #   remembered/               what such methods returned, a file per launch
 #
-# A working folder is renamed into runs/ under the same name, so both share
+# A working folder is renamed into runs/ under its logical run name, so both share
 # the run layout below. A run holds one row per spec: the specs of one batch,
 # or the one spec of a class without @furu.batched.
 
@@ -40,12 +39,24 @@ def attempts_dir_in(class_dir: Path) -> Path:
     return class_dir / "attempts"
 
 
-def attempt_dir_in(class_dir: Path, run: str) -> Path:
+def attempt_parent_in(class_dir: Path, run: str) -> Path:
     return attempts_dir_in(class_dir) / run
 
 
-def lock_path_in(class_dir: Path, run: str) -> Path:
-    return attempts_dir_in(class_dir) / f"{run}.lock"
+def listed_names(path: Path) -> list[str]:
+    """List a directory, refreshing cached negative lookups from its ancestors."""
+    try:
+        return os.listdir(path)
+    except FileNotFoundError:
+        # A machine remembers for up to a minute that a folder was not there.
+        # Listing the folder above it makes it look again, so list from the
+        # storage root down: another machine may just have published here.
+        try:
+            for folder in reversed(path.parents[:4]):
+                os.listdir(folder)
+            return os.listdir(path)
+        except FileNotFoundError:
+            return []
 
 
 def version_dirs_in(class_dir: Path) -> list[Path]:

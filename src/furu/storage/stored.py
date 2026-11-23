@@ -9,7 +9,6 @@ the run holds. No index is kept.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
@@ -26,6 +25,7 @@ from furu.storage._layout import (
     FIXED,
     data_dir_in,
     events_path_in,
+    listed_names,
     result_dir_in,
     run_dir_in,
     runs_dir_in,
@@ -68,22 +68,6 @@ def _events(runs: Sequence[Path]) -> list[bytes]:
     return texts
 
 
-def _run_names(runs: Path) -> list[str]:
-    """The folders in a code version's runs/; none when it has no runs yet."""
-    try:
-        return os.listdir(runs)
-    except FileNotFoundError:
-        # A machine remembers for up to a minute that a folder was not there.
-        # Listing the folder above it makes it look again, so list from the
-        # storage root down: another machine may just have published here.
-        try:
-            for folder in reversed(runs.parents[:4]):
-                os.listdir(folder)
-            return os.listdir(runs)
-        except FileNotFoundError:
-            return []
-
-
 def _listed(version: Path, batches: bool) -> dict[str, _First]:
     """The first row of each spec in a code version's runs, as a listing shows now.
 
@@ -91,7 +75,7 @@ def _listed(version: Path, batches: bool) -> dict[str, _First]:
     """
     runs = runs_dir_in(version)
     # A dotted name is a run that is being deleted.
-    names = {name for name in _run_names(runs) if "." not in name}
+    names = {name for name in listed_names(runs) if "." not in name}
     read, first = _READ.setdefault(version, (set(), {}))
     if read - names:
         # A run was deleted, and a spec it held may be in another one.
@@ -142,6 +126,10 @@ class Stored:
             )
         return self._live[class_dir, code_version]
 
+    def published(self, obj: Spec, run: str) -> bool:
+        """Recheck a logical run by listing its live versions' runs/ on NFS."""
+        return any(is_published(run_dir_in(v, run)) for v in self._versions(obj))
+
     def row(self, obj: Spec) -> Row | None:
         """Where obj's result is, if one is stored and its code still matches."""
         # Named first: that is what finds the dataclasses the spec holds, whose
@@ -178,6 +166,13 @@ class Stored:
             return None
         _, _, index, run = min(held)
         return Row(run, index)
+
+
+def is_published(run: Path) -> bool:
+    """List runs/ to refresh a cached miss before checking the winning folder."""
+    if run.name not in listed_names(run.parent):
+        return False
+    return result_dir_in(run).name in listed_names(run)
 
 
 def stored_row(obj: Spec) -> Row | None:

@@ -517,7 +517,7 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
     spec = _spec(lemma=str)(lemma="comer")
     spec.create()
     path = schema_path_in(spec._class_dir)
-    lock = schema.lock
+    lock = schema.short_lock
 
     @contextmanager
     def another_process_first(lock_path: Path):
@@ -526,7 +526,7 @@ def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
                 file.write('{"added":"min_overlap","default":0.5}\n')
             yield has_lock
 
-    monkeypatch.setattr(schema, "lock", another_process_first)
+    monkeypatch.setattr(schema, "short_lock", another_process_first)
 
     with pytest.raises(MigrationError, match="recorded 0.5"):
         _ = after(lemma="comer").done
@@ -792,3 +792,8 @@ def test_a_step_that_does_not_fit_the_class_is_refused(
 ) -> None:
     with pytest.raises(TypeError, match=problem):
         declare()
+
+
+def test_duplicate_added_lines_keep_the_first_default():
+    lines = [{"added": "rate", "default": 10}, {"added": "rate", "default": 20}]
+    assert schema._recorded_defaults(lines) == {(None, None, "rate"): 10}

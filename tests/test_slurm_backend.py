@@ -923,7 +923,7 @@ def _install_fake_slurm(
 
             script = sys.argv[-1]
             for task_id in task_ids:
-                env = dict(os.environ, SLURM_JOB_ID=str(job_id))
+                env = dict(os.environ, SLURM_JOB_ID=str(job_id), SLURM_CLUSTER_NAME="test")
                 name = str(job_id)
                 if task_id is not None:
                     env.update(

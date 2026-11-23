@@ -314,6 +314,7 @@ class Creation:
     specs whose rows it loads from it.
     """
 
+    attempt_dir: Path | None = None
     specs: frozenset[str] = frozenset()
     plan: Path | None = None
     asked: frozenset[str] = frozenset()
@@ -338,13 +339,20 @@ def creation() -> Creation:
 @contextmanager
 def creating(
     *,
+    attempt_dir: Path | None = None,
     specs: frozenset[str] | None = None,
     plan: Path | None = None,
     asked: frozenset[str] | None = None,
     on_load: OnLoad | None = None,
 ) -> Generator[None]:
     """Run code with ``creation()`` changed in each field that is given."""
-    given = {"specs": specs, "plan": plan, "asked": asked, "on_load": on_load}
+    given = {
+        "attempt_dir": attempt_dir,
+        "specs": specs,
+        "plan": plan,
+        "asked": asked,
+        "on_load": on_load,
+    }
     changes = {name: value for name, value in given.items() if value is not None}
     token = _creation.set(replace(_creation.get(), **changes))
     try:

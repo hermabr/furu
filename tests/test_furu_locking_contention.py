@@ -1,7 +1,6 @@
 """Real processes racing for the same results. Children are forked, so they
 share this test's furu config and data directories."""
 
-import json
 import os
 import time
 from multiprocessing import get_context
@@ -11,7 +10,6 @@ from pathlib import Path
 import pytest
 
 import furu
-import furu.locking as locking_module
 from furu import Spec
 from furu.config import get_config
 from furu.execution.load_or_create import _load_or_create
@@ -26,9 +24,8 @@ ctx = get_context("fork")
 
 
 @pytest.fixture(autouse=True)
-def _fast_lock_polling(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Forked children inherit this, so the loser notices the release quickly.
-    monkeypatch.setattr(locking_module, "DEFAULT_ACQUIRE_POLL_INTERVAL_S", 0.005)
+def _local_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
 
 
 class SlowProbe(Spec):
@@ -120,18 +117,6 @@ def _start(target, *args) -> BaseProcess:
     return proc
 
 
-def _steal_lock(lock: Path) -> None:
-    claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
-    manifest = {"claim_path": str(claim_path)}
-    fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(manifest, f)
-        f.flush()
-        os.fsync(f.fileno())
-    lock.unlink()
-    os.link(claim_path, lock)
-
-
 def _race(target, *argss: tuple) -> list[tuple]:
     """Start one forked child per args, release them together, and collect
     what each puts on the queue after "ready"."""
@@ -190,8 +175,8 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     while not entered_path.exists():
         assert time.monotonic() < deadline
         time.sleep(POLL_INTERVAL_S)
-    (lock_path,) = data_dir.glob("**/attempts/*.lock")
-    _steal_lock(lock_path)
+    (lock_path,) = data_dir.glob("**/attempts/*/local__*")
+    lock_path.rename(lock_path.with_name("free__seed"))
     release_path.touch()
 
     result = out_q.get(timeout=TIMEOUT_S)
@@ -201,7 +186,7 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     assert result[2] == RuntimeError.__name__
     assert result[3].endswith("before writing the result")
     assert list(data_dir.glob("**/runs/*")) == []
-    (log,) = data_dir.glob("**/attempts/*/log")
+    (log,) = data_dir.glob("**/attempts/*/*/log")
     log_text = log.read_text(encoding="utf-8")
     assert "create failed" in log_text
     assert "before writing the result" in log_text

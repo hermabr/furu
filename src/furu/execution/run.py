@@ -21,13 +21,13 @@ from websockets.sync.client import ClientConnection
 from furu import plan
 from furu._batched import batch_of
 from furu.config import get_config
-from furu.core import Spec, working_folder
+from furu.core import Spec, attempt_parent, working_folder
 from furu.dag import why_stuck
 from furu.dependencies import missing_dependencies
 from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
-from furu.storage._layout import log_path_in
+from furu.storage.attempt import attempt_log
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.messages import (
@@ -194,9 +194,13 @@ class Run:
         if not ids:
             logger.info("ignoring result for %s: not running", message.object_ids[0])
             return []
-        # The log of that call: its batch's.
-        ran = [self.specs[spec] for spec in message.object_ids if spec in self.specs]
-        log = log_path_in(working_folder(ran))
+
+        def log() -> Path:
+            ran = [
+                self.specs[spec] for spec in message.object_ids if spec in self.specs
+            ]
+            return attempt_log(attempt_parent(ran))
+
         replies: list[_Reply]
         match message.result:
             case JobCompletedResult():
@@ -213,10 +217,11 @@ class Run:
                     )
                 replies = []
             case JobFailedResult(error=error):
-                replies = self._failed(ids, error, log)
+                replies = self._failed(ids, error, log())
             case JobBlockedResult() as blocked:
+                path = log()
                 for spec in ids:
-                    self.logs[spec] = log
+                    self.logs[spec] = path
                     logger.info(
                         "blocked %s · %s",
                         self.specs[spec].object_id,

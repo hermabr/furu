@@ -34,9 +34,9 @@ from furu.execution.load_or_create import _load_or_create
 from furu.logging import _execution_log
 from furu.result.bundle import _save_result_bundle
 from furu.storage._layout import (
+    attempt_parent_in,
     data_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     result_dir_in,
 )
@@ -1079,7 +1079,10 @@ def test_data_dir():
         / "06b20558c682cb23a593"
     )
     assert node_pair._class_dir == class_dir
-    assert node_pair._attempt_dir == class_dir / "attempts" / "0213f99a818a40d63cf9"
+    assert (
+        node_pair._attempt_dir
+        == class_dir / "attempts" / "0213f99a818a40d63cf9" / "free__seed"
+    )
     assert fixed_run(node_pair) == (
         class_dir / "fixed" / "runs" / "0213f99a818a40d63cf9"
     )
@@ -1432,6 +1435,7 @@ def test_create_hook_flavor_validation() -> None:
 
 def test_no_create_hook_loads_cached_result() -> None:
     obj = NoCreateHookValue(key=1)
+    fixed_run(obj).mkdir(parents=True)
     _save_result_bundle(
         ["cached:1"],
         result_dir_in(fixed_run(obj)),
@@ -1459,9 +1463,12 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
 ) -> None:
     obj = NoCreateHookValue(key=3)
 
+    claim = execution_module.claim_attempt
+
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(obj._class_dir, obj._artifact_hash)
+    def fake_lock(lock_path: Path, **kwargs):
+        assert lock_path == attempt_parent_in(obj._class_dir, obj._artifact_hash)
+        fixed_run(obj).mkdir(parents=True)
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
@@ -1469,9 +1476,10 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             data_dir=data_dir_in(fixed_run(obj)),
             label="NoCreateHookValue",
         )
-        yield lambda: True
+        with claim(lock_path, **kwargs) as attempt:
+            yield attempt
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "claim_attempt", fake_lock)
 
     assert furu.create(obj) == "cached-after-lock:1"
 
@@ -1615,15 +1623,18 @@ def test_existing_items_are_skipped_before_locking(
 
     lock_calls: list[Path] = []
 
-    @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        lock_calls.append(lock_path)
-        yield lambda: True
+    claim = execution_module.claim_attempt
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    @contextmanager
+    def fake_lock(lock_path: Path, **kwargs):
+        lock_calls.append(lock_path)
+        with claim(lock_path, **kwargs) as attempt:
+            yield attempt
+
+    monkeypatch.setattr(execution_module, "claim_attempt", fake_lock)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [lock_path_in(missing._class_dir, missing._artifact_hash)]
+    assert lock_calls == [attempt_parent_in(missing._class_dir, missing._artifact_hash)]
 
 
 def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
@@ -1631,9 +1642,14 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
 ) -> None:
     pending = CountedSingleValue(key=5)
 
+    claim = execution_module.claim_attempt
+
     @contextmanager
-    def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(pending._class_dir, pending._artifact_hash)
+    def fake_lock(lock_path: Path, **kwargs):
+        assert lock_path == attempt_parent_in(
+            pending._class_dir, pending._artifact_hash
+        )
+        fixed_run(pending).mkdir(parents=True)
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),
@@ -1641,9 +1657,10 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
             data_dir=data_dir_in(fixed_run(pending)),
             label="CountedSingleValue",
         )
-        yield lambda: True
+        with claim(lock_path, **kwargs) as attempt:
+            yield attempt
 
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
+    monkeypatch.setattr(execution_module, "claim_attempt", fake_lock)
 
     assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []

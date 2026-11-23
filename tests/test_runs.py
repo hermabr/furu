@@ -20,17 +20,17 @@ from furu.config import get_config
 from furu.core import working_folder
 from furu.dependencies import creating
 from furu.execution import load_or_create
-from furu.locking import is_active_lock
 from furu.storage import stored
 from furu.storage._layout import (
     FIXED,
+    attempt_parent_in,
     attempts_dir_in,
     events_path_in,
-    lock_path_in,
     log_path_in,
     run_name,
     runs_dir_in,
 )
+from furu.storage.attempt import held
 
 
 class Leaf(Spec):
@@ -55,7 +55,9 @@ class Weights(Spec):
     @furu.batched(lambda spec, worker: (None, 100))
     def create(specs: list["Weights"], directory: furu.SpecDirectory) -> list[Any]:
         attempts = attempts_dir_in(specs[0]._class_dir)
-        Weights.locks += [path.name for path in attempts.glob("*.lock")]
+        Weights.locks += [
+            str(path.relative_to(attempts)) for path in attempts.glob("*/*")
+        ]
         return [np.full(3, spec.seed) for spec in specs]
 
 
@@ -104,8 +106,8 @@ class FailsAsABatch(Spec):
 
 class LosesItsLock(Spec):
     def create(self) -> int:
-        # As if paused past the stale window, so that a successor took over.
-        lock_path_in(self._class_dir, self._artifact_hash).unlink()
+        # Simulate an operator renaming this live folder.
+        self._attempt_dir.rename(self._attempt_dir.with_name("free__seed"))
         return 1
 
 
@@ -136,8 +138,8 @@ def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
         if self == spec._attempt_dir:
             seen["files"] = sorted(path.name for path in self.iterdir())
             seen["ends"] = ends_of(spec)
-            seen["locked"] = is_active_lock(
-                lock_path_in(spec._class_dir, spec._artifact_hash)
+            seen["locked"] = held(
+                attempt_parent_in(spec._class_dir, spec._artifact_hash)
             )
             seen["done"] = spec.done
         return rename(self, target)
@@ -201,7 +203,8 @@ def test_a_batch_is_one_run_with_a_row_per_spec_and_one_file_per_array() -> None
     ]
     assert events_of(specs[0])[0]["specs"] == [spec._artifact_hash for spec in specs]
     # One working folder under one lock, both gone once it is published.
-    assert Weights.locks == [f"{name}.lock"]
+    (owner,) = Weights.locks
+    assert owner.startswith((f"{name}/slurm__", f"{name}/local__"))
     assert list(attempts_dir_in(specs[0]._class_dir).iterdir()) == []
 
 
@@ -213,8 +216,7 @@ def test_the_same_specs_in_the_same_order_are_refused_and_another_order_is_kept(
     run = run_of(specs[0])
     published = events_path_in(run).read_text()
 
-    with pytest.raises(OSError, match="Directory not empty|File exists"):
-        _compute_again(specs, monkeypatch)
+    _compute_again(specs, monkeypatch)
     _compute_again(specs[::-1], monkeypatch)
 
     assert events_path_in(run).read_text() == published
@@ -406,3 +408,61 @@ def test_an_attempt_killed_in_the_middle_of_a_line_costs_only_that_line() -> Non
         ("start", 2, None),
         ("end", None, "ok"),
     ]
+
+
+class Checkpoint(Spec):
+    def create(self) -> str:
+        file = self.directory.scratch / "checkpoint"
+        if file.exists():
+            return file.read_text()
+        file.write_text("resumed")
+        return "fresh"
+
+
+@pytest.mark.parametrize("rename_completed", [False, True])
+def test_publish_io_error_preserves_checkpoint_or_recognizes_winner(
+    monkeypatch, rename_completed
+):
+    spec = Checkpoint()
+    rename = Path.rename
+
+    def lose_reply(self, target):
+        if target == fixed_run(spec):
+            assert not (self / "scratch").exists()
+            (trash,) = self.parent.glob(".trash__*")
+            assert (trash / "checkpoint").read_text() == "resumed"
+            if rename_completed:
+                rename(self, target)
+            raise OSError("NFS error")
+        return rename(self, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", lose_reply)
+        if rename_completed:
+            assert spec.create() == "fresh"
+        else:
+            with pytest.raises(OSError, match="NFS error"):
+                spec.create()
+            assert not spec.done
+            assert (spec._attempt_dir / "scratch/checkpoint").is_file()
+    assert spec.create() == ("fresh" if rename_completed else "resumed")
+    assert not (run_of(spec) / "scratch").exists()
+
+
+class Fenced(Spec):
+    def create(self) -> int:
+        mine = self._attempt_dir
+        mine.rename(mine.with_name("free__seed"))
+        for attr in ("data", "scratch"):
+            with pytest.raises(FileNotFoundError):
+                getattr(self.directory, attr)
+        assert not mine.exists()
+        return 1
+
+
+def test_a_fenced_hook_cannot_recreate_its_folder_or_write_into_its_successor():
+    spec = Fenced()
+    with pytest.raises(RuntimeError, match="lost the lock"):
+        spec.create()
+    assert not (spec._attempt_dir / "data").exists()
+    assert not (spec._attempt_dir / "scratch").exists()

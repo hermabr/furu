@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
+from furu.worker.backends.slurm.commands import slurm
 from furu.worker.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
@@ -19,7 +20,6 @@ if TYPE_CHECKING:
 
 logger = get_logger("slurm")
 
-_SLURM_COMMAND_TIMEOUT_S = 60.0
 _POLL_INTERVAL_S = 10.0
 # A failing pool replaces at most one worker per minute; it is broken once
 # more than 10 workers failed over at least 30 minutes with no job completing.
@@ -43,20 +43,6 @@ _FINISHED_STATES = frozenset(
         "TIMEOUT",
     }
 )
-
-
-def _slurm(*argv: str) -> str:
-    """Run a Slurm command and return its output.
-
-    Raises CalledProcessError if it fails and TimeoutExpired if it hangs.
-    """
-    return subprocess.run(
-        argv,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=_SLURM_COMMAND_TIMEOUT_S,
-    ).stdout
 
 
 class SlurmWorkerPool:
@@ -135,7 +121,7 @@ class SlurmWorkerPool:
                 if state == "PENDING"
             ]
             if pending:
-                _slurm("scancel", *pending)
+                slurm("scancel", *pending)
         except subprocess.SubprocessError as exc:
             logger.warning("could not cancel queued workers: %s", exc)
 
@@ -197,7 +183,7 @@ class SlurmWorkerPool:
                 return
             # One that times out may be queued anyway; such a worker still
             # serves this pool, but goes uncounted until its idle timeout.
-            submitted = _slurm(
+            submitted = slurm(
                 "sbatch",
                 "--parsable",
                 *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
@@ -220,7 +206,7 @@ class SlurmWorkerPool:
         ][:excess]
         if not to_cancel:
             return
-        _slurm("scancel", *to_cancel)
+        slurm("scancel", *to_cancel)
         cancelled = set(to_cancel)
         self._job_ids[:] = [
             job_id for job_id in self._job_ids if job_id not in cancelled
@@ -233,7 +219,7 @@ class SlurmWorkerPool:
         """What squeue says of each worker still queued or running."""
         if not self._job_ids:
             return {}
-        output = _slurm(
+        output = slurm(
             "squeue",
             "--noheader",
             "--jobs",
@@ -254,7 +240,7 @@ class SlurmWorkerPool:
         """
         if not self._job_ids:
             return {}
-        output = _slurm(
+        output = slurm(
             "sacct",
             "-X",
             "--noheader",
