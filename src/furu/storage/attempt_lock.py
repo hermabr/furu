@@ -20,6 +20,7 @@ it die, and otherwise only by hand.
 
 from __future__ import annotations
 
+import errno
 import os
 import secrets
 import shutil
@@ -34,6 +35,14 @@ from furu.storage._layout import list_names, scratch_dir_in
 
 logger = get_logger()
 
+# Errnos from os.rename() that can be caused by another worker winning the race.
+# Any other OSError (e.g. EACCES, EROFS, ENOSPC, EDQUOT, EXDEV) is re-raised
+# when the subsequent listing confirms the rename did not land.
+_TAKE_RACE_ERRNOS = frozenset({errno.ENOENT, errno.ESTALE})
+_SEED_RACE_ERRNOS = frozenset(
+    {errno.EEXIST, errno.ENOTEMPTY, errno.ENOENT, errno.ESTALE}
+)
+
 
 class HeldError(RuntimeError):
     """A run's working folder is another's, or may be."""
@@ -43,18 +52,32 @@ def new_token() -> str:
     return secrets.token_hex(8)
 
 
+def _check_part(label: str, value: str) -> str:
+    if not value or "__" in value or "/" in value:
+        raise RuntimeError(f"invalid {label} {value!r} for attempt folder name")
+    return value
+
+
 def me() -> str:
     """This process as an owner: the Slurm job it runs in, if it runs in one."""
-    job = os.environ.get("SLURM_JOB_ID", "")
-    if job.isdigit():
+    if job := os.environ.get("SLURM_JOB_ID"):
+        if not job.isdigit():
+            raise RuntimeError(f"SLURM_JOB_ID={job!r} is not a numeric Slurm job id")
         cluster = slurm.cluster()
         if not cluster:
             raise RuntimeError(
                 f"SLURM_JOB_ID={job} is set, but the Slurm cluster name could not "
                 "be determined from SLURM_CLUSTER_NAME or `scontrol show config`"
             )
-        return f"slurm__{cluster}__{job}__{os.environ.get('SLURM_RESTART_COUNT', '0')}"
-    return f"local__{socket.gethostname()}__{os.getpid()}"
+        _check_part("Slurm cluster name", cluster)
+        restart = os.environ.get("SLURM_RESTART_COUNT") or "0"
+        if not restart.isdigit():
+            raise RuntimeError(
+                f"SLURM_RESTART_COUNT={restart!r} is not a numeric restart count"
+            )
+        return f"slurm__{cluster}__{job}__{restart}"
+    host = _check_part("hostname", socket.gethostname())
+    return f"local__{host}__{os.getpid()}"
 
 
 def entries(run: Path) -> list[str]:
@@ -88,12 +111,11 @@ def _why_held(run: Path, name: str) -> str | None:
         case ["slurm", cluster, job, restart, tok] if (
             cluster and job.isdigit() and restart.isdigit() and tok
         ):
-            if slurm.gone(cluster, job):
+            if (reason := slurm.why_not_gone(cluster, job)) is None:
                 return None
             whose = (
-                f"is the working folder of Slurm job {job} on cluster {cluster}, "
-                "which Slurm does not report from here as ended with all its "
-                "processes gone"
+                f"is the working folder of Slurm job {job} on cluster {cluster} "
+                f"({reason})"
             )
         case ["local", host, pid, tok] if host and pid.isdigit() and tok:
             whose = (
@@ -112,13 +134,13 @@ def held(run: Path) -> str | None:
     """Why the run cannot be started or continued now; None if it can."""
     try:
         name = _only(run)
-    except HeldError as exc:
+        return _why_held(run, name) if name else None
+    except (HeldError, slurm.SlurmError) as exc:
         return str(exc)
-    return _why_held(run, name) if name else None
 
 
-def _take(run: Path, dest: Path) -> bool:
-    """Rename the run's working folder to ``dest``; False if it has none.
+def _take(run: Path, dest: Path) -> tuple[bool, OSError | None]:
+    """Rename the run's working folder to ``dest``; ``(False, None)`` if it has none.
 
     Raises HeldError if the folder is another's. The rename can lose to
     another worker's and can land with its answer lost, so the caller lists
@@ -126,12 +148,14 @@ def _take(run: Path, dest: Path) -> bool:
     """
     name = _only(run)
     if name is None:
-        return False
+        return False, None
     if why := _why_held(run, name):
         raise HeldError(why)
-    with suppress(OSError):
+    try:
         os.rename(run / name, dest)
-    return True
+    except OSError as exc:
+        return True, exc
+    return True, None
 
 
 def _remove(folder: Path) -> None:
@@ -154,8 +178,11 @@ def acquire(
     the folder's name: a worker gives its child one, to find the folder by if
     the child dies.
     """
-    mine = run / f"{me()}__{token or new_token()}"
-    if not _take(run, mine):
+    tok = _check_part("token", token) if token is not None else new_token()
+    mine = run / f"{me()}__{tok}"
+    existed, err = _take(run, mine)
+    race_errnos = _TAKE_RACE_ERRNOS
+    if not existed:
         # Made whole beside the run's folder and renamed onto it, which works
         # only while that is missing or empty: of the workers that start a run
         # at once, one's folder is the one in it.
@@ -163,15 +190,20 @@ def acquire(
         seed = run.parent / f".seed__{new_token()}"
         seed.mkdir()
         (seed / mine.name).mkdir()
-        with suppress(OSError):
+        race_errnos = _SEED_RACE_ERRNOS
+        try:
             os.rename(seed, run)
+        except OSError as exc:
+            err = exc
         shutil.rmtree(seed, ignore_errors=True)
     if (name := _only(run)) != mine.name:
+        if err is not None and err.errno not in race_errnos:
+            raise err
         now = f"is now {run / name}" if name else "is gone"
         raise HeldError(
-            f"did not get {run}: another worker took it at the same moment, or "
-            f"the rename failed. Its working folder {now}"
-        )
+            f"did not get {run}: another worker took it at the same moment. "
+            f"Its working folder {now}"
+        ) from err
     try:
         claimed = mine.stat()
         # Whoever held the folder before may have published the run since this
@@ -263,12 +295,15 @@ def discard(run: Path) -> None:
     this is done.
     """
     trash = run.parent / f".trash__{new_token()}"
-    if _take(run, trash):
+    existed, err = _take(run, trash)
+    if existed:
         shutil.rmtree(trash, ignore_errors=True)
     if names := entries(run):
+        if err is not None and err.errno not in _TAKE_RACE_ERRNOS:
+            raise err
         raise HeldError(
             f"the working folder of {run} was not deleted: a worker may have "
             f"taken the run, which now holds {names[0]}"
-        )
+        ) from err
     with suppress(OSError):
         run.rmdir()

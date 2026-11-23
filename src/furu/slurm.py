@@ -24,6 +24,19 @@ _GONE = frozenset(
 _cluster: list[str] = []
 
 
+class SlurmError(RuntimeError):
+    """A Slurm command failed, timed out, or returned unexpected output."""
+
+
+def _error_detail(exc: BaseException) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        detail = (exc.stderr or exc.stdout or "").strip()
+        return detail or f"exit status {exc.returncode}"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"timed out after {exc.timeout:g}s"
+    return str(exc)
+
+
 def run(*argv: str) -> str:
     """Run a Slurm command and return its output.
 
@@ -48,23 +61,30 @@ def run(*argv: str) -> str:
 
 
 def cluster() -> str | None:
-    """The Slurm cluster this machine belongs to, if it can be told.
+    """The Slurm cluster this machine belongs to, or None if Slurm is not installed.
 
     A job has it in its environment; any other machine asks the controller.
+    Raises SlurmError if ``scontrol`` is installed but fails or omits ClusterName.
     """
     if name := os.environ.get("SLURM_CLUSTER_NAME"):
         return name
     if not _cluster:
         try:
             config = run("scontrol", "show", "config")
-        except (OSError, subprocess.SubprocessError):
+        except FileNotFoundError:
             return None
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SlurmError(
+                f"scontrol show config failed: {_error_detail(exc)}"
+            ) from exc
         for line in config.splitlines():
             key, _, value = line.partition("=")
             if key.strip() == "ClusterName" and value.strip():
                 _cluster.append(value.strip())
                 break
-    return _cluster[0] if _cluster else None
+        else:
+            raise SlurmError("scontrol show config did not report ClusterName")
+    return _cluster[0]
 
 
 def forget_cluster() -> None:
@@ -72,15 +92,19 @@ def forget_cluster() -> None:
     _cluster.clear()
 
 
-def gone(cluster_name: str, job: str) -> bool:
-    """Whether Slurm says that ``job`` ended and left no process behind.
+def why_not_gone(cluster_name: str, job: str) -> str | None:
+    """Why Slurm does not report ``job`` as cleanly ended; None if it is gone.
 
-    True only when the queue no longer runs the job and accounting has a clean
-    end for it. A command that fails, an answer that is not understood and a
-    job of another cluster are all False: the job may be alive.
+    Returns None only when the queue no longer runs the job and accounting has
+    a clean end for it. Returns a human-readable reason when the job may still
+    be alive or belongs to another cluster. Raises SlurmError when a Slurm
+    command fails, times out, or returns unparseable output.
     """
-    if cluster_name != cluster():
-        return False
+    local = cluster()
+    if local is None:
+        return "this machine is not on a Slurm cluster"
+    if cluster_name != local:
+        return f"this machine is on Slurm cluster {local}, not {cluster_name}"
     # Asked by id, the queue also lists a job that ended, for as long as the
     # controller remembers it. Not -O JobIDRaw, which Slurm 25.11.5 refuses.
     try:
@@ -90,27 +114,31 @@ def gone(cluster_name: str, job: str) -> bool:
     except subprocess.CalledProcessError as exc:
         # How the queue answers for a job it no longer remembers.
         if (exc.stdout or "").strip() or "Invalid job id" not in (exc.stderr or ""):
-            return False
+            raise SlurmError(
+                f"squeue failed for job {job}: {_error_detail(exc)}"
+            ) from exc
         queued = ""
-    except (OSError, subprocess.SubprocessError):
-        return False
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SlurmError(f"squeue failed for job {job}: {_error_detail(exc)}") from exc
     for line in queued.splitlines():
         match line.split():
             case [job_id, state]:
                 # The other tasks of its array are listed with it.
                 if job_id == job and state not in _GONE:
-                    return False
+                    return f"squeue reports state {state}"
             case _:
-                return False
+                raise SlurmError(
+                    f"squeue returned unexpected output for job {job}: {line!r}"
+                )
     # -D: a requeued job has a row for each time it ran.
     try:
         accounted = run(
             *("sacct", "-D", "-X", "--noheader", "--parsable2"),
             *("-o", "JobIDRaw,State,Reason", "-j", job),
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    states = []
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SlurmError(f"sacct failed for job {job}: {_error_detail(exc)}") from exc
+    states: list[str] = []
     for line in accounted.splitlines():
         match line.split("|", 2):
             case [raw_id, state, reason]:
@@ -118,13 +146,19 @@ def gone(cluster_name: str, job: str) -> bool:
                     continue
                 # Accounting ended the job while a process could not be killed.
                 if "kill task failed" in reason.lower():
-                    return False
+                    return f"sacct reports {reason.strip()}"
                 states.append(state.partition(" ")[0])  # "CANCELLED by <uid>"
             case _:
-                return False
+                raise SlurmError(
+                    f"sacct returned unexpected output for job {job}: {line!r}"
+                )
+    if not states:
+        return "sacct has no accounting record for it yet"
     # A row that says the job was requeued is no end: accounting can have it
-    # before the row of the run that followed. Without any row it is behind
-    # the queue.
-    return all(state in _GONE | {"REQUEUED"} for state in states) and any(
+    # before the row of the run that followed.
+    if all(state in _GONE | {"REQUEUED"} for state in states) and any(
         state in _GONE for state in states
-    )
+    ):
+        return None
+    label = "state" if len(states) == 1 else "states"
+    return f"sacct reports {label} {', '.join(states)}"

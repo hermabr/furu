@@ -45,11 +45,11 @@ def job_is(monkeypatch: pytest.MonkeyPatch) -> Callable[[bool], list[tuple[str, 
     def install(gone: bool) -> list[tuple[str, str]]:
         asked: list[tuple[str, str]] = []
 
-        def fake(cluster: str, job: str) -> bool:
+        def fake(cluster: str, job: str) -> str | None:
             asked.append((cluster, job))
-            return gone
+            return None if gone else "squeue reports state RUNNING"
 
-        monkeypatch.setattr(slurm, "gone", fake)
+        monkeypatch.setattr(slurm, "why_not_gone", fake)
         return asked
 
     return install
@@ -68,7 +68,7 @@ def test_this_process_is_named_by_host_and_pid_outside_slurm() -> None:
     assert attempt_lock.me() == f"local__{HOST}__{PID}"
 
 
-@pytest.mark.parametrize(("restart", "named"), [(None, "0"), ("3", "3")])
+@pytest.mark.parametrize(("restart", "named"), [(None, "0"), ("", "0"), ("3", "3")])
 def test_this_process_is_named_by_its_slurm_job_and_restart_count(
     monkeypatch: pytest.MonkeyPatch, restart: str | None, named: str
 ) -> None:
@@ -89,6 +89,54 @@ def test_a_slurm_job_that_cannot_tell_its_cluster_fails_loudly(
 
     with pytest.raises(RuntimeError, match="SLURM_JOB_ID=18609579.*SLURM_CLUSTER_NAME"):
         attempt_lock.me()
+
+
+@pytest.mark.parametrize(
+    ("env", "match"),
+    [
+        ({"SLURM_JOB_ID": "not-a-job"}, "SLURM_JOB_ID='not-a-job'"),
+        (
+            {
+                "SLURM_JOB_ID": "123",
+                "SLURM_CLUSTER_NAME": "sc",
+                "SLURM_RESTART_COUNT": "bad",
+            },
+            "SLURM_RESTART_COUNT='bad'",
+        ),
+        (
+            {"SLURM_JOB_ID": "123", "SLURM_CLUSTER_NAME": "bad__cluster"},
+            "invalid Slurm cluster name",
+        ),
+        (
+            {"SLURM_JOB_ID": "123", "SLURM_CLUSTER_NAME": "bad/cluster"},
+            "invalid Slurm cluster name",
+        ),
+    ],
+)
+def test_me_rejects_unparseable_slurm_environment(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], match: str
+) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    with pytest.raises(RuntimeError, match=match):
+        attempt_lock.me()
+
+
+@pytest.mark.parametrize("bad_host", ["", "bad__host", "bad/host"])
+def test_me_rejects_unparseable_hostname(
+    monkeypatch: pytest.MonkeyPatch, bad_host: str
+) -> None:
+    monkeypatch.setattr(attempt_lock.socket, "gethostname", lambda: bad_host)
+
+    with pytest.raises(RuntimeError, match="invalid hostname"):
+        attempt_lock.me()
+
+
+@pytest.mark.parametrize("bad_token", ["", "bad__tok", "bad/tok"])
+def test_acquire_rejects_unparseable_token(run: Path, bad_token: str) -> None:
+    with pytest.raises(RuntimeError, match="invalid token"):
+        attempt_lock.acquire(run, unpublished, token=bad_token)
 
 
 @pytest.mark.parametrize("name", ["free__manual", "free__9f3c2a7d51b0e6a4"])
@@ -164,9 +212,14 @@ def test_a_slurm_jobs_folder_is_held_until_slurm_calls_the_job_gone(
     asked = job_is(False)
     why = attempt_lock.held(run)
     assert why is not None
-    assert f"{run / JOB} is the working folder of Slurm job 123 on cluster sc" in why
+    assert (
+        f"{run / JOB} is the working folder of Slurm job 123 on cluster sc "
+        "(squeue reports state RUNNING)"
+    ) in why
     assert f"mv {run / JOB} {run}/free__manual" in why
-    with pytest.raises(HeldError, match="Slurm job 123 on cluster sc"):
+    with pytest.raises(
+        HeldError, match=r"Slurm job 123 on cluster sc \(squeue reports state RUNNING\)"
+    ):
         attempt_lock.acquire(run, unpublished)
     assert asked == [("sc", "123")] * 2
     assert os.listdir(run) == [JOB]
@@ -177,6 +230,26 @@ def test_a_slurm_jobs_folder_is_held_until_slurm_calls_the_job_gone(
 
     assert (attempt / "checkpoint").read_text() == "step 7"
     assert os.listdir(run) == [attempt.name]
+
+
+def test_a_slurm_error_propagates_from_acquire_and_discard_but_held_reports_it(
+    run: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (run / JOB).mkdir(parents=True)
+
+    def broken(cluster: str, job: str) -> str | None:
+        raise slurm.SlurmError("sacct failed for job 123: accounting disabled")
+
+    monkeypatch.setattr(slurm, "why_not_gone", broken)
+
+    # held() reports the failure without crashing the manager's polling loop.
+    assert attempt_lock.held(run) == "sacct failed for job 123: accounting disabled"
+    # Direct acquire/discard fail loudly with SlurmError (not HeldError).
+    with pytest.raises(slurm.SlurmError, match="accounting disabled"):
+        attempt_lock.acquire(run, unpublished)
+    with pytest.raises(slurm.SlurmError, match="accounting disabled"):
+        attempt_lock.discard(run)
+    assert os.listdir(run) == [JOB]
 
 
 def test_two_folders_hold_the_run_however_they_are_named(run: Path) -> None:
@@ -375,7 +448,7 @@ def test_a_rename_that_happened_but_reported_an_error_is_found_in_the_listing(
 
 
 @pytest.mark.parametrize("there", [False, True], ids=["new", "free"])
-def test_a_rename_that_failed_leaves_the_run_as_it_was(
+def test_a_rename_that_failed_re_raises_the_os_error_and_leaves_the_run_as_it_was(
     run: Path, monkeypatch: pytest.MonkeyPatch, there: bool
 ) -> None:
     if there:
@@ -386,12 +459,29 @@ def test_a_rename_that_failed_leaves_the_run_as_it_was(
 
     _renames(monkeypatch, fail)
 
-    with pytest.raises(HeldError, match="did not get") as refused:
+    with pytest.raises(OSError, match="Disk quota exceeded") as refused:
         attempt_lock.acquire(run, unpublished)
 
-    assert ("is now" if there else "is gone") in str(refused.value)
+    assert refused.value.errno == errno.EDQUOT
     assert list_names(run) == (["free__manual"] if there else [])
     assert os.listdir(run.parent) == ([run.name] if there else [])
+
+
+def test_a_discard_rename_that_failed_re_raises_the_os_error(
+    run: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (run / "free__manual" / "data").mkdir(parents=True)
+
+    def fail(source: Path, target: Path) -> None:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    _renames(monkeypatch, fail)
+
+    with pytest.raises(OSError, match="Read-only file system") as refused:
+        attempt_lock.discard(run)
+
+    assert refused.value.errno == errno.EROFS
+    assert os.listdir(run) == ["free__manual"]
 
 
 # --- a run that was published meanwhile --------------------------------------

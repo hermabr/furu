@@ -118,8 +118,15 @@ def test_the_controller_is_asked_for_the_cluster_once_it_has_answered(
 
     monkeypatch.setattr(slurm, "run", fake)
 
-    # No answer is not remembered: the controller may answer the next time.
-    assert [slurm.cluster() for _ in range(6)] == [None, None, None, *["other"] * 3]
+    # No Slurm returns None; scontrol errors fail loudly and are not cached.
+    assert slurm.cluster() is None
+    with pytest.raises(
+        slurm.SlurmError, match="scontrol show config failed: timed out"
+    ):
+        slurm.cluster()
+    with pytest.raises(slurm.SlurmError, match="did not report ClusterName"):
+        slurm.cluster()
+    assert [slurm.cluster() for _ in range(3)] == ["other"] * 3
     assert ran == [("scontrol", "show", "config")] * 4
 
     slurm.forget_cluster()
@@ -135,7 +142,7 @@ def test_a_job_the_queue_forgot_and_accounting_ended_cleanly_is_gone(
 ) -> None:
     ran = answers(squeue=_failed("squeue", FORGOTTEN), sacct="123|COMPLETED|None\n")
 
-    assert slurm.gone("sc", "123")
+    assert slurm.why_not_gone("sc", "123") is None
     assert ran == [SQUEUE, SACCT]
 
 
@@ -161,7 +168,7 @@ def test_every_clean_end_is_gone(accounted: str, answers: Answers) -> None:
     # The queue can also answer with nothing for a job it has forgotten.
     answers(squeue="", sacct=accounted)
 
-    assert slurm.gone("sc", "123")
+    assert slurm.why_not_gone("sc", "123") is None
 
 
 @pytest.mark.parametrize(
@@ -179,100 +186,150 @@ def test_a_job_the_queue_still_remembers_as_ended_is_gone(
 ) -> None:
     ran = answers(squeue=queued, sacct="123|COMPLETED|None\n")
 
-    assert slurm.gone("sc", "123")
+    assert slurm.why_not_gone("sc", "123") is None
     assert ran == [SQUEUE, SACCT]
 
 
 @pytest.mark.parametrize(
-    "queued",
+    ("queued", "expected"),
     [
-        "123 RUNNING\n",
-        "123 PENDING\n",
-        "123 COMPLETING\n",
-        "123 STAGE_OUT\n",
-        "123 NODE_FAIL\n",
-        "123 BOOT_FAIL\n",
-        "123 SOMETHING_NEW\n",
-        "122 COMPLETED\n123 RUNNING\n",
-        "123\n",
-        "123 RUNNING extra\n",
+        ("123 RUNNING\n", "squeue reports state RUNNING"),
+        ("123 PENDING\n", "squeue reports state PENDING"),
+        ("123 COMPLETING\n", "squeue reports state COMPLETING"),
+        ("123 STAGE_OUT\n", "squeue reports state STAGE_OUT"),
+        ("123 NODE_FAIL\n", "squeue reports state NODE_FAIL"),
+        ("123 BOOT_FAIL\n", "squeue reports state BOOT_FAIL"),
+        ("123 SOMETHING_NEW\n", "squeue reports state SOMETHING_NEW"),
+        ("122 COMPLETED\n123 RUNNING\n", "squeue reports state RUNNING"),
     ],
 )
 def test_a_job_the_queue_lists_as_anything_else_is_not_gone(
-    queued: str, answers: Answers
+    queued: str, expected: str, answers: Answers
 ) -> None:
     ran = answers(squeue=queued, sacct="123|COMPLETED|None\n")
 
-    assert not slurm.gone("sc", "123")
+    assert slurm.why_not_gone("sc", "123") == expected
     assert ran == [SQUEUE]  # accounting is not asked
+
+
+@pytest.mark.parametrize("queued", ["123\n", "123 RUNNING extra\n"])
+def test_unexpected_squeue_output_fails_loudly(queued: str, answers: Answers) -> None:
+    ran = answers(squeue=queued, sacct="123|COMPLETED|None\n")
+
+    with pytest.raises(slurm.SlurmError, match="squeue returned unexpected output"):
+        slurm.why_not_gone("sc", "123")
+    assert ran == [SQUEUE]
+
+
+@pytest.mark.parametrize(
+    ("accounted", "expected"),
+    [
+        ("", "sacct has no accounting record for it yet"),  # behind the queue
+        ("123|NODE_FAIL|None\n", "sacct reports state NODE_FAIL"),
+        ("123|BOOT_FAIL|None\n", "sacct reports state BOOT_FAIL"),
+        ("123|COMPLETED|Kill task failed\n", "sacct reports Kill task failed"),
+        (
+            "123|FAILED|kill task failed on node jagupard26\n",
+            "sacct reports kill task failed on node jagupard26",
+        ),
+        ("123|RUNNING|None\n", "sacct reports state RUNNING"),
+        ("123|PENDING|None\n", "sacct reports state PENDING"),
+        # Requeued, and the row of the run that followed is not there yet.
+        ("123|REQUEUED|None\n", "sacct reports state REQUEUED"),
+        (
+            "123|REQUEUED|None\n123|RUNNING|None\n",
+            "sacct reports states REQUEUED, RUNNING",
+        ),
+        (
+            "123|NODE_FAIL|None\n123|COMPLETED|None\n",
+            "sacct reports states NODE_FAIL, COMPLETED",
+        ),
+        ("123|SOMETHING_NEW|None\n", "sacct reports state SOMETHING_NEW"),
+        ("124|COMPLETED|None\n", "sacct has no accounting record for it yet"),
+    ],
+)
+def test_an_end_accounting_does_not_call_clean_is_not_gone(
+    accounted: str, expected: str, answers: Answers
+) -> None:
+    answers(squeue=_failed("squeue", FORGOTTEN), sacct=accounted)
+
+    assert slurm.why_not_gone("sc", "123") == expected
 
 
 @pytest.mark.parametrize(
     "accounted",
     [
-        "",  # accounting is behind the queue
-        "123|NODE_FAIL|None\n",
-        "123|BOOT_FAIL|None\n",
-        "123|COMPLETED|Kill task failed\n",
-        "123|FAILED|kill task failed on node jagupard26\n",
-        "123|RUNNING|None\n",
-        "123|PENDING|None\n",
-        # Requeued, and the row of the run that followed is not there yet.
-        "123|REQUEUED|None\n",
-        "123|REQUEUED|None\n123|RUNNING|None\n",
-        "123|NODE_FAIL|None\n123|COMPLETED|None\n",
-        "123|SOMETHING_NEW|None\n",
-        "124|COMPLETED|None\n",  # another job's row only
         "123|COMPLETED\n",
         "123|COMPLETED|None\nnot a row at all\n",
     ],
 )
-def test_an_end_accounting_does_not_call_clean_is_not_gone(
-    accounted: str, answers: Answers
-) -> None:
+def test_unexpected_sacct_output_fails_loudly(accounted: str, answers: Answers) -> None:
     answers(squeue=_failed("squeue", FORGOTTEN), sacct=accounted)
 
-    assert not slurm.gone("sc", "123")
+    with pytest.raises(slurm.SlurmError, match="sacct returned unexpected output"):
+        slurm.why_not_gone("sc", "123")
 
 
 @pytest.mark.parametrize(
-    "table",
+    ("table", "match"),
     [
         # The queue fails for another reason than a forgotten job.
-        {
-            "squeue": _failed("squeue", "slurm_load_jobs error: Socket timed out"),
-            "sacct": "123|COMPLETED|None\n",
-        },
+        (
+            {
+                "squeue": _failed("squeue", "slurm_load_jobs error: Socket timed out"),
+                "sacct": "123|COMPLETED|None\n",
+            },
+            "squeue failed for job 123: slurm_load_jobs error: Socket timed out",
+        ),
         # It printed something before it failed.
-        {
-            "squeue": _failed("squeue", FORGOTTEN, stdout="123 RUNNING\n"),
-            "sacct": "123|COMPLETED|None\n",
-        },
-        {
-            "squeue": subprocess.TimeoutExpired("squeue", 60.0),
-            "sacct": "123|COMPLETED|None\n",
-        },
-        {"squeue": "", "sacct": _failed("sacct", "sacct: error")},
-        {"squeue": "", "sacct": subprocess.TimeoutExpired("sacct", 60.0)},
-        {"squeue": ""},  # a machine without sacct
-        {},  # a machine without Slurm
+        (
+            {
+                "squeue": _failed("squeue", FORGOTTEN, stdout="123 RUNNING\n"),
+                "sacct": "123|COMPLETED|None\n",
+            },
+            "squeue failed for job 123",
+        ),
+        (
+            {
+                "squeue": subprocess.TimeoutExpired("squeue", 60.0),
+                "sacct": "123|COMPLETED|None\n",
+            },
+            "squeue failed for job 123: timed out after 60s",
+        ),
+        (
+            {"squeue": "", "sacct": _failed("sacct", "sacct: error")},
+            "sacct failed for job 123: sacct: error",
+        ),
+        (
+            {"squeue": "", "sacct": subprocess.TimeoutExpired("sacct", 60.0)},
+            "sacct failed for job 123: timed out after 60s",
+        ),
+        ({"squeue": ""}, "sacct failed for job 123"),  # a Slurm machine without sacct
+        ({}, "squeue failed for job 123"),  # a Slurm machine without squeue
     ],
 )
-def test_a_job_slurm_does_not_answer_for_is_not_gone(
-    table: dict[str, str | Exception], answers: Answers
+def test_a_slurm_command_failure_fails_loudly(
+    table: dict[str, str | Exception], match: str, answers: Answers
 ) -> None:
     answers(**table)
 
-    assert not slurm.gone("sc", "123")
+    with pytest.raises(slurm.SlurmError, match=match):
+        slurm.why_not_gone("sc", "123")
 
 
-@pytest.mark.parametrize("cluster", ["other", None])
+@pytest.mark.parametrize(
+    ("cluster", "expected"),
+    [
+        ("other", "this machine is on Slurm cluster other, not sc"),
+        (None, "this machine is not on a Slurm cluster"),
+    ],
+)
 def test_a_job_of_another_cluster_is_not_gone_and_slurm_is_not_asked(
-    cluster: str | None, answers: Answers
+    cluster: str | None, expected: str, answers: Answers
 ) -> None:
     ran = answers(cluster, squeue="", sacct="123|COMPLETED|None\n")
 
-    assert not slurm.gone("sc", "123")
+    assert slurm.why_not_gone("sc", "123") == expected
     assert ran == []
 
 
@@ -291,6 +348,9 @@ def test_the_cluster_a_job_is_checked_against_is_asked_of_the_controller_once(
 
     monkeypatch.setattr(slurm, "run", fake)
 
-    assert slurm.gone("sc", "123") and slurm.gone("sc", "123")
-    assert not slurm.gone("other", "123")
+    assert slurm.why_not_gone("sc", "123") is None
+    assert slurm.why_not_gone("sc", "123") is None
+    assert slurm.why_not_gone("other", "123") == (
+        "this machine is on Slurm cluster sc, not other"
+    )
     assert ran == ["scontrol", "squeue", "sacct", "squeue", "sacct"]
