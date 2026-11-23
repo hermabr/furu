@@ -698,3 +698,39 @@ def test_a_folder_a_worker_took_first_is_not_deleted(
 
     assert os.listdir(run / THEIRS) == ["data"]
     assert os.listdir(run.parent) == [run.name]
+
+
+def test_a_failing_published_check_undoes_a_fresh_or_adopted_claim(run: Path) -> None:
+    def boom() -> bool:
+        raise RuntimeError("transient lookup error")
+
+    # Fresh claim is removed rather than stranded under local__.
+    with pytest.raises(RuntimeError, match="transient lookup error"):
+        attempt_lock.acquire(run, boom)
+    assert not run.exists()
+
+    # Adopted claim with checkpoints is released back to free__ with contents intact.
+    (run / "free__manual" / "scratch").mkdir(parents=True)
+    (run / "free__manual" / "scratch" / "ckpt").write_text("step 5")
+    with pytest.raises(RuntimeError, match="transient lookup error"):
+        attempt_lock.acquire(run, boom)
+    (freed,) = os.listdir(run)
+    assert freed.startswith("free__") and freed != "free__manual"
+    assert (run / freed / "scratch" / "ckpt").read_text() == "step 5"
+
+
+def test_a_failed_runs_mkdir_in_publish_leaves_scratch_in_place(
+    run: Path, tmp_path: Path
+) -> None:
+    attempt, claimed = _take(run)
+    (attempt / "scratch").mkdir()
+    (attempt / "scratch" / "ckpt").write_text("step 9")
+    # Make dest.parent uncreatable by putting a file where its parent would be.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("file")
+
+    with pytest.raises(OSError):
+        attempt_lock.publish(attempt, blocker / "runs" / run.name, claimed)
+
+    assert (attempt / "scratch" / "ckpt").read_text() == "step 9"
+    assert os.listdir(run.parent) == [run.name]

@@ -79,8 +79,9 @@ def look_again(class_dir: Path) -> None:
     names, of which runs/ can hold very many.
     """
     for version in version_dirs_in(class_dir):
-        with suppress(OSError):
-            os.close(os.open(runs_dir_in(version), os.O_RDONLY | os.O_DIRECTORY))
+        for folder in (version, runs_dir_in(version)):
+            with suppress(OSError):
+                os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
 
 
 def _listed(version: Path, batches: bool) -> dict[str, _First]:

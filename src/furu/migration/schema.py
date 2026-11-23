@@ -21,6 +21,7 @@ so a writer that lost the lock while it held it cannot change one.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from collections import defaultdict
@@ -81,8 +82,10 @@ def _read(path: Path) -> list[dict[str, Any]] | None:
     """The file's whole lines; None when there is no file."""
     try:
         text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ESTALE):
+            return None
+        raise
     lines = []
     for line in text.splitlines():
         try:

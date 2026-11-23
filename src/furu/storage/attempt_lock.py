@@ -166,18 +166,27 @@ def acquire(
             f"did not get {run}: another worker took it at the same moment, or "
             f"the rename failed. Its working folder {now}"
         )
-    claimed = mine.stat()
-    # Whoever held the folder before may have published the run since this
-    # process last looked, and a run is published once.
-    if published():
-        try:
-            mine.rmdir()  # made here
-        except OSError:
-            release(mine)  # taken with what earlier attempts left in it
-        with suppress(OSError):
-            run.rmdir()
+    try:
+        claimed = mine.stat()
+        # Whoever held the folder before may have published the run since this
+        # process last looked, and a run is published once.
+        already = published()
+    except BaseException:
+        _undo(mine, run)
+        raise
+    if already:
+        _undo(mine, run)
         return None
     return mine, claimed
+
+
+def _undo(mine: Path, run: Path) -> None:
+    try:
+        mine.rmdir()  # made here
+    except OSError:
+        release(mine)  # taken with what earlier attempts left in it
+    with suppress(OSError):
+        run.rmdir()
 
 
 def release(mine: Path) -> None:
@@ -221,10 +230,10 @@ def publish(mine: Path, dest: Path, claimed: os.stat_result) -> None:
         )
     # Scratch is not part of a run. It is moved out whole, which a crash
     # cannot leave half done as deleting it in place would.
+    dest.parent.mkdir(parents=True, exist_ok=True)
     trash = mine.parent.parent / f".trash__{new_token()}"
     with suppress(FileNotFoundError):
         os.rename(scratch_dir_in(mine), trash)
-    dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.rename(mine, dest)
     except OSError:

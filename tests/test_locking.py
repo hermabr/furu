@@ -54,10 +54,12 @@ def test_a_holder_whose_lock_was_taken_for_stale_leaves_the_next_holders_alone(
         with short_lock(path):
             pass
         assert not path.exists()
-        path.touch()
-        os.utime(path, (later, later))
+        # Recreated immediately in the same timestamp tick (even if the
+        # filesystem reuses the freed inode number).
+        path.write_text("other-holder", encoding="utf-8")
 
     assert path.exists()
+    assert path.read_text(encoding="utf-8") == "other-holder"
 
 
 def test_a_lock_left_by_a_killed_holder_is_taken_once_it_is_old(tmp_path: Path) -> None:

@@ -604,12 +604,16 @@ class Manager:
                 # Looked at first: a job is filled from the stopped batches
                 # whose working folders are free.
                 due = self._due(pool)
-                lease = None if due else self._hand_out(connection, pool)
-                if lease is None and not due:
-                    self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
             if due:
                 self._look(due)
-            self._flush()  # forming a batch and a look can each leave a warning
+                self._flush()  # a look can leave a warning
+            with self.lock:
+                if self.stopping or connection.state is not State.OPEN:
+                    return None
+                lease = self._hand_out(connection, pool)
+                if lease is None:
+                    self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
+            self._flush()  # forming a batch can leave a warning
             if lease is not None:
                 return lease
 
@@ -638,8 +642,10 @@ class Manager:
         another's is told why, once for each reason.
         """
         whys = [attempt_lock.held(folder) for _, folder in due]
+        next_look = time.monotonic() + _HELD_CHECK_INTERVAL_S
         with self.lock:
             for (stopped, _), why in zip(due, whys):
+                stopped.look_at = next_look
                 stopped.free = why is None
                 # Not if its specs finished or were given up on meanwhile.
                 if why not in (None, stopped.why) and stopped in self.stopped:

@@ -1318,6 +1318,39 @@ def test_slurm_is_asked_about_a_jobs_working_folder_without_the_managers_lock(
     assert ran == [("squeue", True), ("sacct", True)]
 
 
+def test_a_slow_probe_does_not_starve_handing_out_a_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = [SweepLeaf(value=0)]
+    extra = SweepLeaf(value=1)
+    folder = attempt_parent(started) / "free__9f3c2a7d51b0e6a4"
+    folder.mkdir(parents=True)
+    events.start(folder, [started[0]._artifact_hash], _plan(), _plan())
+    manager = _manager([*started, extra], backends=[SMALL])
+    manager.scripts[0].connection = cast(
+        ServerConnection, type("Sink", (), {"send": lambda self, _: None})()
+    )
+
+    now = [100.0]
+    probes = 0
+    monkeypatch.setattr(manager_module.time, "monotonic", lambda: now[0])
+
+    def slow_held(path: Path) -> str | None:
+        nonlocal probes
+        probes += 1
+        now[0] += manager_module._HELD_CHECK_INTERVAL_S + 1.0
+        return None
+
+    monkeypatch.setattr(attempt_lock, "held", slow_held)
+    connection = cast(ServerConnection, type("Open", (), {"state": State.OPEN})())
+
+    lease = manager._lease(connection, pool=SMALL.pool_key)
+
+    assert lease is not None
+    assert set(lease.specs) == set(_ids([*started, extra]))
+    assert probes == 1
+
+
 def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_is_not_resumed() -> (
     None
 ):
