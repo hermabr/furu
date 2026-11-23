@@ -14,6 +14,8 @@ from furu.code_trace import _REPO_ROOT_ENV_VAR
 from furu.config import _Config
 from furu.logging import get_logger
 from furu.snapshot import CodeLocation
+from furu.storage import attempt_lock
+from furu.storage._layout import log_path_in
 from furu.worker.messages import Job, JobFailedResult, JobResult, job_result_adapter
 
 _LOG_TAIL_BYTES = 32 * 1024
@@ -159,8 +161,11 @@ class ChildSlot:
     def _request(self, child: _Child, job: Job) -> JobResult:
         assert child.process.stdin is not None
         assert child.process.stdout is not None
+        # The child ends the name of the working folder it takes with this,
+        # so the folder is found again if the child dies holding it.
+        token = attempt_lock.new_token()
         try:
-            child.process.stdin.write(job.model_dump_json() + "\n")
+            child.process.stdin.write(f"{token} {job.model_dump_json()}\n")
             child.process.stdin.flush()
             line = child.process.stdout.readline()
         except OSError:
@@ -168,7 +173,12 @@ class ChildSlot:
         if line:
             return job_result_adapter.validate_json(line)
 
+        # No answer: the child died or was killed. Nothing of it may be left
+        # writing to the folder when the folder is given up, and only this
+        # process knows that the child is dead.
+        _kill(child.process)
         returncode = child.process.wait()
+        attempt_lock.release_child(job.folder, token)
         if returncode < 0:
             try:
                 name = signal.Signals(-returncode).name
@@ -182,7 +192,7 @@ class ChildSlot:
         )
         # The log's tail is the child's last words, and the reason goes last
         # so it reads as the error's summary.
-        return JobFailedResult(error=f"{_tail(job.log)}subprocess died: {reason}")
+        return JobFailedResult(error=f"{_tail(job.folder)}subprocess died: {reason}")
 
 
 def _kill(process: subprocess.Popen[str]) -> None:
@@ -196,9 +206,12 @@ def _kill(process: subprocess.Popen[str]) -> None:
         os.killpg(process.pid, signal.SIGKILL)
 
 
-def _tail(path: Path) -> str:
+def _tail(folder: Path) -> str:
+    """The end of the log in the working folder that ``folder`` holds now."""
+    if (attempt := attempt_lock.current(folder)) is None:
+        return ""
     try:
-        with path.open("rb") as file:
+        with log_path_in(attempt).open("rb") as file:
             file.seek(max(0, file.seek(0, os.SEEK_END) - _LOG_TAIL_BYTES))
             tail = file.read().decode(errors="replace")
     except OSError:

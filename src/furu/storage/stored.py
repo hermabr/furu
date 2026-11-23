@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -26,9 +27,11 @@ from furu.storage._layout import (
     FIXED,
     data_dir_in,
     events_path_in,
+    list_names,
     result_dir_in,
     run_dir_in,
     runs_dir_in,
+    version_dirs_in,
 )
 from furu.storage.events import parse_events
 
@@ -68,20 +71,16 @@ def _events(runs: Sequence[Path]) -> list[bytes]:
     return texts
 
 
-def _run_names(runs: Path) -> list[str]:
-    """The folders in a code version's runs/; none when it has no runs yet."""
-    try:
-        return os.listdir(runs)
-    except FileNotFoundError:
-        # A machine remembers for up to a minute that a folder was not there.
-        # Listing the folder above it makes it look again, so list from the
-        # storage root down: another machine may just have published here.
-        try:
-            for folder in reversed(runs.parents[:4]):
-                os.listdir(folder)
-            return os.listdir(runs)
-        except FileNotFoundError:
-            return []
+def look_again(class_dir: Path) -> None:
+    """Make this machine forget which runs of a class it found missing.
+
+    It remembers for up to a minute that a name was not there, until the
+    folder above the name is opened or listed. Opening does not read the
+    names, of which runs/ can hold very many.
+    """
+    for version in version_dirs_in(class_dir):
+        with suppress(OSError):
+            os.close(os.open(runs_dir_in(version), os.O_RDONLY | os.O_DIRECTORY))
 
 
 def _listed(version: Path, batches: bool) -> dict[str, _First]:
@@ -90,8 +89,7 @@ def _listed(version: Path, batches: bool) -> dict[str, _First]:
     With ``batches``, only the batch runs are read.
     """
     runs = runs_dir_in(version)
-    # A dotted name is a run that is being deleted.
-    names = {name for name in _run_names(runs) if "." not in name}
+    names = set(list_names(runs))
     read, first = _READ.setdefault(version, (set(), {}))
     if read - names:
         # A run was deleted, and a spec it held may be in another one.

@@ -311,6 +311,17 @@ def _dump_artifact(
     return {WRAPPER_KEY: body}
 
 
+def _make_in(bundle_dir: Path, path: Path) -> None:
+    """Make a new directory in the bundle, with the directories above it there.
+
+    Never the bundle's own: a process whose working folder was taken from it
+    must not make the folder again under the old name.
+    """
+    for above in reversed(path.parents[:-1]):
+        (bundle_dir / above).mkdir(exist_ok=True)
+    (bundle_dir / path).mkdir()
+
+
 def _save_columns(
     columns: dict[ValuePath, list[_Cell]],
     bundle_dir: Path,
@@ -334,7 +345,7 @@ def _save_columns(
         if all(cell.codec is codec for cell in cells) and not any(
             position[:i] in clashing for i in range(1, len(position) + 1)
         ):
-            (bundle_dir / shared).mkdir(parents=True)
+            _make_in(bundle_dir, shared)
             metadatas = codec.save_many(
                 [cell.value for cell in cells], bundle_dir / shared
             )
@@ -347,7 +358,7 @@ def _save_columns(
         if metadatas is None:
             paths = [Path(ROWS_DIR_NAME, str(cell.row), *position) for cell in cells]
             for path in paths:
-                (bundle_dir / path).mkdir(parents=True)
+                _make_in(bundle_dir, path)
             metadatas = [
                 cell.codec.save(cell.value, bundle_dir / path)
                 for cell, path in zip(cells, paths)
@@ -546,7 +557,9 @@ def _save_result_bundle(
 
     ``label`` names the results in a warning.
     """
-    bundle_dir.mkdir(parents=True, exist_ok=False)
+    # Not with its parents: a process whose working folder was taken from it
+    # must not make the folder again under the old name.
+    bundle_dir.mkdir()
 
     writer = _Writer(data_dir)
     manifest: list[JsonValue] = []

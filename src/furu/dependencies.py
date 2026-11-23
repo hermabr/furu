@@ -307,14 +307,19 @@ def _ignore_loads(run: Path, specs: Iterable[Spec]) -> None:
 class Creation:
     """What code that runs in this context knows of the create() it runs in.
 
-    ``specs`` are the ids of the specs whose create() runs, ``plan`` the plan
-    file that lists them and ``asked`` the stored names of the classes their
-    launch asked about. ``on_load`` is told about each published run the
-    create(), or the traced call of a ``remember=True`` method, loads, and the
-    specs whose rows it loads from it.
+    ``specs`` are the ids of the specs whose create() runs, ``attempt_dir``
+    the working folder it took for their run, ``plan`` the plan file that lists
+    them and ``asked`` the stored names of the classes their launch asked
+    about. ``attempt_token`` is what a worker gave its child to end the name
+    of the next working folder with, to find the folder by if the child dies.
+    ``on_load`` is told about each published run the create(), or the traced
+    call of a ``remember=True`` method, loads, and the specs whose rows it
+    loads from it.
     """
 
     specs: frozenset[str] = frozenset()
+    attempt_dir: Path | None = None
+    attempt_token: str | None = None
     plan: Path | None = None
     asked: frozenset[str] = frozenset()
     on_load: OnLoad = _ignore_loads
@@ -339,12 +344,21 @@ def creation() -> Creation:
 def creating(
     *,
     specs: frozenset[str] | None = None,
+    attempt_dir: Path | None = None,
+    attempt_token: str | None = None,
     plan: Path | None = None,
     asked: frozenset[str] | None = None,
     on_load: OnLoad | None = None,
 ) -> Generator[None]:
     """Run code with ``creation()`` changed in each field that is given."""
-    given = {"specs": specs, "plan": plan, "asked": asked, "on_load": on_load}
+    given = {
+        "specs": specs,
+        "attempt_dir": attempt_dir,
+        "attempt_token": attempt_token,
+        "plan": plan,
+        "asked": asked,
+        "on_load": on_load,
+    }
     changes = {name: value for name, value in given.items() if value is not None}
     token = _creation.set(replace(_creation.get(), **changes))
     try:

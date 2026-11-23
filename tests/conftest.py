@@ -9,8 +9,13 @@ import pytest
 from gitrepo import init_repo
 from tracedrepo import Repo
 
-from furu import provenance
+from furu import provenance, slurm
 from furu.config import _project_anchor
+
+# Tests run as a process outside Slurm wherever pytest was started, so that a
+# working folder is named for a process and none asks a real Slurm about a job.
+for _name in [name for name in os.environ if name.startswith("SLURM_")]:
+    del os.environ[_name]
 
 # Set once here so xdist workers and every child process they start inherit it.
 os.environ.update(
@@ -34,6 +39,14 @@ os.environ.update(
         "PYDANTIC_DISABLE_PLUGINS": "__all__",
     }
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_remembered_cluster() -> Iterator[None]:
+    """No test finds the Slurm cluster another test's fake controller named."""
+    slurm.forget_cluster()
+    yield
+    slurm.forget_cluster()
 
 
 @pytest.fixture
