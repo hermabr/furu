@@ -19,6 +19,7 @@ from typing import (
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
 from furu._declared_types import cached_type_hints
+from furu.config import get_config
 from furu.dependencies import (
     Returned,
     _Dependency,
@@ -275,7 +276,7 @@ class Spec(_FuruDataclassTransform, ABC):
         the deleted results stays done. A spec with ``@furu.batched`` is a row
         in a run that other specs share, so this raises and names that run.
         A working folder that is not free to take raises too: its create() may
-        be running.
+        be running, and so does a result outside the overlay, if one is set.
         """
         if is_batched(type(self)):
             row = stored_row(self)
@@ -289,16 +290,26 @@ class Spec(_FuruDataclassTransform, ABC):
                     "folder deletes every spec in the batch."
                 )
             )
+
+        def runs_in(class_dir: Path) -> list[Path]:
+            return [
+                run
+                for version in version_dirs_in(class_dir)
+                if (run := run_dir_in(version, self._artifact_hash)).is_dir()
+            ]
+
+        below = get_config().layers(self._class_dir)[1:]
+        if read_only := [run for class_dir in below for run in runs_in(class_dir)]:
+            raise RuntimeError(
+                f"{self.object_id}.delete(): its result {read_only[0]} is outside "
+                "the overlay, which furu only reads, so the spec would still load it."
+            )
         parent = attempt_parent([self])
         try:
             attempt = attempt_lock.free(parent)
         except attempt_lock.HeldError as exc:
             raise attempt_lock.HeldError(f"{self.object_id}.delete(): {exc}") from None
-        runs = [
-            run
-            for version in version_dirs_in(self._class_dir)
-            if (run := run_dir_in(version, self._artifact_hash)).is_dir()
-        ]
+        runs = runs_in(self._class_dir)
         folders = [attempt, *runs] if attempt else runs
         if not folders:
             return False
@@ -376,7 +387,10 @@ class Spec(_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _class_dir(self) -> Path:
-        return self._metadata.storage / self._stored_name / self._class_part
+        """Where the class's runs are written: under the overlay, if one is set."""
+        return get_config().written(
+            self._metadata.storage / self._stored_name / self._class_part
+        )
 
 
 def attempt_parent(specs: Sequence[Spec]) -> Path:

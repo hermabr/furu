@@ -101,7 +101,7 @@ def launch(
     header: Line = {"launch": plan_path.stem, **facts.model_dump(mode="json")}
     if ignore := os.environ.get(IGNORE_STORED):
         header["ignore_stored"] = ignore
-    folder = get_config().directories.anchored().provenance
+    folder = get_config().data_directories().provenance
     folder.mkdir(parents=True, exist_ok=True)
     file = plan.File(folder / f"launch-{plan_path.stem}")
     file.add([header, *shared])
@@ -120,7 +120,7 @@ def own() -> plan.File:
     It is created the first time the process starts an attempt, so a process
     that never does leaves no file.
     """
-    folder = get_config().directories.anchored().provenance
+    folder = get_config().data_directories().provenance
     if (file := _own.get(folder)) is None:
         file = _own[folder] = plan.File.new(folder)
         file.add([{"worker": worker()}])
@@ -159,7 +159,7 @@ def batch(
     lead = group[0]
     line: Line = {
         "run": run,
-        "storage": str(lead._metadata.storage),
+        "storage": str(lead._class_dir.parents[1]),
         "version": version,
         "launch": plan.launch(),
         "metadata": _process(lead._metadata)["metadata"],

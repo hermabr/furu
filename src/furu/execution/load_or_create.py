@@ -87,7 +87,9 @@ def _recording(
         paused()
         if metadata.code_version == "fixed"
         else recording(
-            trace_log_path_in(attempt), storage_root=metadata.storage, resumed=resumed
+            trace_log_path_in(attempt),
+            storage_root=group[0]._class_dir.parents[1],
+            resumed=resumed,
         )
     ) as run:
 
@@ -351,7 +353,7 @@ def _load_or_create_local(objs: list[Spec], *, load: bool) -> list[object]:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
     if running:
-        launch_plan = get_config().directories.anchored().plans / f"{launch}.plan"
+        launch_plan = get_config().data_directories().plans / f"{launch}.plan"
         stages = ask(running)
         record.launch(launch_plan, objs, running, capture_submit_provenance())
         with creating(asked=stages):
@@ -473,7 +475,9 @@ def _create_group(group: list[Spec], attempt: Path) -> Path:
         resumed = LogState()
         if traced and events_path_in(attempt).exists():
             logged = LogState.read(trace_log_path_in(attempt))
-            if why := why_not_resumable(logged, storage_root=metadata.storage):
+            if why := why_not_resumable(
+                logged, storage_root=lead._class_dir.parents[1]
+            ):
                 lead.logger.info("starting %s over: %s", label, why)
                 shutil.rmtree(data_dir_in(attempt), ignore_errors=True)
                 shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)

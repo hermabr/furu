@@ -717,13 +717,16 @@ def why_outdated(version: Path) -> str | None:
 
 
 def versions(class_dir: Path) -> list[tuple[Path, str | None]]:
-    """A traced class's code versions, each with why it is outdated (None if live)."""
+    """A traced class's code versions, each with why it is outdated (None if live).
+
+    Under an overlay, those in it and then those at the path it stands for.
+    """
     found = [
         (version, checked[1])
-        for version in version_dirs_in(class_dir)
+        for layer in get_config().layers(class_dir)
+        for version in version_dirs_in(layer)
         if version.name != FIXED
-        and (checked := _check(trace_path_in(version), class_dir.parents[1]))
-        is not None
+        and (checked := _check(trace_path_in(version), layer.parents[1])) is not None
     ]
     live = sum(why is None for _, why in found)
     if live > _MANY_LIVE_VERSIONS and class_dir not in _WARNED_MANY:
@@ -819,9 +822,13 @@ class _Collector:
         self.log = log
         # furu's own data directories may live in the repo; reading them is fine.
         # A snapshot worker's root lies inside one, so skip those.
+        config = get_config()
         self.data_dirs = tuple(
             path
-            for _, anchored in get_config().directories.anchored()
+            for _, anchored in [
+                *config.directories.anchored(),
+                *config.data_directories(),
+            ]
             if not root.startswith(path := _realpath(str(anchored)) + os.sep)
         )
         self.opened: set[str] = set()  # repo files besides .py that create() read

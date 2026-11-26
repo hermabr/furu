@@ -103,6 +103,11 @@ class _Config(BaseSettings):
     code_version: CodeVersion = "fixed"
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+    # A debug session (FURU_OVERLAY=<folder>): everything furu writes goes
+    # under this folder, at the absolute path it would otherwise have, and
+    # results at the real paths still load. Those are only read, never
+    # written, made or locked, so deleting the folder undoes the session.
+    overlay: Path | None = None
 
     @property
     def manager_version_dir(self) -> Path:
@@ -112,7 +117,36 @@ class _Config(BaseSettings):
     def anchored(self) -> "_Config":
         """This config with absolute directories, for processes whose working
         directory (e.g. a snapshot) must not decide where data lives."""
-        return self.model_copy(update={"directories": self.directories.anchored()})
+        return self.model_copy(
+            update={
+                "directories": self.directories.anchored(),
+                "overlay": self._overlay(),
+            }
+        )
+
+    def _overlay(self) -> Path | None:
+        if self.overlay is None or self.overlay.is_absolute():
+            return self.overlay
+        return _project_anchor() / self.overlay
+
+    def written(self, path: Path) -> Path:
+        """Where furu writes what belongs at ``path``: under the overlay, if any."""
+        overlay = self._overlay()
+        return path if overlay is None else Path(overlay, *path.absolute().parts[1:])
+
+    def layers(self, path: Path) -> list[Path]:
+        """Where furu reads what is at ``path``: a path under the overlay, then
+        the read-only path it stands for."""
+        overlay = self._overlay()
+        if overlay is None or not path.is_relative_to(overlay):
+            return [path]
+        return [path, Path("/", path.relative_to(overlay))]
+
+    def data_directories(self) -> _FuruDirectories:
+        """The directories furu writes plans, records and snapshots to."""
+        return _FuruDirectories(
+            **{name: self.written(path) for name, path in self.directories.anchored()}
+        )
 
     @classmethod
     def settings_customise_sources(

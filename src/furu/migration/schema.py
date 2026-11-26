@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
+from furu.config import get_config
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -169,6 +170,27 @@ def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
     return recorded
 
 
+def _compare(
+    declared: dict[_Step, tuple[str, JsonValue]],
+    path: Path,
+    lines: list[dict[str, Any]],
+) -> None:
+    """Stop when a default the source declares is not the one ``path`` recorded."""
+    recorded = _recorded_defaults(lines)
+    for step, (label, default) in declared.items():
+        if step in recorded and (
+            _stable_json_dump(recorded[step]) != _stable_json_dump(default)
+        ):
+            raise MigrationError(
+                f"{label} declares the default {_stable_json_dump(default)}, "
+                f"but {path} recorded {_stable_json_dump(recorded[step])} "
+                "when the step was first seen. A spec at the declared "
+                "default is named as it was before the field existed, so it "
+                "would load a result computed at the recorded one. Put the "
+                "recorded default back in the step."
+            )
+
+
 def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
     """Stop when a default the source declares is not the one recorded.
 
@@ -180,6 +202,10 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
     if (*key, record) in _checked:
         return
     declared = _declared_defaults(cls)
+    # Under an overlay, results load from below it too: they were stored at
+    # the defaults recorded there, which are read and never written.
+    for below in get_config().layers(class_dir)[1:] if declared else ():
+        _compare(declared, schema_path_in(below), _read(schema_path_in(below)) or [])
     path = schema_path_in(class_dir)
     lines = _read(path) if declared or record else None
     if lines is not None or record:
@@ -200,17 +226,7 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
                     # What counts is what the file holds: a writer that lost
                     # the lock while it held it can have recorded first.
                     lines = _read(path) or []
-        recorded = _recorded_defaults(lines)
-        for step, (label, default) in declared.items():
-            if _stable_json_dump(recorded[step]) != _stable_json_dump(default):
-                raise MigrationError(
-                    f"{label} declares the default {_stable_json_dump(default)}, "
-                    f"but {path} recorded {_stable_json_dump(recorded[step])} "
-                    "when the step was first seen. A spec at the declared "
-                    "default is named as it was before the field existed, so it "
-                    "would load a result computed at the recorded one. Put the "
-                    "recorded default back in the step."
-                )
+        _compare(declared, path, lines)
         _checked.add((*key, True))
     # A folder with no file may get one from a checkout that declares another
     # default, so a declared default is looked for again.

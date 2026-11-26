@@ -53,7 +53,9 @@ def require_pushed(git: GitIdentity) -> None:
     """
     repo_root = Path(git.repo_root)
     # Keep furu's own directories out of `git status`, as uv does for .venv.
-    for _, directory in get_config().directories.anchored():
+    config = get_config().anchored()
+    ignored = [path for _, path in config.directories]
+    for directory in [config.overlay] if config.overlay else ignored:
         if not (ignore := directory / ".gitignore").exists():
             directory.mkdir(parents=True, exist_ok=True)
             ignore.write_text("*\n")
@@ -112,7 +114,7 @@ def extract_snapshot(commit: str, *, repo: Path) -> Path:
     The tree lands in ``<snapshots>/<commit>`` once and is reused by every later
     caller.
     """
-    code_dir = get_config().directories.anchored().snapshots / commit
+    code_dir = get_config().data_directories().snapshots / commit
     if code_dir.is_dir():
         return code_dir
     archive = subprocess.run(

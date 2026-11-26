@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from furu._batched import is_batched
 from furu.code_trace import versions
+from furu.config import get_config
 from furu.dependencies import record_loaded
 from furu.migration.schema import check_defaults
 from furu.result.bundle import load_result_bundle
@@ -78,7 +79,7 @@ def look_again(class_dir: Path) -> None:
     folder above the name is opened or listed. Opening does not read the
     names, of which runs/ can hold very many.
     """
-    for version in version_dirs_in(class_dir):
+    for version in chain(*map(version_dirs_in, get_config().layers(class_dir))):
         for folder in (version, runs_dir_in(version)):
             with suppress(OSError):
                 os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
@@ -135,7 +136,7 @@ class Stored:
         class_dir, code_version = obj._class_dir, obj._metadata.code_version
         if (class_dir, code_version) not in self._live:
             self._live[class_dir, code_version] = (
-                [class_dir / FIXED]
+                [layer / FIXED for layer in get_config().layers(class_dir)]
                 if code_version == "fixed"
                 else [version for version, why in versions(class_dir) if why is None]
             )
