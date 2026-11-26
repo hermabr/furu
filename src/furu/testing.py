@@ -63,8 +63,9 @@ def pytest_configure(config: pytest.Config) -> None:
         / f"furu-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
     )
 
+    # No debug session either: the tests' directories are throwaway already.
     run_config = _replace_config_directories(
-        get_config(),
+        get_config().model_copy(update={"overlay": None}),
         _FuruDirectories(
             **{
                 name: run_base_directory / name

@@ -16,6 +16,10 @@ live. What the method returned is not saved, only its fingerprint. A launch
 writes one file per class folder once it has named its specs, also when it
 has nothing to run, and no file changes afterwards. Deleting the folder is
 always safe: the next launch calls the methods again.
+
+With an overlay, a line in it is the one that counts, and a line of the class
+folder that the overlay's stands for is used only where the overlay has none
+that holds.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from furu.code_trace import Trace, why_trace_outdated
+from furu.config import get_config
 from furu.storage._layout import remembered_dir_in
 from furu.utils import _stable_json_dump, atomic_write_text
 
@@ -53,20 +58,27 @@ def lookup(class_dir: Path, method: str, fields: str, storage_root: Path) -> str
     """
     if (lines := _LINES.get(class_dir)) is None:
         lines = _LINES[class_dir] = {}
-        folder = remembered_dir_in(class_dir)
-        try:
-            files = sorted(folder.glob("launch-*.jsonl"), key=os.path.getmtime)
-            texts = [file.read_text(encoding="utf-8") for file in files]
-        except FileNotFoundError:  # deleted meanwhile, which is always allowed
-            texts = []
-        holds: dict[str, bool] = {}
-        for text in texts:
-            for line in map(json.loads, text.splitlines()):
-                if (trace := line["trace"]) not in holds:
-                    path = _trace_path(class_dir, trace)
-                    holds[trace] = why_trace_outdated(path, storage_root) is None
-                if holds[trace]:
-                    lines[line["method"], line["fields"]] = line["returned"]
+        layers = get_config().layers
+        # Last to first, so that a line read later replaces one under it.
+        for folder, root in reversed(
+            list(zip(layers(class_dir), layers(storage_root), strict=True))
+        ):
+            try:
+                files = sorted(
+                    remembered_dir_in(folder).glob("launch-*.jsonl"),
+                    key=os.path.getmtime,
+                )
+                texts = [file.read_text(encoding="utf-8") for file in files]
+            except FileNotFoundError:  # deleted meanwhile, which is always allowed
+                texts = []
+            holds: dict[str, bool] = {}
+            for text in texts:
+                for line in map(json.loads, text.splitlines()):
+                    if (trace := line["trace"]) not in holds:
+                        path = _trace_path(folder, trace)
+                        holds[trace] = why_trace_outdated(path, root) is None
+                    if holds[trace]:
+                        lines[line["method"], line["fields"]] = line["returned"]
     return lines.get((method, fields))
 
 

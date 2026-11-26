@@ -11,15 +11,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from runs import run_of
+from runs import read_only, run_of
 
 import furu
 from furu import Added, MovedFrom, Renamed, Spec, plan
-from furu.config import get_config
+from furu.config import _Config, get_config
 from furu.execution.launch import stage_table
 from furu.migration import schema
 from furu.migration.steps import MigrationError, naming
 from furu.storage._layout import schema_path_in
+from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 _runs = itertools.count()
@@ -842,3 +843,96 @@ def test_a_step_that_does_not_fit_the_class_is_refused(
 ) -> None:
     with pytest.raises(TypeError, match=problem):
         declare()
+
+
+def _declaring(default: float) -> Callable[..., Spec]:
+    return _spec(
+        lemma=str,
+        min_overlap=(float, default),
+        migrations=(Added("min_overlap", default=default),),
+    )
+
+
+def test_an_overlay_records_a_new_default_in_a_schema_of_its_own(
+    session: _Config,
+) -> None:
+    before = _spec(lemma=str)
+    stored = before(lemma="comer").create()
+    under = schema_path_in(before(lemma="comer")._class_dir)
+
+    # The file under the overlay cannot be written or locked.
+    with read_only(), override_config(session):
+        spec = _declaring(0.5)(lemma="comer")
+        # Reading records the step, in a file that starts as any other does.
+        assert spec.done
+        assert _schema_lines(spec) == [
+            {"names": ["lemma"]},
+            {"added": "min_overlap", "default": 0.5},
+        ]
+        assert spec.create() == stored
+        over = schema_path_in(spec._class_dir)
+        with pytest.raises(MigrationError, match=f"{over} recorded 0.5"):
+            _ = _declaring(0.8)(lemma="comer").done
+
+    # The store records another default since. Neither file hides the other.
+    assert _declaring(0.8)(lemma="comer").create() == stored
+    with override_config(session):
+        with pytest.raises(MigrationError, match=f"{under} recorded 0.8"):
+            _ = _declaring(0.5)(lemma="comer").done
+        with pytest.raises(MigrationError, match=f"{over} recorded 0.5"):
+            _ = _declaring(0.8)(lemma="comer").done
+    assert _declaring(0.8)(lemma="comer").done
+
+
+def test_an_overlay_has_no_schema_while_the_one_under_it_says_everything(
+    session: _Config,
+) -> None:
+    stored = _declaring(0.5)(lemma="comer").create()
+
+    with read_only(), override_config(session):
+        spec = _declaring(0.5)(lemma="comer")
+        assert spec.load_existing() == stored
+        with pytest.raises(MigrationError, match="recorded 0.5"):
+            _ = _declaring(0.8)(lemma="comer").done
+        assert not spec._class_dir.exists()
+
+        # Its folder is made for the first result, and its file with it.
+        assert _declaring(0.5)(lemma="beber").create() != stored
+        assert _schema_lines(spec) == [{"names": ["lemma"]}]
+
+
+def test_an_overlay_launch_asks_about_results_stored_under_it(
+    session: _Config,
+) -> None:
+    before = _spec(lemma=str)
+    after = _spec(lemma=str, min_overlap=(float, 0.5))
+    before(lemma="comer").create()
+
+    with (
+        override_config(session),
+        pytest.raises(
+            MigrationError, match="would leave stored results behind"
+        ) as asks,
+    ):
+        after(lemma="comer").create()
+    assert f"{before(lemma='comer')._class_dir} was stored without" in str(asks.value)
+
+
+def test_an_overlay_compares_a_nested_class_with_the_names_under_it(
+    session: _Config,
+) -> None:
+    video = _spec("Video", source=Any)
+    stored = video(source=_nested(clip=str)(clip="x"))
+    stored.create()
+    lines = _schema_lines(stored)
+
+    with read_only(), override_config(session):
+        # The names under the overlay are not recorded again in it.
+        spec = video(source=_nested(clip=str)(clip="y"))
+        spec.create()
+        assert _schema_lines(spec) == [{"names": ["source"]}]
+
+        changed = _nested(clip=str, fps=(int, 30))
+        with pytest.raises(MigrationError, match="was stored without the field 'fps'"):
+            video(source=changed(clip="x")).create()
+    assert _schema_lines(stored) == lines

@@ -52,8 +52,19 @@ def require_pushed(git: GitIdentity) -> None:
     fetch, and Slurm workers can run that commit as the code snapshot.
     """
     repo_root = Path(git.repo_root)
+    config = get_config()
     # Keep furu's own directories out of `git status`, as uv does for .venv.
-    for _, directory in get_config().directories.anchored():
+    # An overlay holds all that is written, and the directories are left alone.
+    directories = [directory for _, directory in config.directories.anchored()]
+    if config.overlay is not None:
+        if repo_root.is_relative_to(config.overlay):
+            raise RuntimeError(
+                f"the overlay {config.overlay} holds the repository {repo_root}. "
+                "furu keeps what it writes out of git, so the overlay must be "
+                "a folder of its own: one in the repository, or outside it."
+            )
+        directories = [config.overlay]
+    for directory in directories:
         if not (ignore := directory / ".gitignore").exists():
             directory.mkdir(parents=True, exist_ok=True)
             ignore.write_text("*\n")
@@ -112,7 +123,7 @@ def extract_snapshot(commit: str, *, repo: Path) -> Path:
     The tree lands in ``<snapshots>/<commit>`` once and is reused by every later
     caller.
     """
-    code_dir = get_config().directories.anchored().snapshots / commit
+    code_dir = get_config().write_directories.snapshots / commit
     if code_dir.is_dir():
         return code_dir
     archive = subprocess.run(

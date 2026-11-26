@@ -17,6 +17,11 @@ compares the source with, as it compares a spec class with its folders.
 The file only grows, by whole lines: a writer holds schema.lock and a reader
 takes no lock. The first line that records a default is the one that counts,
 so a writer that lost the lock while it held it cannot change one.
+
+A class folder in an overlay has a file of its own, which starts with the
+names as any other does. The file of the folder it stands for is read with it
+and never written or locked: each file's lines are compared with the source,
+and a line that neither has goes to the overlay's.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
+from furu.config import get_config
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -181,40 +187,57 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
         return
     declared = _declared_defaults(cls)
     path = schema_path_in(class_dir)
-    lines = _read(path) if declared or record else None
-    if lines is not None or record:
-        if not lines or declared.keys() - _recorded_defaults(lines).keys():
+    # The lines of each file there is: the folder's own and, in an overlay,
+    # the one of the folder it stands for.
+    files: dict[Path, list[dict[str, Any]]] = {}
+    if declared or record:
+        for layer in get_config().layers(class_dir):
+            if (lines := _read(file := schema_path_in(layer))) is not None:
+                files[file] = lines
+
+    def unrecorded() -> set[_Step]:
+        return declared.keys() - {
+            step for lines in files.values() for step in _recorded_defaults(lines)
+        }
+
+    if files or record:
+        if (record and not files.get(path)) or unrecorded():
+            class_dir.mkdir(parents=True, exist_ok=True)  # new, in an overlay
             with short_lock(schema_lock_path_in(class_dir)):
-                lines = _read(path) or []
-                recorded = _recorded_defaults(lines)
+                files[path] = _read(path) or []
+                missing = unrecorded()
                 new: list[dict[str, Any]] = [
                     {"added": name, "default": default}
                     | ({} if nested is None else {"nested": nested, "class_part": part})
                     for (nested, part, name), (_, default) in declared.items()
-                    if (nested, part, name) not in recorded
+                    if (nested, part, name) in missing
                 ]
-                if not lines:
+                if not files[path]:
                     new.insert(0, {"names": list(naming(cls).first_names)})
                 if new:
                     _append(path, new)
                     # What counts is what the file holds: a writer that lost
                     # the lock while it held it can have recorded first.
-                    lines = _read(path) or []
-        recorded = _recorded_defaults(lines)
-        for step, (label, default) in declared.items():
-            if _stable_json_dump(recorded[step]) != _stable_json_dump(default):
-                raise MigrationError(
-                    f"{label} declares the default {_stable_json_dump(default)}, "
-                    f"but {path} recorded {_stable_json_dump(recorded[step])} "
-                    "when the step was first seen. A spec at the declared "
-                    "default is named as it was before the field existed, so it "
-                    "would load a result computed at the recorded one. Put the "
-                    "recorded default back in the step."
-                )
-        _checked.add((*key, True))
+                    files[path] = _read(path) or []
+        for file, lines in files.items():
+            recorded = _recorded_defaults(lines)
+            for step, (label, default) in declared.items():
+                if step in recorded and _stable_json_dump(
+                    recorded[step]
+                ) != _stable_json_dump(default):
+                    raise MigrationError(
+                        f"{label} declares the default {_stable_json_dump(default)}, "
+                        f"but {file} recorded {_stable_json_dump(recorded[step])} "
+                        "when the step was first seen. A spec at the declared "
+                        "default is named as it was before the field existed, so it "
+                        "would load a result computed at the recorded one. Put the "
+                        "recorded default back in the step."
+                    )
+        if path in files:  # else the folder still gets its file when it is made
+            _checked.add((*key, True))
     # A folder with no file may get one from a checkout that declares another
     # default, so a declared default is looked for again.
-    if lines is not None or not declared:
+    if files or not declared:
         _checked.add((*key, False))
 
 
@@ -229,9 +252,10 @@ def stored_names(class_dir: Path) -> list[str] | None:
 def nested_names(class_dir: Path) -> dict[str, set[tuple[str, ...]]]:
     """Each set of first names a dataclass was stored with in a class folder."""
     recorded: defaultdict[str, set[tuple[str, ...]]] = defaultdict(set)
-    for line in _read(schema_path_in(class_dir)) or ():
-        if "names" in line and "nested" in line:
-            recorded[line["nested"]].add(tuple(line["names"]))
+    for layer in get_config().layers(class_dir):
+        for line in _read(schema_path_in(layer)) or ():
+            if "names" in line and "nested" in line:
+                recorded[line["nested"]].add(tuple(line["names"]))
     return recorded
 
 
