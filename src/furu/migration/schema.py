@@ -48,9 +48,10 @@ type _Step = tuple[str | None, str | None, str]
 # The dataclasses that values of each spec class have held, in this process.
 held: defaultdict[type, set[type]] = defaultdict(set)
 
-# What this process has checked: a class, its folder, how many dataclasses its
-# values had held by then, and whether a folder with no file was given one.
-_checked: set[tuple[type, Path, int, bool]] = set()
+# What this process has checked: a class, its writable folder, its read-only
+# base folder (None outside overlay mode), how many dataclasses its values had
+# held by then, and whether a folder with no file was given one.
+_checked: set[tuple[type, Path, Path | None, int, bool]] = set()
 
 # The lines of nested names this process has seen in a class folder's file: the
 # folder, the dataclass's stored name and its first names.
@@ -169,17 +170,49 @@ def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
     return recorded
 
 
-def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
+def _check_against(
+    declared: dict[_Step, tuple[str, JsonValue]],
+    recorded: dict[_Step, JsonValue],
+    path: Path,
+) -> None:
+    for step, (label, default) in declared.items():
+        if step in recorded and _stable_json_dump(recorded[step]) != _stable_json_dump(
+            default
+        ):
+            raise MigrationError(
+                f"{label} declares the default {_stable_json_dump(default)}, "
+                f"but {path} recorded {_stable_json_dump(recorded[step])} "
+                "when the step was first seen. A spec at the declared "
+                "default is named as it was before the field existed, so it "
+                "would load a result computed at the recorded one. Put the "
+                "recorded default back in the step."
+            )
+
+
+def check_defaults(
+    class_dir: Path,
+    cls: type[Spec],
+    *,
+    record: bool = False,
+    base_dir: Path | None = None,
+) -> None:
     """Stop when a default the source declares is not the one recorded.
 
     A declared default with no line gets one. A folder with no file gets one
     only with ``record``, when the folder is made: until then nothing in it was
-    stored under any default.
+    stored under any default. When ``base_dir`` differs from ``class_dir``
+    (overlay mode), ``base_dir`` is checked strictly read-only and any new
+    lines are written only to ``class_dir``.
     """
-    key = (cls, class_dir, len(held[cls]))
+    read_only_base = base_dir if base_dir is not None and base_dir != class_dir else None
+    key = (cls, class_dir, read_only_base, len(held[cls]))
     if (*key, record) in _checked:
         return
     declared = _declared_defaults(cls)
+    if read_only_base is not None and declared:
+        base_path = schema_path_in(read_only_base)
+        if (base_lines := _read(base_path)) is not None:
+            _check_against(declared, _recorded_defaults(base_lines), base_path)
     path = schema_path_in(class_dir)
     lines = _read(path) if declared or record else None
     if lines is not None or record:
@@ -200,17 +233,7 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
                     # What counts is what the file holds: a writer that lost
                     # the lock while it held it can have recorded first.
                     lines = _read(path) or []
-        recorded = _recorded_defaults(lines)
-        for step, (label, default) in declared.items():
-            if _stable_json_dump(recorded[step]) != _stable_json_dump(default):
-                raise MigrationError(
-                    f"{label} declares the default {_stable_json_dump(default)}, "
-                    f"but {path} recorded {_stable_json_dump(recorded[step])} "
-                    "when the step was first seen. A spec at the declared "
-                    "default is named as it was before the field existed, so it "
-                    "would load a result computed at the recorded one. Put the "
-                    "recorded default back in the step."
-                )
+        _check_against(declared, _recorded_defaults(lines), path)
         _checked.add((*key, True))
     # A folder with no file may get one from a checkout that declares another
     # default, so a declared default is looked for again.

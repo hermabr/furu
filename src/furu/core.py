@@ -19,6 +19,7 @@ from typing import (
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
 from furu._declared_types import cached_type_hints
+from furu.config import get_config
 from furu.dependencies import (
     Returned,
     _Dependency,
@@ -289,6 +290,17 @@ class Spec(_FuruDataclassTransform, ABC):
                     "folder deletes every spec in the batch."
                 )
             )
+        if self._class_dir != self._base_class_dir:
+            base_runs = [
+                run
+                for version in version_dirs_in(self._base_class_dir)
+                if (run := run_dir_in(version, self._artifact_hash)).is_dir()
+            ]
+            if base_runs:
+                raise RuntimeError(
+                    f"{self.object_id}.delete(): cannot delete stored result in "
+                    f"read-only base ({base_runs[0]}) while overlay mode is active"
+                )
         parent = attempt_parent([self])
         try:
             attempt = attempt_lock.free(parent)
@@ -374,9 +386,26 @@ class Spec(_FuruDataclassTransform, ABC):
         return stored_name(type(self))
 
     @final
-    @cached_property
-    def _class_dir(self) -> Path:
+    @property
+    def _base_class_dir(self) -> Path:
         return self._metadata.storage / self._stored_name / self._class_part
+
+    @final
+    @property
+    def _class_dir(self) -> Path:
+        return (
+            get_config().write_storage(self._metadata.storage)
+            / self._stored_name
+            / self._class_part
+        )
+
+    @final
+    @property
+    def _read_class_dirs(self) -> tuple[Path, ...]:
+        write_dir, base_dir = self._class_dir, self._base_class_dir
+        if write_dir != base_dir:
+            return (write_dir, base_dir)
+        return (base_dir,)
 
 
 def attempt_parent(specs: Sequence[Spec]) -> Path:

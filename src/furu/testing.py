@@ -43,9 +43,7 @@ def _replace_config_directories(
     config: _Config,
     directories: _FuruDirectories,
 ) -> _Config:
-    data = config.model_dump()
-    data["directories"] = directories
-    return _Config.model_validate(data)
+    return config.model_copy(update={"directories": directories, "overlay": None})
 
 
 def pytest_configure(config: pytest.Config) -> None:

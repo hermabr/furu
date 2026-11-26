@@ -147,22 +147,34 @@ class SubmitProvenance(BaseModel):
     submitted: SubmitContext
 
 
-def capture_submit_provenance() -> SubmitProvenance:
+def capture_submit_provenance(*, snapshot: bool = False) -> SubmitProvenance:
     """Capture where a launch that has something to run is started from.
 
     Refuses unless the checkout is committed and pushed and its path
-    dependencies live inside the repo (see ``furu.snapshot``). Call this only
-    when there is work to create, never on the cache-hit path.
+    dependencies live inside the repo (see ``furu.snapshot``). In overlay mode
+    nothing is persisted to the real store, so local runs allow uncommitted
+    changes while snapshot runs (Slurm) still require a clean checkout and
+    in-repo path dependencies (without requiring a push to origin). Call this
+    only when there is work to create, never on the cache-hit path.
     """
     # snapshot.py imports this module
-    from furu.snapshot import require_path_dependencies_in_repo, require_pushed
+    from furu.config import get_config
+    from furu.snapshot import (
+        require_clean,
+        require_path_dependencies_in_repo,
+        require_pushed,
+    )
 
     cwd = Path.cwd()
     git = GitIdentity.capture(cwd)
     environment = EnvironmentIdentity.capture()
     if _require_pushed_code:
-        require_pushed(git)
-        require_path_dependencies_in_repo(git, Path(environment.project_root))
+        if get_config().overlay is None:
+            require_pushed(git)
+            require_path_dependencies_in_repo(git, Path(environment.project_root))
+        elif snapshot:
+            require_clean(git, for_overlay=True)
+            require_path_dependencies_in_repo(git, Path(environment.project_root))
     return SubmitProvenance(
         git=git,
         environment=environment,

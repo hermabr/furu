@@ -56,9 +56,16 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
         logger.info("all objects already exist; nothing to run")
         return
 
-    provenance = capture_submit_provenance()
+    config = get_config()
+    if (ov := config.anchored_overlay()) is not None:
+        logger.info(
+            "overlay active · writes go to %s (base is read-only)",
+            ov,
+            extra={"path": ov},
+        )
+    provenance = capture_submit_provenance(snapshot=local != {True})
     code = CodeLocation.here() if local == {True} else _prepare_snapshot(provenance)
-    directories = get_config().directories.anchored()
+    directories = config.writable_directories()
     execution_log = execution_log_path_in(directories.executions / launch)
     launch_plan = directories.plans / f"{launch}.plan"
     from furu.execution.manager import Manager

@@ -84,6 +84,16 @@ _SETTINGS = {"job_name", "idle_timeout_seconds"}
 type _ToScript = ResultMessage | GaveUpMessage | WarningMessage | ErrorMessage
 
 
+def _scoped(overlay: Path | None, key: str) -> str:
+    """Scope a spec or value id by its overlay so different overlays (or real
+    vs overlay) never collide on a shared manager."""
+    return key if overlay is None else f"{overlay}\0{key}"
+
+
+def _unscoped(key: str) -> str:
+    return key.rpartition("\0")[2]
+
+
 @dataclass(eq=False, slots=True)
 class _Plan:
     """The lines of one plan file as they were sent, and what its jobs have in common."""
@@ -97,6 +107,7 @@ class _Plan:
 @dataclass(eq=False)
 class _Script:
     connection: ServerConnection
+    overlay: Path | None = None
     pools: dict[str, Pool] = field(default_factory=dict)
     # The plans it sent lines of, by file: its launch's, and one for each
     # process whose create() asked for specs.
@@ -300,20 +311,30 @@ class Manager:
     def _add(self, script: _Script, message: SubmitMessage) -> int:
         """Hold a plan's lines and queue the specs of its groups that are new here."""
         launch = message.launch
+        overlay = launch.config.overlay
+        scope = overlay.resolve() if overlay is not None else None
+        script.overlay = scope
         listed = script.plans.setdefault(launch.plan, _Plan(launch))
-        values = set()
+        values: set[str] = set()
         for text in message.lines:
             line = json.loads(text)
             listed.lines[key := plan.key(line)] = text
             if "value" in line:
-                values.add(key)
-        holds = {key: plan.holds(listed.lines[key]) for key in values}
+                values.add(_scoped(scope, key))
+        holds: dict[str, list[str]] = {
+            key: [
+                _scoped(scope, held)
+                for held in plan.holds(listed.lines[_unscoped(key)])
+            ]
+            for key in values
+        }
         new: dict[Path, list[str]] = {}
         for group in message.groups:
             placed = _Placed(
                 listed, group.class_dir, group.process, group.pools, group.throttle
             )
-            for spec in group.specs:
+            for raw_spec in group.specs:
+                spec = _scoped(scope, raw_spec)
                 holds[spec] = []
                 if spec in self.gave_up:
                     self.gave_up.remove(spec)
@@ -326,7 +347,10 @@ class Manager:
                     self.placed[spec], self.asked_by[spec] = placed, [script]
                     # Otherwise it still runs for a script that left.
                     if spec not in self.dag.nodes:
-                        holds[spec] = plan.holds(listed.lines[spec])
+                        holds[spec] = [
+                            _scoped(scope, held)
+                            for held in plan.holds(listed.lines[raw_spec])
+                        ]
                         new.setdefault(group.class_dir, []).append(spec)
         self.dag.add(holds, values)
         for class_dir, specs in new.items():
@@ -345,7 +369,7 @@ class Manager:
         runs = [
             name for name in list_names(attempts_dir_in(class_dir)) if "." not in name
         ]
-        by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
+        by_hash = {_unscoped(spec).rpartition(":")[2]: spec for spec in specs}
         for run in runs:
             attempt = attempt_lock.current(attempt_parent_in(class_dir, run))
             hashes = [
@@ -432,12 +456,20 @@ class Manager:
 
     def _rerun(self, script: _Script, message: RerunMessage) -> None:
         with self.lock:
-            theirs = [spec for spec in message.specs if self._answers(script, spec)]
+            theirs = [
+                key
+                for spec in message.specs
+                if self._answers(script, key := _scoped(script.overlay, spec))
+            ]
+            after = [_scoped(script.overlay, dep) for dep in message.after]
             try:
                 for spec in theirs:
-                    self.dag.block(spec, message.after)
+                    self.dag.block(spec, after)
             except RuntimeError as exc:  # a dependency cycle
-                self.outbox.append((script, ErrorMessage(reason=str(exc))))
+                reason = str(exc)
+                if script.overlay is not None:
+                    reason = reason.replace(f"{script.overlay}\0", "")
+                self.outbox.append((script, ErrorMessage(reason=reason)))
             for spec in theirs:
                 self.stopped_in[spec].held = False
             self._queue_ready()
@@ -445,7 +477,11 @@ class Manager:
 
     def _gave_up(self, script: _Script, message: GaveUpMessage) -> None:
         with self.lock:
-            theirs = [spec for spec in message.specs if self._answers(script, spec)]
+            theirs = [
+                key
+                for spec in message.specs
+                if self._answers(script, key := _scoped(script.overlay, spec))
+            ]
             told: dict[_Script, list[str]] = {}
             for spec in theirs:
                 self._unstop(spec)
@@ -457,7 +493,12 @@ class Manager:
                 blocked = [
                     spec for spec in waiting if asked in self.asked_by.get(spec, ())
                 ]
-                reply = message.model_copy(update={"specs": specs, "blocked": blocked})
+                reply = message.model_copy(
+                    update={
+                        "specs": [_unscoped(spec) for spec in specs],
+                        "blocked": [_unscoped(spec) for spec in blocked],
+                    }
+                )
                 self.outbox.append((asked, reply))
                 # It counts them as ended, so they no longer run for it.
                 for spec in blocked:
@@ -586,13 +627,17 @@ class Manager:
             for spec in theirs:
                 self._unstop(spec)  # found on disk when its script came back
                 told.setdefault(self.asked_by[spec][0], []).append(spec)
-            run = run_name([spec.rpartition(":")[2] for spec in lease.specs])
+            run = run_name([_unscoped(spec).rpartition(":")[2] for spec in lease.specs])
             for specs in told.values():
                 self._stop(specs, run, held=True)
         self._queue_ready()
         seconds = time.monotonic() - lease.started
         for script, specs in told.items():
-            message = ResultMessage(object_ids=specs, result=result, seconds=seconds)
+            message = ResultMessage(
+                object_ids=[_unscoped(spec) for spec in specs],
+                result=result,
+                seconds=seconds,
+            )
             self.outbox.append((script, message))
 
     def _lease(self, connection: ServerConnection, *, pool: str) -> _Lease | None:
@@ -651,7 +696,7 @@ class Manager:
                 stopped.look_at = next_look
                 # Not if its specs finished or were given up on meanwhile.
                 if why is not None and why != stopped.why and stopped in self.stopped:
-                    label = _group_label(stopped.specs[0], len(stopped.specs))
+                    label = _group_label(_unscoped(stopped.specs[0]), len(stopped.specs))
                     reason = f"{label} waits: {why}"
                     logger.warning("%s", reason)
                     script = self.asked_by[stopped.specs[0]][0]
@@ -709,8 +754,9 @@ class Manager:
         """The job that runs ``specs``: their lines and the lines their fields reach."""
         placed = self.placed[specs[0]]
         lines = placed.plan.lines
-        reached = dict.fromkeys(specs)
-        pending = list(specs)
+        raw = [_unscoped(spec) for spec in specs]
+        reached = dict.fromkeys(raw)
+        pending = list(raw)
         while pending:
             for key in plan.holds(lines[pending.pop()], returned=False):
                 # What a serializer wrote can look like a pointer and have no line.
@@ -720,7 +766,7 @@ class Manager:
         if "moved" in lines:
             reached["moved"] = None
         return Job(
-            specs=specs,
+            specs=raw,
             lines=[lines[key] for key in reached],
             class_dir=placed.class_dir,
             process=placed.process,
@@ -800,8 +846,8 @@ class Manager:
                     self._queue(spec)
 
         script = self.asked_by[specs[0]][0]
-        label = _group_label(specs[0], len(specs))
-        run = run_name([spec.rpartition(":")[2] for spec in specs])
+        label = _group_label(_unscoped(specs[0]), len(specs))
+        run = run_name([_unscoped(spec).rpartition(":")[2] for spec in specs])
         for stopped in used:
             if stopped.run != run:
                 reason = (

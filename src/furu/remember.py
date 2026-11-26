@@ -32,12 +32,12 @@ from furu.utils import _stable_json_dump, atomic_write_text
 # The method's name and the fingerprint of the spec's other fields.
 type _Key = tuple[str, str]
 
-# The fingerprint of what each method returned, by class folder: from the
-# lines that held when this process first read the folder, the newest under
-# each key, and from what it has added since.
-_LINES: dict[Path, dict[_Key, str]] = {}
-# What this process has not saved yet, by class folder: the traces of the
-# calls it made, by name, and their lines.
+# The fingerprint of what each method returned, by read class folders (overlay
+# before base): from the lines that held when this process first read them, the
+# newest under each key, and from what it has added since.
+_LINES: dict[tuple[Path, ...], dict[_Key, str]] = {}
+# What this process has not saved yet, by writable class folder: the traces of
+# the calls it made, by name, and their lines.
 _UNSAVED: dict[Path, tuple[dict[str, Trace], list[str]]] = {}
 
 
@@ -45,38 +45,55 @@ def _trace_path(class_dir: Path, name: str) -> Path:
     return remembered_dir_in(class_dir) / "traces" / f"{name}.json"
 
 
-def lookup(class_dir: Path, method: str, fields: str, storage_root: Path) -> str | None:
+def _read_lines(class_dir: Path, storage_root: Path) -> dict[_Key, str]:
+    found: dict[_Key, str] = {}
+    folder = remembered_dir_in(class_dir)
+    try:
+        files = sorted(folder.glob("launch-*.jsonl"), key=os.path.getmtime)
+        texts = [file.read_text(encoding="utf-8") for file in files]
+    except FileNotFoundError:  # deleted meanwhile, which is always allowed
+        texts = []
+    holds: dict[str, bool] = {}
+    for text in texts:
+        for line in map(json.loads, text.splitlines()):
+            if (trace := line["trace"]) not in holds:
+                path = _trace_path(class_dir, trace)
+                holds[trace] = why_trace_outdated(path, storage_root) is None
+            if holds[trace]:
+                found[line["method"], line["fields"]] = line["returned"]
+    return found
+
+
+def lookup(
+    class_dirs: tuple[Path, ...], method: str, fields: str, storage_root: Path
+) -> str | None:
     """The fingerprint of what ``method`` returned for a spec with these fields.
 
     None when no line says that still holds: one whose method ran code that
     has changed since, or loaded a result that is out of date, does not.
+    ``class_dirs`` are in precedence order (overlay before base).
     """
-    if (lines := _LINES.get(class_dir)) is None:
-        lines = _LINES[class_dir] = {}
-        folder = remembered_dir_in(class_dir)
-        try:
-            files = sorted(folder.glob("launch-*.jsonl"), key=os.path.getmtime)
-            texts = [file.read_text(encoding="utf-8") for file in files]
-        except FileNotFoundError:  # deleted meanwhile, which is always allowed
-            texts = []
-        holds: dict[str, bool] = {}
-        for text in texts:
-            for line in map(json.loads, text.splitlines()):
-                if (trace := line["trace"]) not in holds:
-                    path = _trace_path(class_dir, trace)
-                    holds[trace] = why_trace_outdated(path, storage_root) is None
-                if holds[trace]:
-                    lines[line["method"], line["fields"]] = line["returned"]
+    if (lines := _LINES.get(class_dirs)) is None:
+        lines = _LINES[class_dirs] = {}
+        for class_dir in reversed(class_dirs):
+            lines.update(_read_lines(class_dir, storage_root))
     return lines.get((method, fields))
 
 
-def add(class_dir: Path, method: str, fields: str, returned: str, trace: Trace) -> None:
+def add(
+    class_dirs: tuple[Path, ...],
+    write_dir: Path,
+    method: str,
+    fields: str,
+    returned: str,
+    trace: Trace,
+) -> None:
     """Remember what a call of ``method`` returned, once `lookup` found nothing.
 
-    The next launch in this process saves it.
+    The next launch in this process saves it into ``write_dir``.
     """
-    _LINES[class_dir][method, fields] = returned
-    traces, lines = _UNSAVED.setdefault(class_dir, ({}, []))
+    _LINES[class_dirs][method, fields] = returned
+    traces, lines = _UNSAVED.setdefault(write_dir, ({}, []))
     name = trace.version
     traces[name] = trace
     lines.append(
@@ -84,6 +101,20 @@ def add(class_dir: Path, method: str, fields: str, returned: str, trace: Trace) 
             {"method": method, "fields": fields, "returned": returned, "trace": name}
         )
     )
+
+
+def _drop_under(root: Path) -> None:
+    resolved = root.resolve()
+    for class_dir in [
+        path for path in _UNSAVED if path.resolve().is_relative_to(resolved)
+    ]:
+        _UNSAVED.pop(class_dir, None)
+    for class_dirs in [
+        paths
+        for paths in _LINES
+        if any(path.resolve().is_relative_to(resolved) for path in paths)
+    ]:
+        _LINES.pop(class_dirs, None)
 
 
 def save(launch: str) -> None:

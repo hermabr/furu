@@ -190,27 +190,31 @@ class Returned:
         the specs in it, on a copy of each that was named or filled before
         (`fresh`). It fills the field and is remembered.
         """
-        class_dir, storage = obj._class_dir, obj._metadata.storage
-        if (known := remember.lookup(class_dir, name, fields, storage)) is not None:
+        read_dirs, write_dir = obj._read_class_dirs, obj._class_dir
+        storage = obj._metadata.storage
+        if (known := remember.lookup(read_dirs, name, fields, storage)) is not None:
             return known
-        with (
-            recording(None, storage_root=storage, resumed=LogState()) as run,
-            creating(on_load=lambda loaded, specs: run.loaded(loaded)),
-        ):
-            # ``fields`` covers the spec and the specs its fields hold, directly
-            # or through another spec: no copies.
-            met, pending = {}, [obj]
-            while pending:
-                if id(spec := pending.pop()) not in met:
-                    met[id(spec)] = spec, spec
-                    pending += specs_in(_field_values(spec))
-            token, checks = _met.set(met), _checked.set(run.checked)
-            try:
-                value = vars(obj)[self.name] = self.func(obj)
-                found = self._fingerprint(obj, value)
-            finally:
-                _met.reset(token)
-                _checked.reset(checks)
+        with recording(None, storage_root=storage, resumed=LogState()) as run:
+
+            def on_load(loaded: Path, specs: Iterable[Spec]) -> None:
+                if items := list(specs):
+                    run.loaded(loaded, items[0]._base_class_dir)
+
+            with creating(on_load=on_load):
+                # ``fields`` covers the spec and the specs its fields hold, directly
+                # or through another spec: no copies.
+                met, pending = {}, [obj]
+                while pending:
+                    if id(spec := pending.pop()) not in met:
+                        met[id(spec)] = spec, spec
+                        pending += specs_in(_field_values(spec))
+                token, checks = _met.set(met), _checked.set(run.checked)
+                try:
+                    value = vars(obj)[self.name] = self.func(obj)
+                    found = self._fingerprint(obj, value)
+                finally:
+                    _met.reset(token)
+                    _checked.reset(checks)
         try:
             trace = build_trace(
                 run,
@@ -221,7 +225,7 @@ class Returned:
             # This process runs older code than the files hold, so the next
             # launch calls the method again.
             return found
-        remember.add(class_dir, name, fields, found, trace)
+        remember.add(read_dirs, write_dir, name, fields, found, trace)
         return found
 
 

@@ -71,17 +71,19 @@ def _events(runs: Sequence[Path]) -> list[bytes]:
     return texts
 
 
-def look_again(class_dir: Path) -> None:
+def look_again(class_dirs: Path | Sequence[Path]) -> None:
     """Make this machine forget which runs of a class it found missing.
 
     It remembers for up to a minute that a name was not there, until the
     folder above the name is opened or listed. Opening does not read the
     names, of which runs/ can hold very many.
     """
-    for version in version_dirs_in(class_dir):
-        for folder in (version, runs_dir_in(version)):
-            with suppress(OSError):
-                os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
+    dirs = (class_dirs,) if isinstance(class_dirs, Path) else class_dirs
+    for class_dir in dirs:
+        for version in version_dirs_in(class_dir):
+            for folder in (version, runs_dir_in(version)):
+                with suppress(OSError):
+                    os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
 
 
 def _listed(version: Path, batches: bool) -> dict[str, _First]:
@@ -130,14 +132,19 @@ class Stored:
         self._live: dict[tuple[Path, str], list[Path]] = {}
         self._listed: dict[tuple[Path, bool], dict[str, _First]] = {}
 
-    def _versions(self, obj: Spec) -> list[Path]:
-        """The code versions whose runs count for obj: the live ones."""
-        class_dir, code_version = obj._class_dir, obj._metadata.code_version
+    def _versions(
+        self, class_dir: Path, code_version: str, storage_root: Path
+    ) -> list[Path]:
+        """The code versions whose runs count in ``class_dir``: the live ones."""
         if (class_dir, code_version) not in self._live:
             self._live[class_dir, code_version] = (
                 [class_dir / FIXED]
                 if code_version == "fixed"
-                else [version for version, why in versions(class_dir) if why is None]
+                else [
+                    version
+                    for version, why in versions(class_dir, storage_root=storage_root)
+                    if why is None
+                ]
             )
         return self._live[class_dir, code_version]
 
@@ -147,26 +154,27 @@ class Stored:
         # defaults are checked too. The script that wrote a spec's line checked.
         name = obj._artifact_hash
         if not obj._from_line:
-            check_defaults(obj._class_dir, type(obj))
+            check_defaults(obj._class_dir, type(obj), base_dir=obj._base_class_dir)
         if is_batched(type(obj)):
             return self.listed(obj)
-        held = [
-            run
-            for version in self._versions(obj)
-            if (run := run_dir_in(version, name)).is_dir()
-        ]
-        if len(held) > 1:  # the one published first, as for a batch
-            return self.listed(obj)
-        return Row(held[0], 0) if held else None
+        code_version, storage = obj._metadata.code_version, obj._metadata.storage
+        for class_dir in obj._read_class_dirs:
+            held = [
+                run
+                for version in self._versions(class_dir, code_version, storage)
+                if (run := run_dir_in(version, name)).is_dir()
+            ]
+            if len(held) > 1:  # the one published first, as for a batch
+                return self._listed_in(class_dir, obj, batches=False)
+            if held:
+                return Row(held[0], 0)
+        return None
 
-    def listed(self, obj: Spec, *, batches: bool = False) -> Row | None:
-        """obj's row in the run published first, among every run of its class.
-
-        With ``batches``, among the batch runs only: one listing, and a read of
-        each batch run this process has not read yet.
-        """
+    def _listed_in(self, class_dir: Path, obj: Spec, *, batches: bool) -> Row | None:
         held = []
-        for version in self._versions(obj):
+        for version in self._versions(
+            class_dir, obj._metadata.code_version, obj._metadata.storage
+        ):
             if (version, batches) not in self._listed:
                 self._listed[version, batches] = _listed(version, batches)
             if (
@@ -178,17 +186,35 @@ class Stored:
         _, _, index, run = min(held)
         return Row(run, index)
 
+    def listed(self, obj: Spec, *, batches: bool = False) -> Row | None:
+        """obj's row in the run published first, among every run of its class.
+
+        With ``batches``, among the batch runs only: one listing, and a read of
+        each batch run this process has not read yet.
+        """
+        for class_dir in obj._read_class_dirs:
+            if (row := self._listed_in(class_dir, obj, batches=batches)) is not None:
+                return row
+        return None
+
 
 def stored_row(obj: Spec) -> Row | None:
     """Where obj's result is, as a look taken now sees it."""
     return Stored().row(obj)
 
 
-def why_rerun(class_dir: Path, run: str) -> str | None:
+def why_rerun(
+    class_dirs: Path | Sequence[Path],
+    run: str,
+    *,
+    storage_root: Path | None = None,
+) -> str | None:
     """Why the newest run of this name under traced code no longer counts, if any."""
+    dirs = (class_dirs,) if isinstance(class_dirs, Path) else class_dirs
     outdated = [
         (folder.stat().st_mtime_ns, why)
-        for version, why in versions(class_dir)
+        for class_dir in dirs
+        for version, why in versions(class_dir, storage_root=storage_root)
         if why is not None and (folder := run_dir_in(version, run)).is_dir()
     ]
     return max(outdated)[1] if outdated else None

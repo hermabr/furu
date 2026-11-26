@@ -4,13 +4,15 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
     PyprojectTomlConfigSettingsSource,
     SettingsConfigDict,
 )
+
+from furu.utils import _fingerprint
 
 # "fixed": a result is valid until you bump a field. "traced": furu derives the
 # code version from the repo code create() ran (see furu.code_trace).
@@ -78,6 +80,16 @@ class _FuruDirectories(BaseModel):
         )
 
 
+def _check_overlay_disjoint(overlay: Path, base: Path, label: str) -> None:
+    ov_resolved, base_resolved = overlay.resolve(), base.resolve()
+    if ov_resolved.is_relative_to(base_resolved) or base_resolved.is_relative_to(
+        ov_resolved
+    ):
+        raise ValueError(
+            f"overlay directory {overlay} must not overlap {label} {base}"
+        )
+
+
 class _FuruWorkerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -102,17 +114,71 @@ class _Config(BaseSettings):
     manager_dir: Path = Path.home() / ".furu" / "manager"
     code_version: CodeVersion = "fixed"
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
+    # When set, the real data directories (and custom Metadata.storage paths)
+    # are strictly read-only cache hits and every write goes under this folder.
+    overlay: Path | None = None
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+
+    @field_validator("overlay", mode="before")
+    @classmethod
+    def _empty_overlay_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def manager_version_dir(self) -> Path:
         """This furu version's manager: one per version, so scripts never meet another."""
         return self.manager_dir / version("furu")
 
+    def anchored_overlay(self) -> Path | None:
+        """The overlay directory, anchored like ``directories``, or None."""
+        if self.overlay is None:
+            return None
+        return (
+            self.overlay
+            if self.overlay.is_absolute()
+            else _project_anchor() / self.overlay
+        )
+
     def anchored(self) -> "_Config":
         """This config with absolute directories, for processes whose working
         directory (e.g. a snapshot) must not decide where data lives."""
-        return self.model_copy(update={"directories": self.directories.anchored()})
+        return self.model_copy(
+            update={
+                "directories": self.directories.anchored(),
+                "overlay": self.anchored_overlay(),
+            }
+        )
+
+    def writable_directories(self) -> _FuruDirectories:
+        """Where this process writes project data: the overlay when active, else the real store."""
+        base = self.directories.anchored()
+        if (ov := self.anchored_overlay()) is None:
+            return base
+        for name, base_dir in base:
+            _check_overlay_disjoint(ov, base_dir, f"furu {name} directory")
+        return _FuruDirectories(
+            **{name: ov / name for name in _FuruDirectories.model_fields}
+        )
+
+    def write_storage(self, storage: Path) -> Path:
+        """Where runs for ``storage`` are written: in the overlay when active, else ``storage``."""
+        if (ov := self.anchored_overlay()) is None:
+            return storage
+        base_objects = self.directories.anchored().objects
+        _check_overlay_disjoint(ov, storage, "storage directory")
+        if storage.resolve() == base_objects.resolve():
+            return ov / "objects"
+        tag = f"{storage.name or 'root'}-{_fingerprint(str(storage.resolve()))}"
+        return ov / "custom" / tag
+
+    def overlay_version_dir(self, version_dir: Path) -> Path | None:
+        """The overlay counterpart of a canonical code-version folder, or None."""
+        if self.overlay is None:
+            return None
+        storage = version_dir.parents[2]
+        return self.write_storage(storage) / version_dir.relative_to(storage)
 
     @classmethod
     def settings_customise_sources(

@@ -205,40 +205,43 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
         missing = [obj for obj in missing if obj._stored_name not in skip]
     else:
         ignore = {name.strip() for name in os.environ.get(IGNORE_STORED, "").split(",")}
-    class_dirs: dict[Path, type[Spec]] = {}
+    class_dirs: dict[Path, tuple[type[Spec], tuple[Path, ...]]] = {}
     holds: dict[Path, dict[type, tuple[str, ...]]] = {}
     for obj in missing:
         class_dir = obj._class_dir
-        class_dirs.setdefault(class_dir, type(obj))
+        class_dirs.setdefault(class_dir, (type(obj), obj._read_class_dirs))
         for nested, at in held_in(obj).items():
             holds.setdefault(class_dir, {}).setdefault(nested, at)
 
     # What the source does not explain, under each name the variable can take.
     unexplained: defaultdict[str, list[str]] = defaultdict(list)
-    for class_dir, cls in class_dirs.items():
+    for class_dir, (cls, read_dirs) in class_dirs.items():
         explained = set(map(class_part_of, explained_names(cls)))
-        try:
-            folders = set(os.listdir(class_dir.parent))
-        except FileNotFoundError:
-            folders = set()
-        for folder in folders - explained:
-            path = class_dir.parent / folder
-            if os.listdir(path) == [REMEMBERED]:
-                continue  # what dependency methods returned, and no result
-            unexplained[f"{stored_name(cls)}:{folder}"].append(
-                f"{stored_name(cls)}: {path} was {_stored(cls, schema.stored_names(path))}"
-                f", and this launch stores in {class_dir}"
-            )
-        held_here = holds.get(class_dir, {})
-        recorded = schema.nested_names(class_dir) if held_here else {}
-        for nested, at in held_here.items():
-            seen = recorded.get(stored_name(nested), set())
-            for names in seen - explained_names(nested):
-                unexplained[f"{stored_name(cls)}:{class_dir.name}"].append(
-                    f"{stored_name(cls)}: {nested.__name__} at {'.'.join(at)} was "
-                    f"{_stored(nested, names)} in {class_dir}, where this launch "
-                    "stores too"
+        for read_dir in read_dirs:
+            try:
+                folders = set(os.listdir(read_dir.parent))
+            except FileNotFoundError:
+                folders = set()
+            for folder in folders - explained:
+                path = read_dir.parent / folder
+                if os.listdir(path) == [REMEMBERED]:
+                    continue  # what dependency methods returned, and no result
+                unexplained[f"{stored_name(cls)}:{folder}"].append(
+                    f"{stored_name(cls)}: {path} was {_stored(cls, schema.stored_names(path))}"
+                    f", and this launch stores in {class_dir}"
                 )
+        held_here = holds.get(class_dir, {})
+        if held_here:
+            for read_dir in read_dirs:
+                recorded = schema.nested_names(read_dir)
+                for nested, at in held_here.items():
+                    seen = recorded.get(stored_name(nested), set())
+                    for names in seen - explained_names(nested):
+                        unexplained[f"{stored_name(cls)}:{class_dir.name}"].append(
+                            f"{stored_name(cls)}: {nested.__name__} at {'.'.join(at)} was "
+                            f"{_stored(nested, names)} in {read_dir}, where this launch "
+                            "stores too"
+                        )
 
     for name in sorted(ignore - unexplained.keys() - {""}):
         logger.warning(
@@ -274,4 +277,4 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
         for line in sorted(unexplained[name]):
             logger.info("ignoring stored results · %s", line)
     _check_batch_folders(missing)
-    return frozenset(map(stored_name, class_dirs.values()))
+    return frozenset(stored_name(cls) for cls, _ in class_dirs.values())

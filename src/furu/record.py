@@ -101,7 +101,10 @@ def launch(
     header: Line = {"launch": plan_path.stem, **facts.model_dump(mode="json")}
     if ignore := os.environ.get(IGNORE_STORED):
         header["ignore_stored"] = ignore
-    folder = get_config().directories.anchored().provenance
+    config = get_config()
+    if (ov := config.anchored_overlay()) is not None:
+        header["overlay"] = str(ov)
+    folder = config.writable_directories().provenance
     folder.mkdir(parents=True, exist_ok=True)
     file = plan.File(folder / f"launch-{plan_path.stem}")
     file.add([header, *shared])
@@ -114,13 +117,21 @@ _own: dict[Path, plan.File] = {}
 os.register_at_fork(after_in_child=_own.clear)
 
 
+def _close_under(root: Path) -> None:
+    resolved = root.resolve()
+    for folder in [
+        folder for folder in _own if folder.resolve().is_relative_to(resolved)
+    ]:
+        _own.pop(folder).close()
+
+
 def own() -> plan.File:
     """This process's file in provenance/, which begins with a line about the process.
 
     It is created the first time the process starts an attempt, so a process
     that never does leaves no file.
     """
-    folder = get_config().directories.anchored().provenance
+    folder = get_config().writable_directories().provenance
     if (file := _own.get(folder)) is None:
         file = _own[folder] = plan.File.new(folder)
         file.add([{"worker": worker()}])
@@ -159,7 +170,7 @@ def batch(
     lead = group[0]
     line: Line = {
         "run": run,
-        "storage": str(lead._metadata.storage),
+        "storage": str(get_config().write_storage(lead._metadata.storage)),
         "version": version,
         "launch": plan.launch(),
         "metadata": _process(lead._metadata)["metadata"],

@@ -45,23 +45,33 @@ def publish_dir_atomically(final_dir: Path) -> Generator[Path]:
             raise
 
 
-def require_pushed(git: GitIdentity) -> None:
-    """Refuse unless the checkout is exactly ``git.commit`` and origin has it.
-
-    Every result then points at a commit that anyone with access to origin can
-    fetch, and Slurm workers can run that commit as the code snapshot.
-    """
+def require_clean(git: GitIdentity, *, for_overlay: bool = False) -> None:
+    """Refuse unless the checkout has no uncommitted changes."""
     repo_root = Path(git.repo_root)
-    # Keep furu's own directories out of `git status`, as uv does for .venv.
-    for _, directory in get_config().directories.anchored():
-        if not (ignore := directory / ".gitignore").exists():
-            directory.mkdir(parents=True, exist_ok=True)
+    # Keep furu's own writable directories out of `git status`, as uv does for .venv.
+    config = get_config()
+    if (ov := config.anchored_overlay()) is not None:
+        if not (ignore := ov / ".gitignore").exists():
+            ov.mkdir(parents=True, exist_ok=True)
             ignore.write_text("*\n")
+    else:
+        for _, directory in config.directories.anchored():
+            if not (ignore := directory / ".gitignore").exists():
+                directory.mkdir(parents=True, exist_ok=True)
+                ignore.write_text("*\n")
     status = _run_git(["status", "--porcelain"], cwd=repo_root)
     if status:
         changes = status.splitlines()
         shown = "\n".join(f"  {line}" for line in changes[:10])
         more = f"\n  ... and {len(changes) - 10} more" if len(changes) > 10 else ""
+        if for_overlay:
+            raise RuntimeError(
+                f"uncommitted changes in {repo_root}:\n{shown}{more}\n"
+                "Slurm workers run a snapshot of HEAD, so uncommitted changes "
+                "would not reach them. Commit them locally (no push needed in "
+                "overlay mode), or run locally / with LocalThreadWorkerBackend:\n"
+                "  git add -A && git commit -m '...'"
+            )
         raise RuntimeError(
             f"uncommitted changes in {repo_root}:\n{shown}{more}\n"
             "furu only runs committed, pushed code, so every result points at a "
@@ -69,6 +79,16 @@ def require_pushed(git: GitIdentity) -> None:
             "Commit and push them (or add them to .gitignore):\n"
             f"  git add -A && git commit -m '...' && {_push_command(git)}"
         )
+
+
+def require_pushed(git: GitIdentity) -> None:
+    """Refuse unless the checkout is exactly ``git.commit`` and origin has it.
+
+    Every result then points at a commit that anyone with access to origin can
+    fetch, and Slurm workers can run that commit as the code snapshot.
+    """
+    require_clean(git)
+    repo_root = Path(git.repo_root)
     pushed_to = _run_git(
         ["for-each-ref", "--contains", git.commit, "refs/remotes/origin"],
         cwd=repo_root,
@@ -112,7 +132,7 @@ def extract_snapshot(commit: str, *, repo: Path) -> Path:
     The tree lands in ``<snapshots>/<commit>`` once and is reused by every later
     caller.
     """
-    code_dir = get_config().directories.anchored().snapshots / commit
+    code_dir = get_config().writable_directories().snapshots / commit
     if code_dir.is_dir():
         return code_dir
     archive = subprocess.run(

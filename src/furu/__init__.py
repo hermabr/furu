@@ -11,6 +11,7 @@ from furu.migration.steps import (
     MovedFrom,
     Renamed,
 )
+from furu.overlay import overlay
 from furu.provenance import submitting_repo_root
 from furu.resources import Worker
 from furu.result.codec import Codec
@@ -44,5 +45,6 @@ __all__ = [
     "dependency",
     "get_logger",
     "load_existing",
+    "overlay",
     "submitting_repo_root",
 ]

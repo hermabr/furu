@@ -104,8 +104,8 @@ def _recording(
                     'return furu.Metadata(code_version="traced")'
                 )
             loaded.extend(specs)
-            if run is not None:
-                run.loaded(folder)
+            if run is not None and specs:
+                run.loaded(folder, specs[0]._base_class_dir)
 
         with creating(
             specs=frozenset(obj.object_id for obj in group),
@@ -154,11 +154,13 @@ def _ensure_group_result(objs: Sequence[Spec], *, token: str | None = None) -> N
     folder is another worker's, or may be: nobody waits for a folder.
     """
     class_dir = objs[0]._class_dir
+    read_dirs = objs[0]._read_class_dirs
+    base_dir = objs[0]._base_class_dir
     label = _group_label(objs[0].object_id, len(objs))
 
     def published() -> bool:
         # Another machine may have published the run since this one last looked.
-        look_again(class_dir)
+        look_again(read_dirs)
         look = Stored()
         return all(look.row(obj) is not None for obj in objs)
 
@@ -167,7 +169,7 @@ def _ensure_group_result(objs: Sequence[Spec], *, token: str | None = None) -> N
         return
 
     class_dir.mkdir(parents=True, exist_ok=True)
-    check_defaults(class_dir, type(objs[0]), record=True)
+    check_defaults(class_dir, type(objs[0]), record=True, base_dir=base_dir)
     for obj in objs:
         record_nested_names(class_dir, held_in(obj))
 
@@ -351,7 +353,14 @@ def _load_or_create_local(objs: list[Spec], *, load: bool) -> list[object]:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
     if running:
-        launch_plan = get_config().directories.anchored().plans / f"{launch}.plan"
+        config = get_config()
+        if (ov := config.anchored_overlay()) is not None:
+            get_logger("run").info(
+                "overlay active · writes go to %s (base is read-only)",
+                ov,
+                extra={"path": ov},
+            )
+        launch_plan = config.writable_directories().plans / f"{launch}.plan"
         stages = ask(running)
         record.launch(launch_plan, objs, running, capture_submit_provenance())
         with creating(asked=stages):
@@ -468,7 +477,11 @@ def _create_group(group: list[Spec], attempt: Path) -> Path:
         # code an attempt ran (recorded in trace.log) is unchanged on disk;
         # otherwise the files it wrote are dropped.
         traced = metadata.code_version == "traced"
-        if traced and (why := why_rerun(lead._class_dir, run_name)):
+        if traced and (
+            why := why_rerun(
+                lead._read_class_dirs, run_name, storage_root=metadata.storage
+            )
+        ):
             lead.logger.info("rerunning %s: %s", label, why)
         resumed = LogState()
         if traced and events_path_in(attempt).exists():
