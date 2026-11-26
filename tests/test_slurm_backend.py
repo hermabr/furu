@@ -55,7 +55,9 @@ class _StubManager:
     """Stands in for the Manager a pool asks for demand and reports to."""
 
     demand_of: Callable[[], int] | int = 0
-    asked_of: list[SlurmPool] = field(default_factory=lambda: [_slurm_backend().pool()])
+    asked_of: list[SlurmPool] = field(
+        default_factory=lambda: [_slurm_backend(max_workers=99).pool()]
+    )
     url: str = _URL
     notes: list[WarningMessage | ErrorMessage] = field(default_factory=list)
 
@@ -595,14 +597,18 @@ def test_slurm_pool_follows_demand_up_to_what_it_asks(
 
 
 @pytest.mark.parametrize(
-    ("use_job_arrays", "waits"),
-    [(False, ["100.0", "100.0", "50.0", "50.0"]), (True, ["50.0", "50.0"])],
+    ("use_job_arrays", "started"),
+    [
+        (False, [["100.0"], ["100.0"], ["50.0"]]),
+        # An array's workers all wait alike, so it ends where the wait does.
+        (True, [["--array=0-1", "100.0"], ["--array=0-0", "50.0"]]),
+    ],
 )
 def test_slurm_pool_starts_workers_as_the_scripts_that_share_it_ask(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     use_job_arrays: bool,
-    waits: list[str],
+    started: list[list[str]],
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     asked = [
@@ -613,18 +619,17 @@ def test_slurm_pool_starts_workers_as_the_scripts_that_share_it_ask(
     pool = _pool(tmp_path, monkeypatch, manager, use_job_arrays=use_job_arrays)
 
     pool._scale_once()
-    # A worker beyond what any script asks for waits as the last one asked for.
-    manager.demand_of = 4
     pool._scale_once()
     # No script is left that shares the pool: no worker is started.
     manager.demand_of, manager.asked_of = 5, []
     pool._scale_once()
 
     argvs = _sbatch_argvs(record_file)
-    # The workers of an array all wait as the last of them does.
-    assert [argv[-1] for argv in argvs] == waits
-    # And are named as the newest script names its workers.
+    arrays = [[arg for arg in argv if arg.startswith("--array")] for argv in argvs]
+    assert [[*array, argv[-1]] for array, argv in zip(arrays, argvs)] == started
+    # They are named as the newest script names its workers.
     assert all("--job-name=b" in argv for argv in argvs)
+    assert len(pool._job_ids) == 3
 
 
 def test_slurm_pool_replaces_workers_that_exit_without_failing(

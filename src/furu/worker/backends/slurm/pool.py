@@ -180,14 +180,15 @@ class SlurmWorkerPool:
         # to name them and how long they wait for a job. New ones are named as
         # the newest script says. The nth waits the longest that a script with
         # that many workers says, so 10 that wait 100 s and 20 that wait 50 s
-        # are 10 of each; an array's wait as its last one does.
+        # are 10 of each. An array ends where the wait does; the rest come next.
         asked = self._manager.asked(self._key)
         for _ in range(1 if self._use_job_arrays else to_spawn):
-            if self._stop_event.is_set() or not asked:
+            reach = [a for a in asked if a.max_workers > len(self._job_ids)]
+            if self._stop_event.is_set() or not reach:
                 return
-            last = len(self._job_ids) + (to_spawn if self._use_job_arrays else 1)
-            last = min(last, max(a.max_workers for a in asked))
-            wait = max(a.idle_timeout_seconds for a in asked if a.max_workers >= last)
+            wait, until = max((a.idle_timeout_seconds, a.max_workers) for a in reach)
+            if self._use_job_arrays:
+                to_spawn = min(to_spawn, until - len(self._job_ids))
             # One that times out may be queued anyway; such a worker still
             # serves this pool, but goes uncounted until its idle timeout.
             submitted = slurm.run(
