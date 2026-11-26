@@ -64,12 +64,8 @@ class Job(Launch):
     # the spec class.
     class_dir: Path
     process: ProcessSettings
-    # The name its script gives its Slurm workers, which the job of the worker
-    # that runs it takes. None on a pool that is not Slurm's.
+    # The name its script gives its Slurm workers: its worker's job takes it.
     slurm_job_name: str | None = None
-    # How long its worker waits for another job after this one, which the
-    # manager says for the worker's slot in its pool. None leaves that as it is.
-    idle_timeout_seconds: float | None = None
 
     @property
     def label(self) -> str:
@@ -141,11 +137,10 @@ class SlurmPool(_Message):
     """How the manager starts a worker; identical recipes share one pool."""
 
     kind: Literal["slurm"] = "slurm"
+    max_workers: int
     sbatch_args: list[str]
     pre_worker_commands: list[str]
     use_job_arrays: bool
-    # Not part of the recipe: each script that shares the pool says its own.
-    max_workers: int
     job_name: str
     idle_timeout_seconds: float
 

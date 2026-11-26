@@ -5,13 +5,13 @@ import queue
 import subprocess
 import threading
 import traceback
+from contextlib import suppress
 from pathlib import Path
 from typing import assert_never
 
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
-from furu import slurm
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker import messages
@@ -120,19 +120,16 @@ def worker_loop(
                                 job.label,
                                 extra={"path": job.folder},
                             )
-                        if job.idle_timeout_seconds is not None:
-                            idle_timeout = job.idle_timeout_seconds
                         cancelled = threading.Event()
                         _start_job_thread(job, child_slot, cancelled, events)
-                        # Scripts that share a pool can name its workers
-                        # differently: squeue shows whose job this one runs.
-                        name = job.slurm_job_name
-                        if name is not None and name != slurm_job_name:
-                            slurm_job_name = name
-                            try:
-                                slurm.rename(name)
-                            except (OSError, subprocess.SubprocessError) as exc:
-                                logger.warning("could not rename this job: %s", exc)
+                        # So squeue shows whose job a worker of a shared pool
+                        # runs. Nice to have: not waited for, and may fail.
+                        if job.slurm_job_name not in (None, slurm_job_name):
+                            slurm_job_name = job.slurm_job_name
+                            me = f"JobId={os.environ['SLURM_JOB_ID']}"
+                            name = f"JobName={slurm_job_name}"
+                            with suppress(OSError):
+                                subprocess.Popen(["scontrol", "update", me, name])
                     case messages.CancelMessage():
                         if job is not None:
                             note("cancelled %s; killing child", job.label)

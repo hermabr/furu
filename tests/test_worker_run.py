@@ -4,7 +4,7 @@ import threading
 import time
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -37,7 +37,6 @@ from furu.storage._layout import (
     execution_log_path_in,
     run_name,
 )
-from furu.utils import format_duration
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import SlurmResources
@@ -60,7 +59,6 @@ from furu.worker.messages import (
     ProcessSettings,
     RerunMessage,
     ResultMessage,
-    SlurmPool,
     SubmitMessage,
     WarningMessage,
     job_result_adapter,
@@ -164,23 +162,6 @@ def _blocked(*dependencies: Spec) -> JobBlockedResult:
     )
 
 
-def _slurm_pool(
-    *,
-    max_workers: int = 1,
-    job_name: str = "furu-worker",
-    idle_timeout_seconds: float = 60.0,
-) -> SlurmPool:
-    """What a script says of a Slurm pool it shares, with its own settings."""
-    return SlurmPool(
-        sbatch_args=[],
-        pre_worker_commands=[],
-        use_job_arrays=True,
-        max_workers=max_workers,
-        job_name=job_name,
-        idle_timeout_seconds=idle_timeout_seconds,
-    )
-
-
 # --- the manager, without sockets ----------------------------------------------
 
 
@@ -215,18 +196,16 @@ def _manager(
 
 
 def _lease(
-    manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL, slot: int = 1
+    manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL
 ) -> _Lease | None:
     # As Manager._lease does: the stopped batches that are due are checked
     # first, without the lock.
     manager._check_stopped(backend.pool_key)
-    return manager._hand_out(cast(ServerConnection, object()), backend.pool_key, slot)
+    return manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
 
 
-def _leased(
-    manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL, slot: int = 1
-) -> _Lease:
-    lease = _lease(manager, backend, slot)
+def _leased(manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL) -> _Lease:
+    lease = _lease(manager, backend)
     assert lease is not None
     return lease
 
@@ -1104,50 +1083,25 @@ def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happe
     assert _lease(manager) is None and not manager.placed
 
 
-def test_a_slurm_job_is_named_by_the_script_whose_specs_it_takes() -> None:
+def test_scripts_that_share_a_slurm_pool_each_name_its_workers() -> None:
     manager = Manager(url="ws://unused", manager_dir=None)
     key = CPU_POOL.pool_key
-    for value, name in enumerate(["a", "b"]):
-        script, _ = _submit(manager, [RunLeaf(value=value)], plan_path=_plan(name))
-        script.pools = {key: _slurm_pool(job_name=name)}
-
-    # A new worker is named for the specs that wait first, and a worker that
-    # takes a job for the script that answers for it.
-    assert manager.job_name(key) == "a"
-    assert _leased(manager).job.slurm_job_name == "a"
-    assert manager.job_name(key) == "b"
-    lease = _leased(manager)
-    assert lease.job.slurm_job_name == "b"
-    assert manager.job_name(key) is None
-    _end(manager, lease, JobFailedResult(error="boom"))
-    assert manager.job_name(key) == "b"  # a stopped batch waits too
-
-
-def test_a_slurm_worker_waits_as_long_as_the_scripts_that_reach_its_slot_ask() -> None:
-    manager = Manager(url="ws://unused", manager_dir=None)
-    key = CPU_POOL.pool_key
-    for value, (max_workers, seconds) in enumerate([(10, 100.0), (20, 50.0)]):
+    slurm = SlurmWorkerBackend(
+        max_workers=1, resources=SlurmResources(cpus_per_worker=1)
+    )
+    pools = [replace(slurm, job_name=name).pool() for name in ("a", "b")]
+    for value, pool in enumerate(pools):
         script, _ = _submit(
-            manager, [RunLeaf(value=value)], plan_path=_plan(f"e{value}")
+            manager, [RunLeaf(value=value)], plan_path=_plan(pool.job_name)
         )
-        script.pools = {
-            key: _slurm_pool(max_workers=max_workers, idle_timeout_seconds=seconds)
-        }
+        script.pools = {key: pool}
 
-    def waits(*slots: int) -> list[float | None]:
-        return [manager.idle_timeout(key, slot) for slot in slots]
-
-    # A slot that no script reaches waits like the last one that a script does.
-    assert waits(1, 10, 11, 20, 21) == [100.0, 100.0, 50.0, 50.0, 50.0]
-    # Whichever script's job a worker takes, it is the slot that says.
-    assert [
-        _leased(manager, slot=slot).job.idle_timeout_seconds for slot in (11, 10)
-    ] == [50.0, 100.0]
-
-    manager.scripts.pop()  # the script with 20 workers left
-    assert waits(1, 10, 11) == [100.0, 100.0, 100.0]
-    # Nothing is said to a worker of a pool that no script has Slurm workers in.
-    assert manager.idle_timeout(GPU_POOL.pool_key, 1) is None
+    # A job says the name that the script that answers for its specs gives.
+    assert [_leased(manager).job.slurm_job_name for _ in pools] == ["a", "b"]
+    assert manager.asked(key) == pools
+    manager.scripts.pop()
+    assert manager.asked(key) == pools[:1]
+    assert manager.asked(GPU_POOL.pool_key) == []
 
 
 def test_each_script_answers_for_its_own_specs_of_a_batch_that_did_not_complete() -> (
@@ -1378,7 +1332,7 @@ def test_slurm_is_asked_about_a_jobs_working_folder_without_the_managers_lock(
     monkeypatch.setattr(slurm, "run", answer)
     connection = cast(ServerConnection, type("Open", (), {"state": State.OPEN})())
 
-    lease = manager._lease(connection, pool=SMALL.pool_key, slot=1)
+    lease = manager._lease(connection, pool=SMALL.pool_key)
 
     assert lease is not None and lease.specs == _ids(started)
     assert ran == [("squeue", True), ("sacct", True)]
@@ -1410,7 +1364,7 @@ def test_a_slow_probe_does_not_starve_handing_out_a_lease(
     monkeypatch.setattr(attempt_lock, "free", slow_free)
     connection = cast(ServerConnection, type("Open", (), {"state": State.OPEN})())
 
-    lease = manager._lease(connection, pool=SMALL.pool_key, slot=1)
+    lease = manager._lease(connection, pool=SMALL.pool_key)
 
     assert lease is not None
     assert set(lease.specs) == set(_ids([*started, extra]))
@@ -1511,45 +1465,6 @@ def test_job_round_trip_from_script_through_manager_to_worker() -> None:
 
         worker.send(JobCompletedResult().model_dump_json())
         assert _received(script) == _result([leaf], JobCompletedResult())
-
-
-def test_a_worker_takes_the_lowest_free_slot_of_its_pool() -> None:
-    def until(done: Callable[[], bool]) -> None:
-        deadline = time.monotonic() + 5
-        while not done() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert done()
-
-    with (
-        Manager.serve(
-            listen_host="127.0.0.1", connect_host="127.0.0.1", manager_dir=None
-        ) as manager,
-        _submit_over(manager, RunLeaf(value=1)),
-        _submit_over(manager, RunLeaf(value=2)),
-    ):
-        until(lambda: len(manager.placed) == 2)
-        with manager.lock:
-            for script, (max_workers, seconds) in zip(
-                manager.scripts, [(1, 100.0), (2, 50.0)]
-            ):
-                script.pools = {
-                    "cpu": _slurm_pool(
-                        max_workers=max_workers, idle_timeout_seconds=seconds
-                    )
-                }
-
-        with _hello(manager.url, worker="first") as first:
-            job = Job.model_validate_json(first.recv(timeout=5))
-            assert job.idle_timeout_seconds == 100.0
-            with _hello(manager.url, worker="second") as second:
-                job = Job.model_validate_json(second.recv(timeout=5))
-                assert job.idle_timeout_seconds == 50.0
-                first.send(JobCompletedResult().model_dump_json())
-                first.close()
-                until(lambda: manager.slots["cpu"] == {2})
-                with _hello(manager.url, worker="third"):
-                    until(lambda: manager.slots["cpu"] == {1, 2})
-                second.send(JobCompletedResult().model_dump_json())
 
 
 def test_worker_disconnect_fails_its_job_for_the_script() -> None:
@@ -1879,29 +1794,6 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
 
         assert len(server.hellos) == 1
         assert server.results == []
-
-
-def test_worker_waits_for_its_next_job_as_long_as_its_last_job_says(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    job = _job(RunLeaf(value=1)).model_copy(update={"idle_timeout_seconds": 0.05})
-
-    with (
-        _scripted_worker_server([job], hold_open=True) as server,
-        _captured_furu_logs(caplog),
-    ):
-        worker_loop(
-            url=server.server_url,
-            pool="cpu",
-            idle_timeout=600.0,
-            component="test-worker",
-            backend="test",
-        )
-
-        assert server.results == [JobCompletedResult()]
-    assert [r.args for r in caplog.records if r.msg == "no work for %s; exiting"] == [
-        (format_duration(0.05),)
-    ]
 
 
 def test_worker_with_its_own_log_notes_what_it_ran_there(

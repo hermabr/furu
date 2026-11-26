@@ -23,7 +23,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from itertools import chain, count, islice
+from itertools import islice
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import assert_never
@@ -170,9 +170,6 @@ class Manager:
     # them does not run, until a script asks for them again.
     gave_up: set[str] = field(default_factory=set)
     leases: dict[ServerConnection, _Lease] = field(default_factory=dict)
-    # The slots that each pool's connected workers hold, counted from 1. A
-    # worker takes the lowest free one, which says how long it waits for a job.
-    slots: dict[str, set[int]] = field(default_factory=dict)
     # Each class folder and pair of plans a smaller batch was warned about.
     warned: set[tuple[Path, frozenset[Path]]] = field(default_factory=set)
     # What to send once the lock is released: a send can wait on its reader.
@@ -527,41 +524,31 @@ class Manager:
         worker = hello.worker
         with self.lock:
             known = hello.pool in self.pools
-            taken = self.slots.setdefault(hello.pool, set())
-            slot = next(slot for slot in count(1) if slot not in taken)
-            taken.add(slot)
-        try:
-            if not known:
-                logger.warning("worker %s belongs to no pool here; closing", worker)
-                return
-            logger.debug("worker connected · %s", worker)
-            while (
-                lease := self._lease(connection, pool=hello.pool, slot=slot)
-            ) is not None:
-                job = lease.job
-                logger.info(
-                    "leased %s to %s", job.label, worker, extra={"path": job.folder}
-                )
-                result: JobResult
-                try:
-                    connection.send(job.model_dump_json())
-                    result = job_result_adapter.validate_json(connection.recv())
-                except ConnectionClosed:  # the next _lease sees it and returns None
-                    # The worker finishes its job alone; it hasn't failed.
-                    if self.stopping:
-                        return
-                    logger.warning("lost %s mid-job", worker, extra={"path": hello.log})
-                    result = JobFailedResult(error=f"worker {worker} disconnected")
-                with self.lock:
-                    del self.leases[connection]
-                    if isinstance(result, JobCompletedResult):
-                        self.pools[lease.pool].job_completed()
-                    self._finish(lease, result)
-                    self.lock.notify_all()
-                self._flush()
-        finally:
+        if not known:
+            logger.warning("worker %s belongs to no pool here; closing", worker)
+            return
+        logger.debug("worker connected · %s", worker)
+        while (lease := self._lease(connection, pool=hello.pool)) is not None:
+            job = lease.job
+            logger.info(
+                "leased %s to %s", job.label, worker, extra={"path": job.folder}
+            )
+            result: JobResult
+            try:
+                connection.send(job.model_dump_json())
+                result = job_result_adapter.validate_json(connection.recv())
+            except ConnectionClosed:  # the next _lease sees it and returns None
+                if self.stopping:  # the worker finishes its job alone; it hasn't failed
+                    return
+                logger.warning("lost %s mid-job", worker, extra={"path": hello.log})
+                result = JobFailedResult(error=f"worker {worker} disconnected")
             with self.lock:
-                taken.remove(slot)
+                del self.leases[connection]
+                if isinstance(result, JobCompletedResult):
+                    self.pools[lease.pool].job_completed()
+                self._finish(lease, result)
+                self.lock.notify_all()
+            self._flush()
 
     def _finish(self, lease: _Lease, result: JobResult) -> None:
         """Apply how a job ended, and tell the scripts that asked for its specs.
@@ -595,9 +582,7 @@ class Manager:
             message = ResultMessage(object_ids=specs, result=result, seconds=seconds)
             self.outbox.append((script, message))
 
-    def _lease(
-        self, connection: ServerConnection, *, pool: str, slot: int
-    ) -> _Lease | None:
+    def _lease(self, connection: ServerConnection, *, pool: str) -> _Lease | None:
         while True:
             if self.stopping or connection.state is not State.OPEN:
                 return None
@@ -608,7 +593,7 @@ class Manager:
             with self.lock:
                 if self.stopping or connection.state is not State.OPEN:
                     return None
-                lease = self._hand_out(connection, pool, slot)
+                lease = self._hand_out(connection, pool)
                 if lease is None:
                     self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
             self._flush()  # forming a batch can leave a warning
@@ -662,10 +647,8 @@ class Manager:
             self.lock.notify_all()
         return True
 
-    def _hand_out(
-        self, connection: ServerConnection, pool: str, slot: int
-    ) -> _Lease | None:
-        """Give the worker in ``slot`` of ``pool`` its next job, if there is one for it.
+    def _hand_out(self, connection: ServerConnection, pool: str) -> _Lease | None:
+        """Give a worker of ``pool`` its next job, if there is one for it.
 
         Unstarted specs go first, in the order they became ready. A stopped
         batch leads a job only when no unstarted spec can.
@@ -702,17 +685,17 @@ class Manager:
         throttle = self.placed[specs[0]].throttle
         lease = self.leases[connection] = _Lease(
             specs,
-            self._job(specs, pool, slot),
+            self._job(specs, pool),
             pool,
             None if throttle is None else throttle.key,
             time.monotonic(),
         )
         return lease
 
-    def _job(self, specs: list[str], pool: str, slot: int) -> Job:
-        """The job that runs ``specs`` on the worker in ``slot`` of ``pool``: their
-        lines and the lines their fields reach."""
+    def _job(self, specs: list[str], pool: str) -> Job:
+        """The job that runs ``specs``: their lines and the lines their fields reach."""
         placed = self.placed[specs[0]]
+        asked = self.asked_by[specs[0]][0].pools.get(pool)
         lines = placed.plan.lines
         reached = dict.fromkeys(specs)
         pending = list(specs)
@@ -729,58 +712,9 @@ class Manager:
             lines=[lines[key] for key in reached],
             class_dir=placed.class_dir,
             process=placed.process,
-            slurm_job_name=self._job_name(specs[0], pool),
-            idle_timeout_seconds=self.idle_timeout(pool, slot),
+            slurm_job_name=asked.job_name if isinstance(asked, SlurmPool) else None,
             **dict(placed.plan.launch),
         )
-
-    def _job_name(self, spec: str, pool: str) -> str | None:
-        """The name that the script that answers for ``spec`` gives ``pool``'s Slurm jobs."""
-        definition = self.asked_by[spec][0].pools.get(pool)
-        return definition.job_name if isinstance(definition, SlurmPool) else None
-
-    def job_name(self, pool: str) -> str | None:
-        """The name of a new Slurm worker of ``pool``: that of the specs that wait first.
-
-        A worker that takes another script's job takes that script's name.
-        """
-        with self.lock:
-            waiting = chain(
-                (
-                    spec
-                    for plans in self.unstarted.get(pool, {}).values()
-                    for queue in plans.values()
-                    for spec in queue
-                ),
-                (
-                    stopped.specs[0]
-                    for stopped in self.stopped
-                    if pool in self.placed[stopped.specs[0]].pools
-                ),
-            )
-            spec = next(waiting, None)
-            return None if spec is None else self._job_name(spec, pool)
-
-    def idle_timeout(self, pool: str, slot: int) -> float | None:
-        """How long the Slurm worker in ``slot`` of ``pool`` waits for a job.
-
-        The longest that a script asks for whose max_workers reaches the slot:
-        when one script wants 10 workers to wait 100 s and another 20 to wait
-        50 s, slots 1 to 10 wait 100 s and slots 11 to 20 wait 50 s. A slot
-        past every script's max_workers waits like the last one they reach.
-        None when no script has Slurm workers in ``pool``.
-        """
-        with self.lock:
-            asked = [
-                definition
-                for script in self.scripts
-                if isinstance(definition := script.pools.get(pool), SlurmPool)
-            ]
-            slot = min(slot, max((d.max_workers for d in asked), default=0))
-            return max(
-                (d.idle_timeout_seconds for d in asked if d.max_workers >= slot),
-                default=None,
-            )
 
     def _throttled(self) -> Callable[[_Placed], bool]:
         """Whether a spec's class already runs in as many jobs as its throttle allows.
@@ -882,6 +816,12 @@ class Manager:
                     logger.warning("%s", reason)
                     self.outbox.append((script, WarningMessage(reason=reason)))
         return specs
+
+    def asked(self, pool: str) -> list[SlurmPool]:
+        """What each connected script asks of its Slurm workers in ``pool``, newest last."""
+        with self.lock:
+            pools = (script.pools.get(pool) for script in self.scripts)
+            return [asked for asked in pools if isinstance(asked, SlurmPool)]
 
     def demand(self, pool: str) -> int:
         """Workers ``pool`` should have: busy ones plus jobs it could start."""

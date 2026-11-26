@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -42,6 +43,7 @@ from furu.worker.backends.slurm.resources import (
 )
 from furu.worker.messages import (
     ErrorMessage,
+    SlurmPool,
     WarningMessage,
 )
 
@@ -53,19 +55,15 @@ class _StubManager:
     """Stands in for the Manager a pool asks for demand and reports to."""
 
     demand_of: Callable[[], int] | int = 0
-    job_name_of: str | None = None
-    idle_timeout_of: Callable[[int], float | None] = lambda slot: 60.0
+    asked_of: list[SlurmPool] = field(default_factory=lambda: [_slurm_backend().pool()])
     url: str = _URL
     notes: list[WarningMessage | ErrorMessage] = field(default_factory=list)
 
     def demand(self, key: str) -> int:
         return self.demand_of if isinstance(self.demand_of, int) else self.demand_of()
 
-    def job_name(self, key: str) -> str | None:
-        return self.job_name_of
-
-    def idle_timeout(self, key: str, slot: int) -> float | None:
-        return self.idle_timeout_of(slot)
+    def asked(self, key: str) -> list[SlurmPool]:
+        return self.asked_of
 
     def notify(self, key: str, message: WarningMessage | ErrorMessage) -> None:
         self.notes.append(message)
@@ -370,7 +368,7 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
         assert arg in argv
     assert "secret-token" not in record_file.read_text()
 
-    # The worker's script, and how long each waits for its first job.
+    # The worker's script, and how long each worker waits for a job.
     assert argv[-1] == "60.0"
     script_path = Path(argv[-2])
     assert script_path == worker_dir / "worker.sh"
@@ -596,45 +594,37 @@ def test_slurm_pool_follows_demand_up_to_what_it_asks(
     assert len(_sbatch_argvs(record_file)) == 3
 
 
-def test_slurm_pool_names_new_workers_as_the_manager_says(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    manager = _StubManager(1, job_name_of="other")
-    pool = _pool(tmp_path, monkeypatch, manager, use_job_arrays=False)
-
-    pool._scale_once()
-    # No spec waits: as the pool's first script named them.
-    manager.demand_of, manager.job_name_of = 2, None
-    pool._scale_once()
-
-    assert [
-        [arg for arg in argv if arg.startswith("--job-name")]
-        for argv in _sbatch_argvs(record_file)
-    ] == [["--job-name=other"], ["--job-name=furu-worker"]]
-
-
 @pytest.mark.parametrize(
-    ("use_job_arrays", "expected"),
-    [(False, ["100.0", "100.0", "50.0"]), (True, ["50.0"])],
+    ("use_job_arrays", "waits"),
+    [(False, ["100.0", "100.0", "50.0", "50.0"]), (True, ["50.0", "50.0"])],
 )
-def test_slurm_pool_starts_workers_with_the_wait_of_their_slot(
+def test_slurm_pool_starts_workers_as_the_scripts_that_share_it_ask(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     use_job_arrays: bool,
-    expected: list[str],
+    waits: list[str],
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    manager = _StubManager(3, idle_timeout_of=lambda slot: 100.0 if slot < 3 else 50.0)
+    asked = [
+        _slurm_backend(max_workers=2, idle_timeout_seconds=100.0).pool(),
+        _slurm_backend(max_workers=3, idle_timeout_seconds=50.0, job_name="b").pool(),
+    ]
+    manager = _StubManager(3, asked)
     pool = _pool(tmp_path, monkeypatch, manager, use_job_arrays=use_job_arrays)
 
     pool._scale_once()
-    # No script is left that has workers in the pool.
-    manager.demand_of, manager.idle_timeout_of = 4, lambda slot: None
+    # A worker beyond what any script asks for waits as the last one asked for.
+    manager.demand_of = 4
+    pool._scale_once()
+    # No script is left that shares the pool: no worker is started.
+    manager.demand_of, manager.asked_of = 5, []
     pool._scale_once()
 
-    # The workers of an array start with the wait of the last of them.
-    assert [argv[-1] for argv in _sbatch_argvs(record_file)] == expected
+    argvs = _sbatch_argvs(record_file)
+    # The workers of an array all wait as the last of them does.
+    assert [argv[-1] for argv in argvs] == waits
+    # And are named as the newest script names its workers.
+    assert all("--job-name=b" in argv for argv in argvs)
 
 
 def test_slurm_pool_replaces_workers_that_exit_without_failing(
@@ -850,6 +840,7 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     backend = _slurm_backend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
+        idle_timeout_seconds=5.0,
     )
     leaf = SlurmEndToEndLeaf(value=7)
 
@@ -864,8 +855,8 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
             lambda: connect(manager.url, max_size=None),
         )
         assert furu.create(leaf, on=[backend]) == "7:100"
-        # A script with its own name and idle timeout for its workers shares
-        # the pool: the worker that waits takes its job, and its name.
+        # A script that names its workers differently shares the pool: the
+        # worker that waits takes its job, and its name.
         other = replace(backend, job_name="other", idle_timeout_seconds=30.0)
         assert furu.create(SlurmEndToEndLeaf(value=8), on=[other]) == "8:100"
 
@@ -874,12 +865,16 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     assert argv[:2] == ["--parsable", "--array=0-0"]
     assert f"--chdir={worker_dir}" in argv
     assert "--job-name=furu-worker" in argv
-    assert argv[-2:] == [str(worker_dir / "worker.sh"), "60.0"]
-    assert [
-        r["argv"]
-        for r in _read_records(record_file)
-        if r["executable"] == "scontrol" and r["argv"][0] == "update"
-    ] == [["update", "JobId=100", "JobName=other"]]
+    assert argv[-2:] == [str(worker_dir / "worker.sh"), "5.0"]
+    # The job is renamed without the worker waiting for it.
+    renamed = {
+        "executable": "scontrol",
+        "argv": ["update", "JobId=100", "JobName=other"],
+    }
+    deadline = time.monotonic() + 10
+    while renamed not in _read_records(record_file) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _read_records(record_file).count(renamed) == 1
 
 
 # --- fake Slurm ----------------------------------------------------------------------
@@ -946,12 +941,8 @@ def _install_fake_slurm(
             import subprocess
 
             script, idle_timeout = sys.argv[-2:]
+            (job_name,) = [a[11:] for a in sys.argv if a.startswith("--job-name=")]
             for task_id in task_ids:
-                (job_name,) = [
-                    arg.removeprefix("--job-name=")
-                    for arg in sys.argv[1:]
-                    if arg.startswith("--job-name=")
-                ]
                 env = dict(os.environ, SLURM_JOB_ID=str(job_id), SLURM_JOB_NAME=job_name)
                 name = str(job_id)
                 if task_id is not None:

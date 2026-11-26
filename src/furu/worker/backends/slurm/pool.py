@@ -59,7 +59,6 @@ class SlurmWorkerPool:
         self._manager = manager
         self._key = key
         self._use_job_arrays = definition.use_job_arrays
-        self._job_name = definition.job_name
         self._job_ids: list[str] = []
         self._streak: list[str] = []  # "<job id> <state>" since a job last completed
         self._streak_started = 0.0
@@ -93,7 +92,6 @@ class SlurmWorkerPool:
             f"    --pool {shlex.quote(key)} \\\n"
             '    --component "${component}" \\\n'
             f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log" \\\n'
-            # Until its first job says how long the worker in its slot waits.
             '    --idle-timeout "$1"\n'
         )
         self._sbatch_args = (
@@ -178,27 +176,28 @@ class SlurmWorkerPool:
             to_spawn = 1
             self._last_submit = now
 
-        # Scripts that share the pool can name their workers differently.
-        # Without a spec that waits, as the pool's first script named them.
-        job_name = self._manager.job_name(self._key) or self._job_name
+        # Scripts that share the pool each say how many workers they want, what
+        # to name them and how long they wait for a job. New ones are named as
+        # the newest script says. The nth waits the longest that a script with
+        # that many workers says, so 10 that wait 100 s and 20 that wait 50 s
+        # are 10 of each; an array's wait as its last one does.
+        asked = self._manager.asked(self._key)
         for _ in range(1 if self._use_job_arrays else to_spawn):
-            # How long a worker waits for its first job: as the manager says
-            # for the slot of the last one this submits, so those of an array
-            # start with the shortest wait among them. None: no script is left.
-            slot = len(self._job_ids) + (to_spawn if self._use_job_arrays else 1)
-            idle_timeout = self._manager.idle_timeout(self._key, slot)
-            if self._stop_event.is_set() or idle_timeout is None:
+            if self._stop_event.is_set() or not asked:
                 return
+            last = len(self._job_ids) + (to_spawn if self._use_job_arrays else 1)
+            last = min(last, max(a.max_workers for a in asked))
+            wait = max(a.idle_timeout_seconds for a in asked if a.max_workers >= last)
             # One that times out may be queued anyway; such a worker still
             # serves this pool, but goes uncounted until its idle timeout.
             submitted = slurm.run(
                 "sbatch",
                 "--parsable",
                 *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
-                f"--job-name={job_name}",
+                f"--job-name={asked[-1].job_name}",
                 *self._sbatch_args,
                 str(self._script_path),
-                str(idle_timeout),
+                str(wait),
             )
             job_id = submitted.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:
