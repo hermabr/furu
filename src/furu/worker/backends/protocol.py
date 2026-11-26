@@ -35,8 +35,6 @@ class WorkerBackend(Protocol):
 class WorkerPool(Protocol):
     """A manager's running pool."""
 
-    definition: Pool
-
     def job_completed(self) -> None: ...
 
     def stop(self) -> None: ...

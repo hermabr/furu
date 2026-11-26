@@ -42,8 +42,6 @@ from furu.worker.backends.slurm.resources import (
 )
 from furu.worker.messages import (
     ErrorMessage,
-    Launch,
-    SubmitMessage,
     WarningMessage,
 )
 
@@ -56,6 +54,7 @@ class _StubManager:
 
     demand_of: Callable[[], int] | int = 0
     job_name_of: str | None = None
+    idle_timeout_of: Callable[[int], float | None] = lambda slot: 60.0
     url: str = _URL
     notes: list[WarningMessage | ErrorMessage] = field(default_factory=list)
 
@@ -64,6 +63,9 @@ class _StubManager:
 
     def job_name(self, key: str) -> str | None:
         return self.job_name_of
+
+    def idle_timeout(self, key: str, slot: int) -> float | None:
+        return self.idle_timeout_of(slot)
 
     def notify(self, key: str, message: WarningMessage | ErrorMessage) -> None:
         self.notes.append(message)
@@ -345,7 +347,6 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
             extra_sbatch_args=("--exclusive",),
         ),
         pre_worker_commands=('echo "Hello" > /tmp/hey',),
-        idle_timeout_seconds=7.5,
     )
     pool._scale_once()
 
@@ -369,7 +370,9 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
         assert arg in argv
     assert "secret-token" not in record_file.read_text()
 
-    script_path = Path(argv[-1])
+    # The worker's script, and how long each waits for its first job.
+    assert argv[-1] == "60.0"
+    script_path = Path(argv[-2])
     assert script_path == worker_dir / "worker.sh"
     assert stat.S_IMODE(script_path.stat().st_mode) == 0o700
     script = script_path.read_text()
@@ -381,7 +384,7 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
     assert f"--pool {pool._key}" in script
     assert '--component "${component}"' in script
     assert f'--log {worker_dir / "logs"}/"${{component}}.log"' in script
-    assert "--idle-timeout 7.5\n" in script
+    assert '--idle-timeout "$1"\n' in script
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
@@ -611,6 +614,29 @@ def test_slurm_pool_names_new_workers_as_the_manager_says(
     ] == [["--job-name=other"], ["--job-name=furu-worker"]]
 
 
+@pytest.mark.parametrize(
+    ("use_job_arrays", "expected"),
+    [(False, ["100.0", "100.0", "50.0"]), (True, ["50.0"])],
+)
+def test_slurm_pool_starts_workers_with_the_wait_of_their_slot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    use_job_arrays: bool,
+    expected: list[str],
+) -> None:
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    manager = _StubManager(3, idle_timeout_of=lambda slot: 100.0 if slot < 3 else 50.0)
+    pool = _pool(tmp_path, monkeypatch, manager, use_job_arrays=use_job_arrays)
+
+    pool._scale_once()
+    # No script is left that has workers in the pool.
+    manager.demand_of, manager.idle_timeout_of = 4, lambda slot: None
+    pool._scale_once()
+
+    # The workers of an array start with the wait of the last of them.
+    assert [argv[-1] for argv in _sbatch_argvs(record_file)] == expected
+
+
 def test_slurm_pool_replaces_workers_that_exit_without_failing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -838,9 +864,9 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
             lambda: connect(manager.url, max_size=None),
         )
         assert furu.create(leaf, on=[backend]) == "7:100"
-        # A script that names its workers differently shares the pool: the
-        # worker that waits takes its job, and its name.
-        other = replace(backend, job_name="other")
+        # A script with its own name and idle timeout for its workers shares
+        # the pool: the worker that waits takes its job, and its name.
+        other = replace(backend, job_name="other", idle_timeout_seconds=30.0)
         assert furu.create(SlurmEndToEndLeaf(value=8), on=[other]) == "8:100"
 
     worker_dir = tmp_path / "manager" / "workers" / backend.pool_key.replace(":", "-")
@@ -848,44 +874,12 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     assert argv[:2] == ["--parsable", "--array=0-0"]
     assert f"--chdir={worker_dir}" in argv
     assert "--job-name=furu-worker" in argv
-    assert argv[-1] == str(worker_dir / "worker.sh")
+    assert argv[-2:] == [str(worker_dir / "worker.sh"), "60.0"]
     assert [
         r["argv"]
         for r in _read_records(record_file)
         if r["executable"] == "scontrol" and r["argv"][0] == "update"
     ] == [["update", "JobId=100", "JobName=other"]]
-
-
-def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
-    tmp_path: Path,
-) -> None:
-    manager = Manager(url=_URL, manager_dir=tmp_path)
-    sent: list[ErrorMessage] = []
-    script = cast(Any, SimpleNamespace(send=sent.append, plans={}))
-    key = _slurm_backend().pool_key
-
-    launch = Launch(
-        plan=tmp_path / "launch.plan",
-        execution_log=tmp_path / "execution.log",
-        config=get_config(),
-        code=CodeLocation.here(),
-    )
-    for overrides in (
-        {},
-        {"max_workers": 9},
-        {"job_name": "other"},
-        {"idle_timeout_seconds": 5.0},
-    ):
-        pool = _slurm_backend(**overrides).pool()
-        manager._submit(
-            script,
-            SubmitMessage(pools={key: pool}, launch=launch, lines=[], groups=[]),
-        )
-    manager.pools[key].stop()
-
-    (refusal,) = sent  # resizing the pool and naming its workers was fine
-    assert "'idle_timeout_seconds': " in refusal.reason
-    assert manager.pools[key].definition == _slurm_backend().pool()
 
 
 # --- fake Slurm ----------------------------------------------------------------------
@@ -951,7 +945,7 @@ def _install_fake_slurm(
             # Start each worker for real, as Slurm would on a compute node.
             import subprocess
 
-            script = sys.argv[-1]
+            script, idle_timeout = sys.argv[-2:]
             for task_id in task_ids:
                 (job_name,) = [
                     arg.removeprefix("--job-name=")
@@ -967,7 +961,7 @@ def _install_fake_slurm(
                     name = f"{job_id}_{task_id}"
                 log = os.path.join(os.path.dirname(script), "logs", f"{name}.log")
                 subprocess.Popen(
-                    ["bash", script],
+                    ["bash", script, idle_timeout],
                     env=env,
                     stdout=open(log, "a"),
                     stderr=subprocess.STDOUT,

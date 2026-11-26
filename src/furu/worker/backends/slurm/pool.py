@@ -13,7 +13,7 @@ from furu import slurm
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
-from furu.worker.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
+from furu.worker.messages import ErrorMessage, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
     from furu.execution.manager import Manager
@@ -56,7 +56,6 @@ class SlurmWorkerPool:
         definition: SlurmPool,
         directory: Path,
     ) -> None:
-        self.definition: Pool = definition
         self._manager = manager
         self._key = key
         self._use_job_arrays = definition.use_job_arrays
@@ -94,7 +93,8 @@ class SlurmWorkerPool:
             f"    --pool {shlex.quote(key)} \\\n"
             '    --component "${component}" \\\n'
             f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log" \\\n'
-            f"    --idle-timeout {definition.idle_timeout_seconds}\n"
+            # Until its first job says how long the worker in its slot waits.
+            '    --idle-timeout "$1"\n'
         )
         self._sbatch_args = (
             f"--chdir={directory}",
@@ -182,7 +182,12 @@ class SlurmWorkerPool:
         # Without a spec that waits, as the pool's first script named them.
         job_name = self._manager.job_name(self._key) or self._job_name
         for _ in range(1 if self._use_job_arrays else to_spawn):
-            if self._stop_event.is_set():
+            # How long a worker waits for its first job: as the manager says
+            # for the slot of the last one this submits, so those of an array
+            # start with the shortest wait among them. None: no script is left.
+            slot = len(self._job_ids) + (to_spawn if self._use_job_arrays else 1)
+            idle_timeout = self._manager.idle_timeout(self._key, slot)
+            if self._stop_event.is_set() or idle_timeout is None:
                 return
             # One that times out may be queued anyway; such a worker still
             # serves this pool, but goes uncounted until its idle timeout.
@@ -193,6 +198,7 @@ class SlurmWorkerPool:
                 f"--job-name={job_name}",
                 *self._sbatch_args,
                 str(self._script_path),
+                str(idle_timeout),
             )
             job_id = submitted.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:

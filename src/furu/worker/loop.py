@@ -120,6 +120,8 @@ def worker_loop(
                                 job.label,
                                 extra={"path": job.folder},
                             )
+                        if job.idle_timeout_seconds is not None:
+                            idle_timeout = job.idle_timeout_seconds
                         cancelled = threading.Event()
                         _start_job_thread(job, child_slot, cancelled, events)
                         # Scripts that share a pool can name its workers
