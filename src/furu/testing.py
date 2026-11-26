@@ -45,6 +45,8 @@ def _replace_config_directories(
 ) -> _Config:
     data = config.model_dump()
     data["directories"] = directories
+    # A session's overlay must not reach the throwaway directories of tests.
+    data["overlay"] = None
     return _Config.model_validate(data)
 
 

@@ -16,7 +16,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 
 import pytest
-from runs import events_of
+from runs import events_of, run_of
 
 import furu
 import furu.execution.manager as manager_module
@@ -62,7 +62,7 @@ def _manager(manager_dir: Path) -> Generator[Manager]:
         listen_host="127.0.0.1", connect_host="127.0.0.1", manager_dir=None
     ) as manager:
         address = get_config().manager_version_dir / "address.json"
-        address.parent.mkdir(exist_ok=True)
+        address.parent.mkdir(parents=True, exist_ok=True)
         address.write_text(json.dumps({"url": manager.url}))
         yield manager
 
@@ -184,3 +184,37 @@ def test_ctrl_c_cancels_running_jobs_and_sigterm_leaves_them(
     else:  # the worker killed the job's child: its attempt has no end
         assert [event["event"] for event in events_of(leaf)] == ["opened", "start"]
     assert _starts(tmp_path) == 1
+
+
+def test_an_overlay_launch_never_joins_a_real_one_on_the_shared_manager(
+    tmp_path: Path, manager_dir: Path
+) -> None:
+    gate, overlay = tmp_path / "gate", tmp_path / "overlay"
+    gate.mkdir()
+    leaf = GatedLeaf(gate=str(gate), value=3)
+    overlaid = get_config().model_copy(update={"overlay": overlay})
+    directories = get_config().directories.anchored()
+    env = os.environ | {
+        "FURU_MANAGER_DIR": str(manager_dir),
+        "FURU_OVERLAY": str(overlay),
+        **{
+            f"FURU_DIRECTORIES__{name.upper()}": str(path) for name, path in directories
+        },
+    }
+    with ExitStack() as stack:
+        real = stack.enter_context(_manager(manager_dir))
+        with override_config(overlaid):
+            own = stack.enter_context(_manager(manager_dir))
+        outcome = stack.enter_context(_create_in_thread(leaf))
+        _wait_until(lambda: _starts(gate) == 1)
+        script = subprocess.Popen([sys.executable, "-c", _SCRIPT, str(gate)], env=env)
+        stack.callback(script.kill)
+        # The same spec runs again, for the overlay and on its own manager.
+        _wait_until(lambda: _starts(gate) == 2)
+        assert (len(real.scripts), len(own.scripts)) == (1, 1)
+        (gate / "open").touch()
+        assert script.wait(timeout=30) == 0
+    assert outcome == [3]
+    assert not run_of(leaf).is_relative_to(overlay)
+    with override_config(overlaid):
+        assert run_of(GatedLeaf(gate=str(gate), value=3)).is_relative_to(overlay)

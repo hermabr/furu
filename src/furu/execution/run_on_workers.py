@@ -58,7 +58,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
 
     provenance = capture_submit_provenance()
     code = CodeLocation.here() if local == {True} else _prepare_snapshot(provenance)
-    directories = get_config().directories.anchored()
+    directories = get_config().write_directories
     execution_log = execution_log_path_in(directories.executions / launch)
     launch_plan = directories.plans / f"{launch}.plan"
     from furu.execution.manager import Manager
@@ -136,7 +136,10 @@ def _prepare_snapshot(provenance: SubmitProvenance) -> CodeLocation:
 
 def _connect_to_manager() -> ClientConnection:
     """Connect to the running manager, waiting for one to start."""
-    address = get_config().manager_version_dir / "address.json"
+    config = get_config()
+    address = config.manager_version_dir / "address.json"
+    # An overlay has a manager of its own, so no launch takes another's specs.
+    overlay = "" if config.overlay is None else f"FURU_OVERLAY={config.overlay} "
     waiting = False
     while True:
         try:
@@ -147,7 +150,8 @@ def _connect_to_manager() -> ClientConnection:
                 waiting = True
                 logger.warning(
                     "waiting for the furu manager (start one with "
-                    "uvx furu@%s manager) · %s",
+                    "%suvx furu@%s manager) · %s",
+                    overlay,
                     version("furu"),
                     type(exc).__name__,
                     extra={"path": address},

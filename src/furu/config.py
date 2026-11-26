@@ -1,10 +1,11 @@
 import functools
+import os
 import subprocess
 from importlib.metadata import version
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -102,17 +103,69 @@ class _Config(BaseSettings):
     manager_dir: Path = Path.home() / ".furu" / "manager"
     code_version: CodeVersion = "fixed"
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
+    # A debug session: whatever furu would write at an absolute path it writes
+    # at that path inside this folder, the manager's address included. What is
+    # at the path itself is still read, never changed or locked, so deleting
+    # this folder undoes the session. Every worker machine must see it.
+    overlay: Path | None = None
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+
+    @field_validator("overlay", mode="before")
+    @classmethod
+    def _overlay_is_absolute(cls, overlay: object) -> object:
+        if overlay is None or overlay == "":
+            return None
+        path = Path(os.path.normpath(str(overlay)))
+        if not path.is_absolute() or path == Path(path.anchor):
+            raise ValueError(f"overlay must be an absolute folder below /, got {path}")
+        return path
 
     @property
     def manager_version_dir(self) -> Path:
-        """This furu version's manager: one per version, so scripts never meet another."""
-        return self.manager_dir / version("furu")
+        """This furu version's manager: one per version and overlay, so scripts never meet another."""
+        return self.overlaid(self.manager_dir) / version("furu")
 
     def anchored(self) -> "_Config":
         """This config with absolute directories, for processes whose working
         directory (e.g. a snapshot) must not decide where data lives."""
         return self.model_copy(update={"directories": self.directories.anchored()})
+
+    def overlaid(self, path: Path) -> Path:
+        """Where furu writes what belongs at ``path``: inside the overlay, if one is set."""
+        if self.overlay is None:
+            return path
+        path = Path(os.path.abspath(path))
+        if path.is_relative_to(self.overlay) or self.overlay.is_relative_to(path):
+            raise ValueError(
+                f"the overlay {self.overlay} overlaps {path}, which it stands in "
+                "for: put it apart from furu's directories and storage"
+            )
+        return self.overlay / path.relative_to(path.anchor)
+
+    def layers(self, path: Path) -> tuple[Path, ...]:
+        """Where furu reads what it writes at ``path``, the first that has it winning.
+
+        A path inside the overlay comes first, then the path it stands for,
+        which is only ever read.
+        """
+        if self.overlay is None or not path.is_relative_to(self.overlay):
+            return (path,)
+        return path, Path(path.anchor) / path.relative_to(self.overlay)
+
+    @property
+    def write_directories(self) -> _FuruDirectories:
+        """The absolute directories furu writes to: inside the overlay, if one is set."""
+        anchored = self.directories.anchored()
+        if self.overlay is None:
+            return anchored
+        if _project_anchor().is_relative_to(self.overlay):
+            raise ValueError(
+                f"the overlay {self.overlay} holds the project {_project_anchor()}: "
+                "put it apart from the code it runs"
+            )
+        return _FuruDirectories(
+            **{name: self.overlaid(path) for name, path in anchored}
+        )
 
     @classmethod
     def settings_customise_sources(

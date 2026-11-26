@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
+from furu.config import get_config
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -169,58 +170,80 @@ def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
     return recorded
 
 
+def _layered(class_dir: Path) -> list[dict[str, Any]]:
+    """The lines of a class folder's file and, in an overlay, of the one under it."""
+    return [
+        line
+        for layer in get_config().layers(class_dir)
+        for line in _read(schema_path_in(layer)) or ()
+    ]
+
+
 def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
     """Stop when a default the source declares is not the one recorded.
 
     A declared default with no line gets one. A folder with no file gets one
     only with ``record``, when the folder is made: until then nothing in it was
-    stored under any default.
+    stored under any default. In an overlay the file under it is only read,
+    and a default recorded in either has to match.
     """
     key = (cls, class_dir, len(held[cls]))
     if (*key, record) in _checked:
         return
     declared = _declared_defaults(cls)
     path = schema_path_in(class_dir)
-    lines = _read(path) if declared or record else None
-    if lines is not None or record:
-        if not lines or declared.keys() - _recorded_defaults(lines).keys():
+    layers = get_config().layers(class_dir) if declared or record else ()
+    files = {schema_path_in(layer): _read(schema_path_in(layer)) for layer in layers}
+    found = any(lines is not None for lines in files.values())
+
+    def unrecorded() -> list[dict[str, Any]]:
+        recorded = _recorded_defaults(
+            [line for lines in files.values() for line in lines or ()]
+        )
+        return [
+            {"added": name, "default": default}
+            | ({} if nested is None else {"nested": nested, "class_part": part})
+            for (nested, part, name), (_, default) in declared.items()
+            if (nested, part, name) not in recorded
+        ]
+
+    if found or record:
+        if (record and not files[path]) or unrecorded():
+            class_dir.mkdir(parents=True, exist_ok=True)  # new in an overlay
             with short_lock(schema_lock_path_in(class_dir)):
-                lines = _read(path) or []
-                recorded = _recorded_defaults(lines)
-                new: list[dict[str, Any]] = [
-                    {"added": name, "default": default}
-                    | ({} if nested is None else {"nested": nested, "class_part": part})
-                    for (nested, part, name), (_, default) in declared.items()
-                    if (nested, part, name) not in recorded
-                ]
-                if not lines:
+                files[path] = _read(path)
+                new = unrecorded()
+                if not files[path]:  # every file starts with the names
                     new.insert(0, {"names": list(naming(cls).first_names)})
                 if new:
                     _append(path, new)
                     # What counts is what the file holds: a writer that lost
                     # the lock while it held it can have recorded first.
-                    lines = _read(path) or []
-        recorded = _recorded_defaults(lines)
-        for step, (label, default) in declared.items():
-            if _stable_json_dump(recorded[step]) != _stable_json_dump(default):
-                raise MigrationError(
-                    f"{label} declares the default {_stable_json_dump(default)}, "
-                    f"but {path} recorded {_stable_json_dump(recorded[step])} "
-                    "when the step was first seen. A spec at the declared "
-                    "default is named as it was before the field existed, so it "
-                    "would load a result computed at the recorded one. Put the "
-                    "recorded default back in the step."
-                )
+                    files[path] = _read(path)
+        for file, lines in files.items():
+            recorded = _recorded_defaults(lines or [])
+            for step, (label, default) in declared.items():
+                if step in recorded and (
+                    _stable_json_dump(recorded[step]) != _stable_json_dump(default)
+                ):
+                    raise MigrationError(
+                        f"{label} declares the default {_stable_json_dump(default)}, "
+                        f"but {file} recorded {_stable_json_dump(recorded[step])} "
+                        "when the step was first seen. A spec at the declared "
+                        "default is named as it was before the field existed, so it "
+                        "would load a result computed at the recorded one. Put the "
+                        "recorded default back in the step."
+                    )
         _checked.add((*key, True))
     # A folder with no file may get one from a checkout that declares another
     # default, so a declared default is looked for again.
-    if lines is not None or not declared:
+    if found or record or not declared:
         _checked.add((*key, False))
 
 
 def stored_names(class_dir: Path) -> list[str] | None:
     """The names a class folder's results are stored under, when its file says."""
-    for line in _read(schema_path_in(class_dir)) or ():
+    for line in _layered(class_dir):
         if "names" in line and "nested" not in line:
             return line["names"]
     return None
@@ -229,7 +252,7 @@ def stored_names(class_dir: Path) -> list[str] | None:
 def nested_names(class_dir: Path) -> dict[str, set[tuple[str, ...]]]:
     """Each set of first names a dataclass was stored with in a class folder."""
     recorded: defaultdict[str, set[tuple[str, ...]]] = defaultdict(set)
-    for line in _read(schema_path_in(class_dir)) or ():
+    for line in _layered(class_dir):
         if "names" in line and "nested" in line:
             recorded[line["nested"]].add(tuple(line["names"]))
     return recorded

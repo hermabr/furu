@@ -10,7 +10,7 @@ from gitrepo import init_repo
 from tracedrepo import Repo
 
 from furu import provenance, slurm
-from furu.config import _project_anchor
+from furu.config import _Config, _project_anchor, get_config
 
 # Tests run as a process outside Slurm wherever pytest was started, so that a
 # working folder is named for a process and none asks a real Slurm about a job.
@@ -90,3 +90,9 @@ def fresh_caches(pytestconfig: pytest.Config) -> Iterator[None]:
     with contextlib.chdir(pytestconfig.rootpath):
         provenance.EnvironmentIdentity.capture()
         _project_anchor()
+
+
+@pytest.fixture
+def overlaid(tmp_path: Path) -> _Config:
+    """This test's config with an overlay: a debug session under ``override_config``."""
+    return get_config().model_copy(update={"overlay": tmp_path / "overlay"})
