@@ -17,17 +17,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--component", required=True, help="this worker's name, e.g. its Slurm job id"
     )
     parser.add_argument("--log", required=True, type=Path, help="this worker's log")
-    parser.add_argument(
-        "--idle-timeout",
-        required=True,
-        type=float,
-        help="seconds to wait without a job before this worker exits",
-    )
     args = parser.parse_args(argv)
     worker_loop(
         url=os.environ[MANAGER_URL_ENV_VAR],
         pool=args.pool,
-        idle_timeout=args.idle_timeout,
         component=args.component,
         backend="slurm",
         worker_log=args.log,

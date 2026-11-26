@@ -82,8 +82,6 @@ class SlurmWorkerPool:
         self._script_path.write_text(
             "#!/bin/bash\n"
             "set -euo pipefail\n"
-            # Taken before the commands below can read or replace it.
-            'furu_idle_timeout="$1"; shift\n'
             + "".join(f"{command}\n" for command in definition.pre_worker_commands)
             # Do not leak the manager's environment into the job's snapshot.
             + "unset VIRTUAL_ENV\n"
@@ -93,8 +91,7 @@ class SlurmWorkerPool:
             f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
             f"    --pool {shlex.quote(key)} \\\n"
             '    --component "${component}" \\\n'
-            f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log" \\\n'
-            '    --idle-timeout "${furu_idle_timeout}"\n'
+            f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log"\n'
         )
         self._sbatch_args = (
             f"--chdir={directory}",
@@ -178,32 +175,23 @@ class SlurmWorkerPool:
             to_spawn = 1
             self._last_submit = now
 
-        # New workers take the newest script's name. The nth waits the longest
-        # that a script with that many workers asks, so 10 that wait 100 s and 20
-        # that wait 50 s are 10 of each. An array's workers wait alike: it ends
-        # where the wait does.
-        while to_spawn > 0:
+        for _ in range(1 if self._use_job_arrays else to_spawn):
             asked = cast("list[SlurmPool]", self._manager.asked(self._key))
-            reach = [a for a in asked if a.max_workers > len(self._job_ids)]
-            if self._stop_event.is_set() or not reach:
+            if self._stop_event.is_set() or not asked:
                 return
-            wait, until = max((a.idle_timeout_seconds, a.max_workers) for a in reach)
-            count = until - len(self._job_ids) if self._use_job_arrays else 1
-            to_spawn -= (count := min(count, to_spawn))
             # One that times out may be queued anyway; such a worker still
             # serves this pool, but goes uncounted until its idle timeout.
             submitted = slurm.run(
                 "sbatch",
                 "--parsable",
-                *((f"--array=0-{count - 1}",) if self._use_job_arrays else ()),
-                f"--job-name={asked[-1].job_name}",
+                *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
+                f"--job-name={asked[-1].job_name}",  # the newest script's
                 *self._sbatch_args,
                 str(self._script_path),
-                str(wait),
             )
             job_id = submitted.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:
-                self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(count))
+                self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(to_spawn))
             else:
                 self._job_ids.append(job_id)
 

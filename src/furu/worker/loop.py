@@ -12,7 +12,6 @@ from websockets.sync.client import ClientConnection, connect
 
 from furu import slurm
 from furu.logging import get_logger
-from furu.utils import format_duration
 from furu.worker import messages
 from furu.worker.execute import ChildSlot
 
@@ -51,7 +50,6 @@ def worker_loop(
     *,
     url: str,
     pool: str,
-    idle_timeout: float | None,
     component: str,
     backend: str,
     worker_log: Path | None = None,
@@ -85,14 +83,7 @@ def worker_loop(
                 daemon=True,
             ).start()
             while connected or job is not None:
-                try:
-                    event = events.get(
-                        timeout=None if job is not None else idle_timeout
-                    )
-                except queue.Empty:
-                    assert idle_timeout is not None
-                    note("no work for %s; exiting", format_duration(idle_timeout))
-                    return
+                event = events.get()
                 match event:
                     case None:
                         connected = False

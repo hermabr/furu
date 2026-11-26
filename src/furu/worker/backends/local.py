@@ -65,7 +65,6 @@ def _run_worker(manager: Manager, key: str, component: str) -> None:
         worker_loop(
             url=manager.url,
             pool=key,
-            idle_timeout=None,
             component=component,
             backend="local-thread",
         )

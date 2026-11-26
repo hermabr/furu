@@ -16,6 +16,7 @@ it goes out alone.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import threading
 import time
@@ -170,6 +171,10 @@ class Manager:
     # them does not run, until a script asks for them again.
     gave_up: set[str] = field(default_factory=set)
     leases: dict[ServerConnection, _Lease] = field(default_factory=dict)
+    # The workers that wait for a job, longest first: their pool and since when.
+    # And what the script that last asked for each pool asked of its workers.
+    idle: dict[ServerConnection, tuple[str, float]] = field(default_factory=dict)
+    last_asked: dict[str, Pool] = field(default_factory=dict)
     # Each class folder and pair of plans a smaller batch was warned about.
     warned: set[tuple[Path, frozenset[Path]]] = field(default_factory=set)
     # What to send once the lock is released: a send can wait on its reader.
@@ -223,6 +228,9 @@ class Manager:
                     assert_never(unreachable)
         except (ConnectionClosed, TimeoutError):
             pass
+        finally:
+            with self.lock:
+                self.idle.pop(connection, None)
 
     def _flush(self) -> None:
         with self.lock:
@@ -276,6 +284,7 @@ class Manager:
     def _submit(self, script: _Script, message: SubmitMessage) -> None:
         with self.lock:
             script.pools = message.pools
+            self.last_asked |= message.pools
             for key, definition in message.pools.items():
                 if key not in self.pools:
                     self.pools[key] = self._start_pool(key, definition)
@@ -593,9 +602,14 @@ class Manager:
             with self.lock:
                 if self.stopping or connection.state is not State.OPEN:
                     return None
+                self.idle.setdefault(connection, (pool, time.monotonic()))
                 lease = self._hand_out(connection, pool)
-                if lease is None:
-                    self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
+                if lease is not None:
+                    del self.idle[connection]
+                elif (left := self._idle_left(connection, pool)) <= 0:
+                    return None  # closes the connection, so the worker exits
+                else:
+                    self.lock.wait(timeout=min(_IDLE_CHECK_INTERVAL_S, left))
             self._flush()  # forming a batch can leave a warning
             if lease is not None:
                 return lease
@@ -691,6 +705,25 @@ class Manager:
             time.monotonic(),
         )
         return lease
+
+    def _idle_left(self, connection: ServerConnection, pool: str) -> float:
+        """How many seconds an idle worker of ``pool`` still waits for a job.
+
+        Busy workers rank first, then idle ones, the longest idle last. The nth
+        waits the longest that a script with that many workers asks: of 20 idle
+        workers, where one script has 10 wait 100 s and another has 20 wait
+        50 s, 10 leave after 50 s. With no script connected, the last to ask
+        counts. A local pool's threads always stay.
+        """
+        idle = [worker for worker, (its, _) in self.idle.items() if its == pool]
+        busy = sum(lease.pool == pool for lease in self.leases.values())
+        rank = busy + len(idle) - idle.index(connection)
+        waits = [
+            a.idle_timeout_seconds if isinstance(a, SlurmPool) else math.inf
+            for a in self.asked(pool) or [self.last_asked[pool]]
+            if a.max_workers >= rank
+        ]
+        return max(waits, default=0.0) + self.idle[connection][1] - time.monotonic()
 
     def _job(self, specs: list[str], pool: str) -> Job:
         """The job that runs ``specs``: their lines and the lines their fields reach."""
