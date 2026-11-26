@@ -9,7 +9,7 @@ import sys
 import textwrap
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -55,11 +55,15 @@ class _StubManager:
     """Stands in for the Manager a pool asks for demand and reports to."""
 
     demand_of: Callable[[], int] | int = 0
+    job_name_of: str | None = None
     url: str = _URL
     notes: list[WarningMessage | ErrorMessage] = field(default_factory=list)
 
     def demand(self, key: str) -> int:
         return self.demand_of if isinstance(self.demand_of, int) else self.demand_of()
+
+    def job_name(self, key: str) -> str | None:
+        return self.job_name_of
 
     def notify(self, key: str, message: WarningMessage | ErrorMessage) -> None:
         self.notes.append(message)
@@ -589,6 +593,24 @@ def test_slurm_pool_follows_demand_up_to_what_it_asks(
     assert len(_sbatch_argvs(record_file)) == 3
 
 
+def test_slurm_pool_names_new_workers_as_the_manager_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    manager = _StubManager(1, job_name_of="other")
+    pool = _pool(tmp_path, monkeypatch, manager, use_job_arrays=False)
+
+    pool._scale_once()
+    # No spec waits: as the pool's first script named them.
+    manager.demand_of, manager.job_name_of = 2, None
+    pool._scale_once()
+
+    assert [
+        [arg for arg in argv if arg.startswith("--job-name")]
+        for argv in _sbatch_argvs(record_file)
+    ] == [["--job-name=other"], ["--job-name=furu-worker"]]
+
+
 def test_slurm_pool_replaces_workers_that_exit_without_failing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -802,7 +824,6 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     backend = _slurm_backend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
-        idle_timeout_seconds=5.0,
     )
     leaf = SlurmEndToEndLeaf(value=7)
 
@@ -817,6 +838,10 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
             lambda: connect(manager.url, max_size=None),
         )
         assert furu.create(leaf, on=[backend]) == "7:100"
+        # A script that names its workers differently shares the pool: the
+        # worker that waits takes its job, and its name.
+        other = replace(backend, job_name="other")
+        assert furu.create(SlurmEndToEndLeaf(value=8), on=[other]) == "8:100"
 
     worker_dir = tmp_path / "manager" / "workers" / backend.pool_key.replace(":", "-")
     (argv,) = _sbatch_argvs(record_file)
@@ -824,15 +849,15 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     assert f"--chdir={worker_dir}" in argv
     assert "--job-name=furu-worker" in argv
     assert argv[-1] == str(worker_dir / "worker.sh")
+    assert [
+        r["argv"]
+        for r in _read_records(record_file)
+        if r["executable"] == "scontrol" and r["argv"][0] == "update"
+    ] == [["update", "JobId=100", "JobName=other"]]
 
 
-@pytest.mark.parametrize(
-    "override",
-    [{"job_name": "other"}, {"idle_timeout_seconds": 5.0}],
-    ids=lambda override: next(iter(override)),
-)
 def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
-    tmp_path: Path, override: dict[str, Any]
+    tmp_path: Path,
 ) -> None:
     manager = Manager(url=_URL, manager_dir=tmp_path)
     sent: list[ErrorMessage] = []
@@ -845,7 +870,12 @@ def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
         config=get_config(),
         code=CodeLocation.here(),
     )
-    for overrides in ({}, {"max_workers": 9}, override):
+    for overrides in (
+        {},
+        {"max_workers": 9},
+        {"job_name": "other"},
+        {"idle_timeout_seconds": 5.0},
+    ):
         pool = _slurm_backend(**overrides).pool()
         manager._submit(
             script,
@@ -853,8 +883,8 @@ def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
         )
     manager.pools[key].stop()
 
-    (refusal,) = sent  # resizing the pool was fine
-    assert f"'{next(iter(override))}': " in refusal.reason
+    (refusal,) = sent  # resizing the pool and naming its workers was fine
+    assert "'idle_timeout_seconds': " in refusal.reason
     assert manager.pools[key].definition == _slurm_backend().pool()
 
 
@@ -923,7 +953,12 @@ def _install_fake_slurm(
 
             script = sys.argv[-1]
             for task_id in task_ids:
-                env = dict(os.environ, SLURM_JOB_ID=str(job_id))
+                (job_name,) = [
+                    arg.removeprefix("--job-name=")
+                    for arg in sys.argv[1:]
+                    if arg.startswith("--job-name=")
+                ]
+                env = dict(os.environ, SLURM_JOB_ID=str(job_id), SLURM_JOB_NAME=job_name)
                 name = str(job_id)
                 if task_id is not None:
                     env.update(
@@ -1021,7 +1056,18 @@ def _install_fake_slurm(
                 print(f"{job_id}_{task_spec} {state}")
         """,
     )
-    _write_executable(bin_dir / "scontrol", 'print("ClusterName             = fake")')
+    _write_executable(
+        bin_dir / "scontrol",
+        """
+        import json
+        import os
+        import sys
+
+        with open(os.environ["FURU_FAKE_SLURM_RECORD_FILE"], "a", encoding="utf-8") as file:
+            file.write(json.dumps({"executable": "scontrol", "argv": sys.argv[1:]}) + "\\n")
+        print("ClusterName             = fake")
+        """,
+    )
     _write_executable(
         bin_dir / "scancel",
         """

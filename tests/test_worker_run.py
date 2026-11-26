@@ -59,6 +59,7 @@ from furu.worker.messages import (
     ProcessSettings,
     RerunMessage,
     ResultMessage,
+    SlurmPool,
     SubmitMessage,
     WarningMessage,
     job_result_adapter,
@@ -1081,6 +1082,34 @@ def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happe
     _submit(manager, [leaf], plan_path=_plan("e2"))
     _end(manager, _leased(manager))
     assert _lease(manager) is None and not manager.placed
+
+
+def test_a_slurm_job_is_named_by_the_script_whose_specs_it_takes() -> None:
+    manager = Manager(url="ws://unused", manager_dir=None)
+    key = CPU_POOL.pool_key
+    for value, name in enumerate(["a", "b"]):
+        script, _ = _submit(manager, [RunLeaf(value=value)], plan_path=_plan(name))
+        script.pools = {
+            key: SlurmPool(
+                max_workers=1,
+                sbatch_args=[],
+                pre_worker_commands=[],
+                use_job_arrays=True,
+                job_name=name,
+                idle_timeout_seconds=60.0,
+            )
+        }
+
+    # A new worker is named for the specs that wait first, and a worker that
+    # takes a job for the script that answers for it.
+    assert manager.job_name(key) == "a"
+    assert _leased(manager).job.slurm_job_name == "a"
+    assert manager.job_name(key) == "b"
+    lease = _leased(manager)
+    assert lease.job.slurm_job_name == "b"
+    assert manager.job_name(key) is None
+    _end(manager, lease, JobFailedResult(error="boom"))
+    assert manager.job_name(key) == "b"  # a stopped batch waits too
 
 
 def test_each_script_answers_for_its_own_specs_of_a_batch_that_did_not_complete() -> (

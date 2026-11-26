@@ -60,6 +60,7 @@ class SlurmWorkerPool:
         self._manager = manager
         self._key = key
         self._use_job_arrays = definition.use_job_arrays
+        self._job_name = definition.job_name
         self._job_ids: list[str] = []
         self._streak: list[str] = []  # "<job id> <state>" since a job last completed
         self._streak_started = 0.0
@@ -99,7 +100,6 @@ class SlurmWorkerPool:
             f"--chdir={directory}",
             # stdout and stderr, merged as Slurm does by default.
             f"--output={log_dir}/{'%A_%a' if self._use_job_arrays else '%j'}.log",
-            f"--job-name={definition.job_name}",
             *definition.sbatch_args,
         )
         self._scale_thread = threading.Thread(
@@ -178,6 +178,9 @@ class SlurmWorkerPool:
             to_spawn = 1
             self._last_submit = now
 
+        # Scripts that share the pool can name their workers differently.
+        # Without a spec that waits, as the pool's first script named them.
+        job_name = self._manager.job_name(self._key) or self._job_name
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
                 return
@@ -187,6 +190,7 @@ class SlurmWorkerPool:
                 "sbatch",
                 "--parsable",
                 *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
+                f"--job-name={job_name}",
                 *self._sbatch_args,
                 str(self._script_path),
             )

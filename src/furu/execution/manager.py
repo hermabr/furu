@@ -23,7 +23,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from itertools import islice
+from itertools import chain, islice
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import assert_never
@@ -79,7 +79,8 @@ _IDLE_CHECK_INTERVAL_S = 5.0
 # How often the working folder of a stopped batch is looked at again.
 _HELD_CHECK_INTERVAL_S = 30.0
 # Not part of a pool's key: its first script sets them and later ones must agree.
-_SETTINGS = {"job_name", "idle_timeout_seconds"}
+# A worker's job name is each script's own: Manager.job_name.
+_SETTINGS = {"idle_timeout_seconds"}
 
 type _ToScript = ResultMessage | GaveUpMessage | WarningMessage | ErrorMessage
 
@@ -698,15 +699,16 @@ class Manager:
         throttle = self.placed[specs[0]].throttle
         lease = self.leases[connection] = _Lease(
             specs,
-            self._job(specs),
+            self._job(specs, pool),
             pool,
             None if throttle is None else throttle.key,
             time.monotonic(),
         )
         return lease
 
-    def _job(self, specs: list[str]) -> Job:
-        """The job that runs ``specs``: their lines and the lines their fields reach."""
+    def _job(self, specs: list[str], pool: str) -> Job:
+        """The job that runs ``specs`` on a worker of ``pool``: their lines and
+        the lines their fields reach."""
         placed = self.placed[specs[0]]
         lines = placed.plan.lines
         reached = dict.fromkeys(specs)
@@ -724,8 +726,36 @@ class Manager:
             lines=[lines[key] for key in reached],
             class_dir=placed.class_dir,
             process=placed.process,
+            slurm_job_name=self._job_name(specs[0], pool),
             **dict(placed.plan.launch),
         )
+
+    def _job_name(self, spec: str, pool: str) -> str | None:
+        """The name that the script that answers for ``spec`` gives ``pool``'s Slurm jobs."""
+        definition = self.asked_by[spec][0].pools.get(pool)
+        return definition.job_name if isinstance(definition, SlurmPool) else None
+
+    def job_name(self, pool: str) -> str | None:
+        """The name of a new Slurm worker of ``pool``: that of the specs that wait first.
+
+        A worker that takes another script's job takes that script's name.
+        """
+        with self.lock:
+            waiting = chain(
+                (
+                    spec
+                    for plans in self.unstarted.get(pool, {}).values()
+                    for queue in plans.values()
+                    for spec in queue
+                ),
+                (
+                    stopped.specs[0]
+                    for stopped in self.stopped
+                    if pool in self.placed[stopped.specs[0]].pools
+                ),
+            )
+            spec = next(waiting, None)
+            return None if spec is None else self._job_name(spec, pool)
 
     def _throttled(self) -> Callable[[_Placed], bool]:
         """Whether a spec's class already runs in as many jobs as its throttle allows.

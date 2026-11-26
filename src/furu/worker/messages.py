@@ -64,6 +64,9 @@ class Job(Launch):
     # the spec class.
     class_dir: Path
     process: ProcessSettings
+    # The name its script gives its Slurm workers, which the job of the worker
+    # that runs it takes. None on a pool that is not Slurm's.
+    slurm_job_name: str | None = None
 
     @property
     def label(self) -> str:

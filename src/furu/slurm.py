@@ -47,6 +47,11 @@ def run(*argv: str) -> str:
     ).stdout
 
 
+def rename(name: str) -> None:
+    """Rename the Slurm job this process runs in, also while it runs."""
+    run("scontrol", "update", f"JobId={os.environ['SLURM_JOB_ID']}", f"JobName={name}")
+
+
 def cluster() -> str | None:
     """The Slurm cluster this machine belongs to, or None without Slurm.
 
