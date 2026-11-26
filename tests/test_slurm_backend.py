@@ -8,8 +8,9 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -42,8 +43,7 @@ from furu.worker.backends.slurm.resources import (
 )
 from furu.worker.messages import (
     ErrorMessage,
-    Launch,
-    SubmitMessage,
+    SlurmPool,
     WarningMessage,
 )
 
@@ -55,11 +55,17 @@ class _StubManager:
     """Stands in for the Manager a pool asks for demand and reports to."""
 
     demand_of: Callable[[], int] | int = 0
+    asked_of: list[SlurmPool] = field(
+        default_factory=lambda: [_slurm_backend(max_workers=99).pool()]
+    )
     url: str = _URL
     notes: list[WarningMessage | ErrorMessage] = field(default_factory=list)
 
     def demand(self, key: str) -> int:
         return self.demand_of if isinstance(self.demand_of, int) else self.demand_of()
+
+    def asked(self, key: str) -> list[SlurmPool]:
+        return self.asked_of
 
     def notify(self, key: str, message: WarningMessage | ErrorMessage) -> None:
         self.notes.append(message)
@@ -126,7 +132,6 @@ _CLI_ARGS = {
     "--pool": "slurm:abc",
     "--component": "100_3",
     "--log": "/logs/100_3.log",
-    "--idle-timeout": "0.25",
 }
 
 
@@ -143,7 +148,6 @@ def test_worker_cli_passes_arguments_and_reads_the_url_from_the_environment(
         {
             "url": _URL,
             "pool": "slurm:abc",
-            "idle_timeout": 0.25,
             "component": "100_3",
             "backend": "slurm",
             "worker_log": Path("/logs/100_3.log"),
@@ -341,7 +345,6 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
             extra_sbatch_args=("--exclusive",),
         ),
         pre_worker_commands=('echo "Hello" > /tmp/hey',),
-        idle_timeout_seconds=7.5,
     )
     pool._scale_once()
 
@@ -376,8 +379,7 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
     assert script.count("secret-token") == 1  # in the environment, not argv
     assert f"--pool {pool._key}" in script
     assert '--component "${component}"' in script
-    assert f'--log {worker_dir / "logs"}/"${{component}}.log"' in script
-    assert "--idle-timeout 7.5\n" in script
+    assert f'--log {worker_dir / "logs"}/"${{component}}.log"\n' in script
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
@@ -587,6 +589,23 @@ def test_slurm_pool_follows_demand_up_to_what_it_asks(
     pool._scale_once()
     assert pool._job_ids == ["100", "101", "102"]
     assert len(_sbatch_argvs(record_file)) == 3
+
+
+def test_slurm_pool_names_new_workers_as_the_newest_script_that_shares_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    asked = [_slurm_backend(job_name=name).pool() for name in ("a", "b")]
+    manager = _StubManager(3, asked)
+    pool = _pool(tmp_path, monkeypatch, manager)
+
+    pool._scale_once()
+    # No script is left that shares the pool: no worker is started.
+    manager.demand_of, manager.asked_of = 5, []
+    pool._scale_once()
+
+    (argv,) = _sbatch_argvs(record_file)
+    assert "--job-name=b" in argv and "--array=0-2" in argv
 
 
 def test_slurm_pool_replaces_workers_that_exit_without_failing(
@@ -802,9 +821,10 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     backend = _slurm_backend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
-        idle_timeout_seconds=5.0,
+        idle_timeout_seconds=30.0,
     )
     leaf = SlurmEndToEndLeaf(value=7)
+    worker_dir = tmp_path / "manager" / "workers" / backend.pool_key.replace(":", "-")
 
     with Manager.serve(
         listen_host="127.0.0.1",
@@ -817,45 +837,22 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
             lambda: connect(manager.url, max_size=None),
         )
         assert furu.create(leaf, on=[backend]) == "7:100"
+        # A script that names its workers differently shares the pool: the
+        # worker that waits takes its job.
+        other = replace(backend, job_name="other", idle_timeout_seconds=0.2)
+        assert furu.create(SlurmEndToEndLeaf(value=8), on=[other]) == "8:100"
+        # The worker now waits as that script asked, then the manager ends it.
+        log = worker_dir / "logs" / "100_0.log"
+        deadline = time.monotonic() + 30
+        while "manager closed the connection; exiting" not in log.read_text():
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
 
-    worker_dir = tmp_path / "manager" / "workers" / backend.pool_key.replace(":", "-")
     (argv,) = _sbatch_argvs(record_file)
     assert argv[:2] == ["--parsable", "--array=0-0"]
     assert f"--chdir={worker_dir}" in argv
     assert "--job-name=furu-worker" in argv
     assert argv[-1] == str(worker_dir / "worker.sh")
-
-
-@pytest.mark.parametrize(
-    "override",
-    [{"job_name": "other"}, {"idle_timeout_seconds": 5.0}],
-    ids=lambda override: next(iter(override)),
-)
-def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
-    tmp_path: Path, override: dict[str, Any]
-) -> None:
-    manager = Manager(url=_URL, manager_dir=tmp_path)
-    sent: list[ErrorMessage] = []
-    script = cast(Any, SimpleNamespace(send=sent.append, plans={}))
-    key = _slurm_backend().pool_key
-
-    launch = Launch(
-        plan=tmp_path / "launch.plan",
-        execution_log=tmp_path / "execution.log",
-        config=get_config(),
-        code=CodeLocation.here(),
-    )
-    for overrides in ({}, {"max_workers": 9}, override):
-        pool = _slurm_backend(**overrides).pool()
-        manager._submit(
-            script,
-            SubmitMessage(pools={key: pool}, launch=launch, lines=[], groups=[]),
-        )
-    manager.pools[key].stop()
-
-    (refusal,) = sent  # resizing the pool was fine
-    assert f"'{next(iter(override))}': " in refusal.reason
-    assert manager.pools[key].definition == _slurm_backend().pool()
 
 
 # --- fake Slurm ----------------------------------------------------------------------

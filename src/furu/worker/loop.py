@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import traceback
@@ -9,8 +10,8 @@ from typing import assert_never
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
+from furu import slurm
 from furu.logging import get_logger
-from furu.utils import format_duration
 from furu.worker import messages
 from furu.worker.execute import ChildSlot
 
@@ -49,7 +50,6 @@ def worker_loop(
     *,
     url: str,
     pool: str,
-    idle_timeout: float | None,
     component: str,
     backend: str,
     worker_log: Path | None = None,
@@ -67,6 +67,7 @@ def worker_loop(
     job: messages.Job | None = None
     cancelled = threading.Event()  # replaced with each new job
     execution_log: Path | None = None
+    slurm_job_name = os.environ.get("SLURM_JOB_NAME")
     connected = True
     try:
         with connect(url, max_size=None) as connection:
@@ -82,14 +83,7 @@ def worker_loop(
                 daemon=True,
             ).start()
             while connected or job is not None:
-                try:
-                    event = events.get(
-                        timeout=None if job is not None else idle_timeout
-                    )
-                except queue.Empty:
-                    assert idle_timeout is not None
-                    note("no work for %s; exiting", format_duration(idle_timeout))
-                    return
+                event = events.get()
                 match event:
                     case None:
                         connected = False
@@ -118,6 +112,13 @@ def worker_loop(
                             )
                         cancelled = threading.Event()
                         _start_job_thread(job, child_slot, cancelled, events)
+                        # So squeue shows whose job a worker of a shared pool
+                        # runs. Nice to have: not waited for, and may fail.
+                        if job.slurm_job_name not in (None, slurm_job_name):
+                            slurm_job_name = job.slurm_job_name
+                            me, name = f"JobId={component}", f"JobName={slurm_job_name}"
+                            rename = ("scontrol", "update", me, name)
+                            threading.Thread(target=slurm.run, args=rename).start()
                     case messages.CancelMessage():
                         if job is not None:
                             note("cancelled %s; killing child", job.label)

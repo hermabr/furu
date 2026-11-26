@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from furu.logging import get_logger
 from furu.resources import Worker
 from furu.utils import _hash_dict_deterministically
-from furu.worker.messages import ErrorMessage, LocalPool, Pool
+from furu.worker.messages import ErrorMessage, LocalPool
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -39,7 +39,6 @@ class LocalThreadPool:
     """``max_workers`` threads that stay until the manager closes."""
 
     def __init__(self, *, manager: Manager, key: str, definition: LocalPool) -> None:
-        self.definition: Pool = definition
         self._threads = [
             threading.Thread(
                 target=_run_worker,
@@ -66,7 +65,6 @@ def _run_worker(manager: Manager, key: str, component: str) -> None:
         worker_loop(
             url=manager.url,
             pool=key,
-            idle_timeout=None,
             component=component,
             backend="local-thread",
         )

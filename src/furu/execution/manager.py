@@ -16,6 +16,7 @@ it goes out alone.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import threading
 import time
@@ -78,8 +79,6 @@ logger = get_logger("manager")
 _IDLE_CHECK_INTERVAL_S = 5.0
 # How often the working folder of a stopped batch is looked at again.
 _HELD_CHECK_INTERVAL_S = 30.0
-# Not part of a pool's key: its first script sets them and later ones must agree.
-_SETTINGS = {"job_name", "idle_timeout_seconds"}
 
 type _ToScript = ResultMessage | GaveUpMessage | WarningMessage | ErrorMessage
 
@@ -172,6 +171,10 @@ class Manager:
     # them does not run, until a script asks for them again.
     gave_up: set[str] = field(default_factory=set)
     leases: dict[ServerConnection, _Lease] = field(default_factory=dict)
+    # The workers that wait for a job, longest first: their pool and since when.
+    # And what the script that last asked for each pool asked of its workers.
+    idle: dict[ServerConnection, tuple[str, float]] = field(default_factory=dict)
+    last_asked: dict[str, Pool] = field(default_factory=dict)
     # Each class folder and pair of plans a smaller batch was warned about.
     warned: set[tuple[Path, frozenset[Path]]] = field(default_factory=set)
     # What to send once the lock is released: a send can wait on its reader.
@@ -225,6 +228,9 @@ class Manager:
                     assert_never(unreachable)
         except (ConnectionClosed, TimeoutError):
             pass
+        finally:
+            with self.lock:
+                self.idle.pop(connection, None)
 
     def _flush(self) -> None:
         with self.lock:
@@ -277,24 +283,14 @@ class Manager:
 
     def _submit(self, script: _Script, message: SubmitMessage) -> None:
         with self.lock:
-            clashes = [
-                f"pool {key} already runs with {first}, not {asked}"
-                for key, definition in message.pools.items()
-                if key in self.pools
-                and (first := self.pools[key].definition.model_dump(include=_SETTINGS))
-                != (asked := definition.model_dump(include=_SETTINGS))
-            ]
-            if not clashes:
-                script.pools = message.pools
-                for key, definition in message.pools.items():
-                    if key not in self.pools:
-                        self.pools[key] = self._start_pool(key, definition)
-                queued = self._add(script, message)
-                self.lock.notify_all()
-        if clashes:
-            hint = "; restart the manager to change them"
-            script.send(ErrorMessage(reason="; ".join(clashes) + hint))
-        elif queued:
+            script.pools = message.pools
+            self.last_asked |= message.pools
+            for key, definition in message.pools.items():
+                if key not in self.pools:
+                    self.pools[key] = self._start_pool(key, definition)
+            queued = self._add(script, message)
+            self.lock.notify_all()
+        if queued:
             logger.info("queued %d specs from %s", queued, _peer(script.connection))
 
     def _add(self, script: _Script, message: SubmitMessage) -> int:
@@ -606,9 +602,14 @@ class Manager:
             with self.lock:
                 if self.stopping or connection.state is not State.OPEN:
                     return None
+                self.idle.setdefault(connection, (pool, time.monotonic()))
                 lease = self._hand_out(connection, pool)
-                if lease is None:
-                    self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
+                if lease is not None:
+                    del self.idle[connection]
+                elif (left := self._idle_left(connection, pool)) <= 0:
+                    return None  # closes the connection, so the worker exits
+                else:
+                    self.lock.wait(timeout=min(_IDLE_CHECK_INTERVAL_S, left))
             self._flush()  # forming a batch can leave a warning
             if lease is not None:
                 return lease
@@ -698,16 +699,36 @@ class Manager:
         throttle = self.placed[specs[0]].throttle
         lease = self.leases[connection] = _Lease(
             specs,
-            self._job(specs),
+            self._job(specs, pool),
             pool,
             None if throttle is None else throttle.key,
             time.monotonic(),
         )
         return lease
 
-    def _job(self, specs: list[str]) -> Job:
+    def _idle_left(self, connection: ServerConnection, pool: str) -> float:
+        """How many seconds an idle worker of ``pool`` still waits for a job.
+
+        Busy workers rank first, then idle ones, the longest idle last. The nth
+        waits the longest that a script with that many workers asks: of 20 idle
+        workers, where one script has 10 wait 100 s and another has 20 wait
+        50 s, 10 leave after 50 s. With no script connected, the last to ask
+        counts. A local pool's threads always stay.
+        """
+        idle = [worker for worker, (its, _) in self.idle.items() if its == pool]
+        busy = sum(lease.pool == pool for lease in self.leases.values())
+        rank = busy + len(idle) - idle.index(connection)
+        waits = [
+            a.idle_timeout_seconds if isinstance(a, SlurmPool) else math.inf
+            for a in self.asked(pool) or [self.last_asked[pool]]
+            if a.max_workers >= rank
+        ]
+        return max(waits, default=0.0) + self.idle[connection][1] - time.monotonic()
+
+    def _job(self, specs: list[str], pool: str) -> Job:
         """The job that runs ``specs``: their lines and the lines their fields reach."""
         placed = self.placed[specs[0]]
+        asked = self.asked_by[specs[0]][0].pools.get(pool)
         lines = placed.plan.lines
         reached = dict.fromkeys(specs)
         pending = list(specs)
@@ -724,6 +745,7 @@ class Manager:
             lines=[lines[key] for key in reached],
             class_dir=placed.class_dir,
             process=placed.process,
+            slurm_job_name=asked.job_name if isinstance(asked, SlurmPool) else None,
             **dict(placed.plan.launch),
         )
 
@@ -828,17 +850,15 @@ class Manager:
                     self.outbox.append((script, WarningMessage(reason=reason)))
         return specs
 
+    def asked(self, pool: str) -> list[Pool]:
+        """What each connected script asks of ``pool``'s workers, newest last."""
+        with self.lock:
+            return [s.pools[pool] for s in self.scripts if pool in s.pools]
+
     def demand(self, pool: str) -> int:
         """Workers ``pool`` should have: busy ones plus jobs it could start."""
         with self.lock:
-            max_workers = max(
-                (
-                    script.pools[pool].max_workers
-                    for script in self.scripts
-                    if pool in script.pools
-                ),
-                default=0,
-            )
+            max_workers = max((a.max_workers for a in self.asked(pool)), default=0)
             busy = sum(1 for lease in self.leases.values() if lease.pool == pool)
             running = Counter(
                 lease.throttle for lease in self.leases.values() if lease.throttle

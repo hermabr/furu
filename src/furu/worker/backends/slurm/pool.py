@@ -7,13 +7,13 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from furu import slurm
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
-from furu.worker.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
+from furu.worker.messages import ErrorMessage, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
     from furu.execution.manager import Manager
@@ -56,7 +56,6 @@ class SlurmWorkerPool:
         definition: SlurmPool,
         directory: Path,
     ) -> None:
-        self.definition: Pool = definition
         self._manager = manager
         self._key = key
         self._use_job_arrays = definition.use_job_arrays
@@ -92,14 +91,12 @@ class SlurmWorkerPool:
             f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
             f"    --pool {shlex.quote(key)} \\\n"
             '    --component "${component}" \\\n'
-            f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log" \\\n'
-            f"    --idle-timeout {definition.idle_timeout_seconds}\n"
+            f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log"\n'
         )
         self._sbatch_args = (
             f"--chdir={directory}",
             # stdout and stderr, merged as Slurm does by default.
             f"--output={log_dir}/{'%A_%a' if self._use_job_arrays else '%j'}.log",
-            f"--job-name={definition.job_name}",
             *definition.sbatch_args,
         )
         self._scale_thread = threading.Thread(
@@ -179,7 +176,8 @@ class SlurmWorkerPool:
             self._last_submit = now
 
         for _ in range(1 if self._use_job_arrays else to_spawn):
-            if self._stop_event.is_set():
+            asked = cast("list[SlurmPool]", self._manager.asked(self._key))
+            if self._stop_event.is_set() or not asked:
                 return
             # One that times out may be queued anyway; such a worker still
             # serves this pool, but goes uncounted until its idle timeout.
@@ -187,6 +185,7 @@ class SlurmWorkerPool:
                 "sbatch",
                 "--parsable",
                 *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
+                f"--job-name={asked[-1].job_name}",  # the newest script's
                 *self._sbatch_args,
                 str(self._script_path),
             )
