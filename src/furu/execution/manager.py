@@ -817,23 +817,15 @@ class Manager:
                     self.outbox.append((script, WarningMessage(reason=reason)))
         return specs
 
-    def asked(self, pool: str) -> list[SlurmPool]:
-        """What each connected script asks of its Slurm workers in ``pool``, newest last."""
+    def asked(self, pool: str) -> list[Pool]:
+        """What each connected script asks of ``pool``'s workers, newest last."""
         with self.lock:
-            pools = (script.pools.get(pool) for script in self.scripts)
-            return [asked for asked in pools if isinstance(asked, SlurmPool)]
+            return [s.pools[pool] for s in self.scripts if pool in s.pools]
 
     def demand(self, pool: str) -> int:
         """Workers ``pool`` should have: busy ones plus jobs it could start."""
         with self.lock:
-            max_workers = max(
-                (
-                    script.pools[pool].max_workers
-                    for script in self.scripts
-                    if pool in script.pools
-                ),
-                default=0,
-            )
+            max_workers = max((a.max_workers for a in self.asked(pool)), default=0)
             busy = sum(1 for lease in self.leases.values() if lease.pool == pool)
             running = Counter(
                 lease.throttle for lease in self.leases.values() if lease.throttle

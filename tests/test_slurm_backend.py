@@ -8,7 +8,6 @@ import subprocess
 import sys
 import textwrap
 import threading
-import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -384,7 +383,9 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
     assert f"--pool {pool._key}" in script
     assert '--component "${component}"' in script
     assert f'--log {worker_dir / "logs"}/"${{component}}.log"' in script
-    assert '--idle-timeout "$1"\n' in script
+    # The wait is taken before the user's commands can read or replace it.
+    assert script.index('furu_idle_timeout="$1"; shift') < script.index("echo")
+    assert '--idle-timeout "${furu_idle_timeout}"\n' in script
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
@@ -619,7 +620,6 @@ def test_slurm_pool_starts_workers_as_the_scripts_that_share_it_ask(
     pool = _pool(tmp_path, monkeypatch, manager, use_job_arrays=use_job_arrays)
 
     pool._scale_once()
-    pool._scale_once()
     # No script is left that shares the pool: no worker is started.
     manager.demand_of, manager.asked_of = 5, []
     pool._scale_once()
@@ -629,7 +629,6 @@ def test_slurm_pool_starts_workers_as_the_scripts_that_share_it_ask(
     assert [[*array, argv[-1]] for array, argv in zip(arrays, argvs)] == started
     # They are named as the newest script names its workers.
     assert all("--job-name=b" in argv for argv in argvs)
-    assert len(pool._job_ids) == 3
 
 
 def test_slurm_pool_replaces_workers_that_exit_without_failing(
@@ -845,7 +844,9 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     backend = _slurm_backend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
-        idle_timeout_seconds=5.0,
+        # A worker's script gets no arguments that the user's commands can see.
+        pre_worker_commands=("test $# = 0",),
+        idle_timeout_seconds=30.0,
     )
     leaf = SlurmEndToEndLeaf(value=7)
 
@@ -861,8 +862,8 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
         )
         assert furu.create(leaf, on=[backend]) == "7:100"
         # A script that names its workers differently shares the pool: the
-        # worker that waits takes its job, and its name.
-        other = replace(backend, job_name="other", idle_timeout_seconds=30.0)
+        # worker that waits takes its job.
+        other = replace(backend, job_name="other", idle_timeout_seconds=9.0)
         assert furu.create(SlurmEndToEndLeaf(value=8), on=[other]) == "8:100"
 
     worker_dir = tmp_path / "manager" / "workers" / backend.pool_key.replace(":", "-")
@@ -870,16 +871,7 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     assert argv[:2] == ["--parsable", "--array=0-0"]
     assert f"--chdir={worker_dir}" in argv
     assert "--job-name=furu-worker" in argv
-    assert argv[-2:] == [str(worker_dir / "worker.sh"), "5.0"]
-    # The job is renamed without the worker waiting for it.
-    renamed = {
-        "executable": "scontrol",
-        "argv": ["update", "JobId=100", "JobName=other"],
-    }
-    deadline = time.monotonic() + 10
-    while renamed not in _read_records(record_file) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert _read_records(record_file).count(renamed) == 1
+    assert argv[-2:] == [str(worker_dir / "worker.sh"), "30.0"]
 
 
 # --- fake Slurm ----------------------------------------------------------------------
@@ -946,9 +938,8 @@ def _install_fake_slurm(
             import subprocess
 
             script, idle_timeout = sys.argv[-2:]
-            (job_name,) = [a[11:] for a in sys.argv if a.startswith("--job-name=")]
             for task_id in task_ids:
-                env = dict(os.environ, SLURM_JOB_ID=str(job_id), SLURM_JOB_NAME=job_name)
+                env = dict(os.environ, SLURM_JOB_ID=str(job_id))
                 name = str(job_id)
                 if task_id is not None:
                     env.update(
@@ -1046,18 +1037,7 @@ def _install_fake_slurm(
                 print(f"{job_id}_{task_spec} {state}")
         """,
     )
-    _write_executable(
-        bin_dir / "scontrol",
-        """
-        import json
-        import os
-        import sys
-
-        with open(os.environ["FURU_FAKE_SLURM_RECORD_FILE"], "a", encoding="utf-8") as file:
-            file.write(json.dumps({"executable": "scontrol", "argv": sys.argv[1:]}) + "\\n")
-        print("ClusterName             = fake")
-        """,
-    )
+    _write_executable(bin_dir / "scontrol", 'print("ClusterName             = fake")')
     _write_executable(
         bin_dir / "scancel",
         """

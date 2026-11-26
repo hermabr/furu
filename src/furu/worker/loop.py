@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import os
 import queue
-import subprocess
 import threading
 import traceback
-from contextlib import suppress
 from pathlib import Path
 from typing import assert_never
 
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
+from furu import slurm
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker import messages
@@ -126,10 +125,9 @@ def worker_loop(
                         # runs. Nice to have: not waited for, and may fail.
                         if job.slurm_job_name not in (None, slurm_job_name):
                             slurm_job_name = job.slurm_job_name
-                            me = f"JobId={os.environ['SLURM_JOB_ID']}"
-                            name = f"JobName={slurm_job_name}"
-                            with suppress(OSError):
-                                subprocess.Popen(["scontrol", "update", me, name])
+                            me, name = f"JobId={component}", f"JobName={slurm_job_name}"
+                            rename = ("scontrol", "update", me, name)
+                            threading.Thread(target=slurm.run, args=rename).start()
                     case messages.CancelMessage():
                         if job is not None:
                             note("cancelled %s; killing child", job.label)

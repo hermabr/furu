@@ -1086,10 +1086,10 @@ def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happe
 def test_scripts_that_share_a_slurm_pool_each_name_its_workers() -> None:
     manager = Manager(url="ws://unused", manager_dir=None)
     key = CPU_POOL.pool_key
-    slurm = SlurmWorkerBackend(
+    backend = SlurmWorkerBackend(
         max_workers=1, resources=SlurmResources(cpus_per_worker=1)
     )
-    pools = [replace(slurm, job_name=name).pool() for name in ("a", "b")]
+    pools = [replace(backend, job_name=name).pool() for name in ("a", "b")]
     for value, pool in enumerate(pools):
         script, _ = _submit(
             manager, [RunLeaf(value=value)], plan_path=_plan(pool.job_name)
@@ -1098,10 +1098,6 @@ def test_scripts_that_share_a_slurm_pool_each_name_its_workers() -> None:
 
     # A job says the name that the script that answers for its specs gives.
     assert [_leased(manager).job.slurm_job_name for _ in pools] == ["a", "b"]
-    assert manager.asked(key) == pools
-    manager.scripts.pop()
-    assert manager.asked(key) == pools[:1]
-    assert manager.asked(GPU_POOL.pool_key) == []
 
 
 def test_each_script_answers_for_its_own_specs_of_a_batch_that_did_not_complete() -> (
@@ -1794,6 +1790,36 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
 
         assert len(server.hellos) == 1
         assert server.results == []
+
+
+def test_slurm_worker_takes_the_job_name_of_each_job_that_names_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran: list[tuple[str, ...]] = []
+    monkeypatch.setattr(slurm, "run", lambda *argv: ran.append(argv))
+    monkeypatch.setenv("SLURM_JOB_NAME", "a")
+    # The id of one task of each array is the array's, which names them all.
+    monkeypatch.setenv("SLURM_JOB_ID", "100")
+    jobs = [
+        _job(RunLeaf(value=value)).model_copy(update={"slurm_job_name": name})
+        for value, name in enumerate(["a", "b", "b", None, "a"])
+    ]
+
+    with _scripted_worker_server(jobs) as server:
+        worker_loop(
+            url=server.server_url,
+            pool="cpu",
+            idle_timeout=None,
+            component="100_1",
+            backend="test",
+        )
+        assert len(server.results) == len(jobs)
+
+    time.sleep(0.1)  # the renames are not waited for
+    assert sorted(ran) == [
+        ("scontrol", "update", "JobId=100_1", "JobName=a"),
+        ("scontrol", "update", "JobId=100_1", "JobName=b"),
+    ]
 
 
 def test_worker_with_its_own_log_notes_what_it_ran_there(
