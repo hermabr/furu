@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from furu.config import _Config
 from furu.logging import _group_label
 from furu.snapshot import CodeLocation
-from furu.spec_metadata import Metadata, Reuse
+from furu.spec_metadata import Metadata, Reuse, Throttle
 from furu.storage._layout import attempt_parent_in, run_name
 
 
@@ -159,11 +159,6 @@ class Batch(_Message):
     cap: int
 
 
-class JobThrottle(_Message):
-    key: str
-    max_running: int
-
-
 class Group(_Message):
     """Specs that run the same way, which is said once for all of them."""
 
@@ -173,7 +168,7 @@ class Group(_Message):
     # The pools that can run them, and the batch each joins there. A spec
     # that runs alone is a batch of one.
     pools: dict[str, Batch]
-    throttle: JobThrottle | None
+    throttles: tuple[Throttle, ...]
 
 
 class SubmitMessage(_Message):

@@ -26,7 +26,7 @@ from furu.config import get_config
 from furu.core import attempt_parent
 from furu.dag import Dag
 from furu.execution.launch import missing
-from furu.execution.manager import Manager, _Lease, _Script
+from furu.execution.manager import Manager, _Lease, _Script, _window_wait
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
 from furu.logging import _display_path, _group_label
@@ -53,7 +53,6 @@ from furu.worker.messages import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
-    JobThrottle,
     Launch,
     LocalPool,
     ProcessSettings,
@@ -201,13 +200,22 @@ def _lease(
     # As Manager._lease does: the stopped batches that are due are checked
     # first, without the lock.
     manager._check_stopped(backend.pool_key)
-    return manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
+    handed = manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
+    return handed if isinstance(handed, _Lease) else None
 
 
 def _leased(manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL) -> _Lease:
     lease = _lease(manager, backend)
     assert lease is not None
     return lease
+
+
+def _wake_at(manager: Manager, backend: LocalThreadWorkerBackend = CPU_POOL) -> float:
+    """When a worker that gets no job is to ask again, by the rate limits."""
+    manager._check_stopped(backend.pool_key)
+    handed = manager._hand_out(cast(ServerConnection, object()), backend.pool_key)
+    assert isinstance(handed, float)
+    return handed
 
 
 def _end(manager: Manager, lease: _Lease, result: JobResult | None = None) -> None:
@@ -332,7 +340,48 @@ class GatedRunLeaf(Spec):
 
 class LimitedRunLeaf(Spec):
     value: int
-    throttle = Throttle(max_running=2)
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(throttles=(Throttle("api", max_running=2),))
+
+    def create(self) -> int:
+        return self.value
+
+
+class RatedLeaf(Spec):
+    """Runs alone, under the limits its fields give the throttle ``api``."""
+
+    value: int
+    max_running: int | None = None
+    max_starts: int | None = None
+    per_seconds: float | None = None
+
+    def metadata(self) -> furu.Metadata:
+        rule = Throttle(
+            "api",
+            max_running=self.max_running,
+            max_starts=self.max_starts,
+            per_seconds=self.per_seconds,
+        )
+        return furu.Metadata(throttles=(rule,))
+
+    def create(self) -> int:
+        return self.value
+
+
+class TwoWindowLeaf(Spec):
+    """Two a minute and three an hour, given in the other order."""
+
+    value: int
+
+    def metadata(self) -> furu.Metadata:
+        per_minute = Throttle("api", max_starts=2, per_seconds=60)
+        per_hour = Throttle("api", max_starts=3, per_seconds=3600)
+        return furu.Metadata(
+            throttles=(per_minute, per_hour)
+            if self.value % 2
+            else (per_hour, per_minute)
+        )
 
     def create(self) -> int:
         return self.value
@@ -429,7 +478,9 @@ class PerGpuBatchedLeaf(furu.Spec):
 
 class ThrottledBatchedRunLeaf(furu.Spec):
     value: int
-    throttle = Throttle(max_running=2)
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(throttles=(Throttle("api", max_running=2),))
 
     def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 3)
@@ -438,6 +489,28 @@ class ThrottledBatchedRunLeaf(furu.Spec):
     def create(
         objs: list["ThrottledBatchedRunLeaf"], directory: furu.SpecDirectory
     ) -> list[int]:
+        return [obj.value for obj in objs]
+
+
+class CountedLeaf(furu.Spec):
+    """A batch of up to 10 whose every spec counts under the throttle ``api``."""
+
+    value: int
+    max_running: int = 4
+    max_starts: int | None = None
+
+    def metadata(self) -> furu.Metadata:
+        rule = Throttle(
+            "api",
+            max_running=self.max_running,
+            max_starts=self.max_starts,
+            per_seconds=None if self.max_starts is None else 60,
+            counts="specs",
+        )
+        return furu.Metadata(throttles=(rule,))
+
+    @furu.batched(lambda spec, _: ((spec.max_running, spec.max_starts), 10))
+    def create(objs: list["CountedLeaf"], directory: furu.SpecDirectory) -> list[int]:
         return [obj.value for obj in objs]
 
 
@@ -573,12 +646,54 @@ def test_a_submit_holds_each_line_once_and_what_each_group_shares() -> None:
     assert len(groups) == len(submit.groups) == 5
     assert groups[sharing[0]._class_dir].specs == _ids(sharing)
     alone = groups[limited._class_dir]
-    assert alone.pools == {cpu: Batch(batch=limited._stored_name, cap=1)}
-    assert alone.throttle == JobThrottle(key=limited._stored_name, max_running=2)
+    # A spec that runs alone queues with the specs that share its throttles.
+    assert alone.pools[cpu].cap == 1
+    assert alone.pools[cpu].batch.startswith(f"{limited._stored_name}:")
+    assert alone.throttles == (Throttle("api", max_running=2),)
     together = groups[batched[0]._class_dir]
     assert together.specs == _ids(batched)
-    assert together.pools[cpu].cap == 10 and together.throttle is None
+    assert together.pools[cpu].cap == 10 and together.throttles == ()
     assert run.left == {spec for group in submit.groups for spec in group.specs}
+    assert SubmitMessage.model_validate_json(submit.model_dump_json()) == submit
+
+
+def test_specs_are_grouped_by_their_throttles_whatever_order_they_are_given_in() -> (
+    None
+):
+    cpu = CPU_POOL.pool_key
+    _, submit = _new_run(
+        [
+            *(TwoWindowLeaf(value=value) for value in range(4)),
+            RatedLeaf(value=1, max_running=1),
+            RatedLeaf(value=2, max_running=2),
+            RatedLeaf(value=3, max_running=1),
+        ],
+        backends=[CPU_POOL],
+    )
+
+    assert SubmitMessage.model_validate_json(submit.model_dump_json()) == submit
+    both, one, two = submit.groups
+    assert len(both.specs) == 4 and len(both.throttles) == 2
+    # Specs of one class with different limits are different queues.
+    assert [len(one.specs), len(two.specs)] == [2, 1]
+    assert one.pools[cpu].batch != two.pools[cpu].batch
+    assert one.pools[cpu].cap == two.pools[cpu].cap == 1
+
+
+def test_a_batch_holds_no_more_specs_than_a_throttle_that_counts_them_lets_start() -> (
+    None
+):
+    cpu = CPU_POOL.pool_key
+
+    def cap(*objs: Spec) -> int:
+        (group,) = _new_run(objs, backends=[CPU_POOL])[1].groups
+        return group.pools[cpu].cap
+
+    assert cap(CountedLeaf(value=1, max_running=20)) == 10
+    assert cap(CountedLeaf(value=1), CountedLeaf(value=2)) == 4
+    assert cap(CountedLeaf(value=1, max_starts=3)) == 3
+    # One that counts jobs says nothing of how many specs a job holds.
+    assert cap(ThrottledBatchedRunLeaf(value=1)) == 3
 
 
 def test_two_metadata_under_one_batch_key_stop_the_run_before_anything_is_sent() -> (
@@ -975,6 +1090,274 @@ def test_a_batch_holds_specs_from_one_plan_and_a_throttle_counts_batches(
     assert _lease(manager) is None
     _end(manager, first)
     assert len(_leased(manager).specs) == 1
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The manager's monotonic clock, set by assigning ``clock[0]``."""
+    now = [1000.0]
+    monkeypatch.setattr(manager_module.time, "monotonic", lambda: now[0])
+    return now
+
+
+def _stopped_on_disk(started: Sequence[Spec]) -> None:
+    """Leave the working folder of a batch of ``started`` that nobody holds."""
+    folder = attempt_parent(started) / "free__9f3c2a7d51b0e6a4"
+    folder.mkdir(parents=True)
+    events.start(folder, [spec._artifact_hash for spec in started], _plan(), _plan())
+
+
+def test_window_wait_is_when_enough_earlier_starts_are_too_old_to_count() -> None:
+    started = [(0.0, 2), (10.0, 1), (30.0, 3)]
+
+    assert _window_wait(started, 7, 60.0, 1, now=40.0) == 40.0
+    assert _window_wait(started, 6, 60.0, 1, now=40.0) == 60.0
+    assert _window_wait(started, 6, 60.0, 3, now=40.0) == 70.0
+    # At the time it gave, the start it waited for no longer counts.
+    assert _window_wait(started, 6, 60.0, 1, now=60.0) == 60.0
+    assert _window_wait(started, 6, 60.0, 3, now=60.0) == 70.0
+    assert _window_wait(started, 6, 60.0, 7, now=40.0) == float("inf")
+    assert _window_wait([], 6, 60.0, 6, now=40.0) == 40.0
+
+
+def test_specs_of_any_class_that_name_a_throttle_share_it() -> None:
+    limited = LimitedRunLeaf(value=0)
+    rated = [RatedLeaf(value=value, max_running=2) for value in range(2)]
+    manager = _manager([limited, *rated])
+
+    first, second = _leased(manager), _leased(manager)
+    assert first.specs + second.specs == _ids([limited, rated[0]])
+    assert first.charges == second.charges == {"api": 1}
+    # Only a job that ends makes room: there is no time to wait for.
+    assert _wake_at(manager) == float("inf")
+    assert manager.started == {}
+
+    _end(manager, first)
+    assert _leased(manager).specs == [rated[1].object_id]
+
+
+def test_a_spec_that_runs_alone_does_not_wait_behind_one_with_other_limits() -> None:
+    strict = [RatedLeaf(value=value, max_running=1) for value in range(2)]
+    loose = RatedLeaf(value=2, max_running=2)
+    manager = _manager([*strict, loose])
+
+    assert _leased(manager).specs == [strict[0].object_id]
+    # The next strict one waits. The loose one, asked for after it, does not.
+    assert _leased(manager).specs == [loose.object_id]
+    assert _lease(manager) is None
+
+
+def test_two_windows_of_one_name_both_hold(clock: list[float]) -> None:
+    start = clock[0]
+    manager = _manager([TwoWindowLeaf(value=value) for value in range(5)])
+    # What demand counts as starting is counted once for the name.
+    assert manager.demand(CPU_POOL.pool_key) == 2
+
+    _leased(manager)
+    clock[0] = start + 50
+    _leased(manager)
+    assert manager.demand(CPU_POOL.pool_key) == 2  # the two that are busy
+    assert _wake_at(manager) == start + 60
+    clock[0] = start + 60
+    _leased(manager)
+
+    clock[0] = start + 70
+    # The minute has room at 110 and the hour at 3600: the later one counts.
+    assert _wake_at(manager) == start + 3600
+    clock[0] = start + 110
+    assert _wake_at(manager) == start + 3600
+    clock[0] = start + 3600
+    assert len(manager.started["api"]) == 3
+    _leased(manager)
+    assert list(manager.started["api"]) == [(start + n, 1) for n in (50, 60, 3600)]
+
+
+def test_a_job_counts_once_or_for_each_spec_under_a_name_both_ways_share() -> None:
+    counted = [CountedLeaf(value=value) for value in range(4)]
+    jobs = [RatedLeaf(value=value, max_running=4) for value in range(2)]
+    manager = _manager([*counted[:3], *jobs])
+
+    batch = _leased(manager)
+    assert batch.specs == _ids(counted[:3]) and batch.charges == {"api": 3}
+    job = _leased(manager)
+    assert job.specs == [jobs[0].object_id] and job.charges == {"api": 1}
+    # Four count as running: no room for a job, nor for a batch of one.
+    _submit(manager, [counted[3]], plan_path=_plan("e2"))
+    assert _lease(manager) is None
+    assert manager.demand(CPU_POOL.pool_key) == 2
+
+    _end(manager, job)
+    assert _leased(manager).specs == [jobs[1].object_id]
+    _end(manager, batch)
+    assert _leased(manager).specs == [counted[3].object_id]
+
+
+def test_a_spec_that_only_limits_what_runs_counts_in_the_windows_of_others(
+    clock: list[float],
+) -> None:
+    start = clock[0]
+    running = [RatedLeaf(value=value, max_running=5) for value in range(3)]
+    rated = RatedLeaf(value=3, max_starts=2, per_seconds=60.0)
+    manager = _manager([*running, rated, RunLeaf(value=4)])
+
+    # No rate limit holds the three back, and each is a start under the name.
+    leases = [_leased(manager)]
+    clock[0] = start + 10
+    leases += [_leased(manager), _leased(manager)]
+    assert [lease.specs[0] for lease in leases] == _ids(running)
+    assert list(manager.started["api"]) == [(start + n, 1) for n in (0, 10, 10)]
+
+    # A spec without throttles goes out, and the rated one once two are old.
+    leases.append(_leased(manager))
+    assert _wake_at(manager) == start + 70
+    for lease in leases:
+        _end(manager, lease)
+    assert manager.demand(CPU_POOL.pool_key) == 0  # not one that starts later
+    clock[0] = start + 70
+    assert manager.demand(CPU_POOL.pool_key) == 1
+    assert _leased(manager).specs == [rated.object_id]
+
+
+def test_a_job_filled_from_a_stopped_batch_goes_out_whole_or_waits() -> None:
+    stopped = [CountedLeaf(value=value) for value in range(3)]
+    unstarted = CountedLeaf(value=3)
+    others = [RatedLeaf(value=value, max_running=4) for value in range(2)]
+    _stopped_on_disk(stopped)
+    manager = _manager([*others, *stopped, unstarted])
+    first, second = _leased(manager), _leased(manager)
+    assert first.specs + second.specs == _ids(others)
+
+    # The unstarted spec alone would fit beside the two. Its job, filled
+    # from the stopped batch, counts four: it waits, and nothing is taken.
+    assert manager.demand(CPU_POOL.pool_key) == 2
+    assert _wake_at(manager) == float("inf")
+    assert [batch.specs for batch in manager.stopped] == [_ids(stopped)]
+
+    # Beside one, the stopped batch fits as it was, and leads.
+    _end(manager, first)
+    assert manager.demand(CPU_POOL.pool_key) == 2
+    alone = _leased(manager)
+    assert alone.specs == _ids(stopped) and alone.charges == {"api": 3}
+    assert _lease(manager) is None
+    assert not any(isinstance(sent, WarningMessage) for sent in _sent(manager))
+    _end(manager, second)
+    assert _leased(manager).specs == [unstarted.object_id]
+
+
+def test_tiny_per_seconds_window_does_not_crash_pruning(clock: list[float]) -> None:
+    # At clock=1000.0, 1000.0 + 1e-15 == 1000.0 in float64; pruning must not
+    # pop the newly appended start or raise IndexError.
+    spec = RatedLeaf(value=1, max_starts=1, per_seconds=1e-15)
+    manager = _manager([spec])
+
+    lease = _leased(manager)
+    assert lease.specs == [spec.object_id]
+
+
+def test_specs_counted_rate_window_and_combined_limits(clock: list[float]) -> None:
+    start = clock[0]
+    counted = [CountedLeaf(value=v, max_running=4, max_starts=3) for v in range(5)]
+    manager = _manager(counted)
+
+    # Cap is clamped to min(10, 4, 3) == 3; first batch charges 3 into the window.
+    first = _leased(manager)
+    assert first.specs == _ids(counted[:3]) and first.charges == {"api": 3}
+    assert manager.demand(CPU_POOL.pool_key) == 1
+    # Both max_running (3 + 2 > 4) and max_starts (3 + 2 > 3) block the tail:
+    # while max_running blocks, waiting on time alone cannot free room.
+    assert _wake_at(manager) == float("inf")
+
+    _end(manager, first)
+    # Now only the rate window blocks; the remaining 2 specs fit once it expires.
+    assert _wake_at(manager) == start + 60.0
+    assert manager.demand(CPU_POOL.pool_key) == 0
+    clock[0] = start + 60.0
+    assert manager.demand(CPU_POOL.pool_key) == 1
+    second = _leased(manager)
+    assert second.specs == _ids(counted[3:]) and second.charges == {"api": 2}
+
+
+def test_late_longer_window_sees_only_history_retained_under_prior_windows(
+    clock: list[float],
+) -> None:
+    start = clock[0]
+    first = RatedLeaf(value=0, max_starts=1, per_seconds=60.0)
+    second = RatedLeaf(value=1, max_starts=1, per_seconds=60.0)
+    hourly = RatedLeaf(value=2, max_starts=1, per_seconds=3600.0)
+    manager = _manager([first, second])
+
+    _end(manager, _leased(manager))
+    clock[0] = start + 61.0
+    # Triggers pruning of the start from t=0 under the 60s window.
+    _end(manager, _leased(manager))
+
+    # A later hourly rule sees the retained start at t=61, not the pruned t=0.
+    _submit(manager, [hourly], plan_path=_plan("e2"))
+    assert _wake_at(manager) == start + 61.0 + 3600.0
+    clock[0] = start + 61.0 + 3600.0
+    assert _leased(manager).specs == [hourly.object_id]
+
+
+def test_a_stopped_batch_larger_than_its_throttle_now_lets_start_is_cut() -> None:
+    # Left by a launch whose limit was five or more.
+    specs = [CountedLeaf(value=value, max_running=3) for value in range(5)]
+    _stopped_on_disk(specs)
+    manager = _manager(specs)
+
+    # Before any worker asked and its folder was looked at: one job of
+    # three can start, and the two that are left wait for it to end.
+    assert manager.demand(CPU_POOL.pool_key) == 1
+    first = _leased(manager)
+    assert first.specs == _ids(specs[:3]) and first.charges == {"api": 3}
+    assert len(_sent(manager)) == 1
+    assert manager.stopped == []
+    assert _lease(manager) is None
+    assert manager.demand(CPU_POOL.pool_key) == 1
+
+    _end(manager, first)
+    assert manager.demand(CPU_POOL.pool_key) == 1
+    assert _leased(manager).specs == _ids(specs[3:])
+
+
+def test_demand_counts_a_stopped_batch_in_jobs_of_the_cap_under_its_throttles() -> None:
+    sweep = [SweepLeaf(value=value) for value in range(5)]
+    throttled = [ThrottledBatchedRunLeaf(value=value) for value in range(7)]
+    _stopped_on_disk(sweep)
+    _stopped_on_disk(throttled)
+
+    # Five are three jobs for a worker of two.
+    assert _manager(sweep, backends=[TINY]).demand(TINY.pool_key) == 3
+    # Seven are three jobs of three, and two may run at once.
+    assert _manager(throttled, backends=[TINY]).demand(TINY.pool_key) == 2
+
+
+def test_a_worker_asks_again_when_a_rate_limit_lets_its_job_start(
+    clock: list[float],
+) -> None:
+    waits: list[float | None] = []
+
+    class Sleeps(threading.Condition):
+        def wait(self, timeout: float | None = None) -> bool:
+            waits.append(timeout)
+            clock[0] += timeout or 0.0
+            return False
+
+    manager = Manager(url="ws://unused", manager_dir=None, lock=Sleeps())
+    specs = [
+        RatedLeaf(value=value, max_starts=1, per_seconds=2.0) for value in range(2)
+    ]
+    _submit(manager, specs)
+    workers = [
+        cast(ServerConnection, type("Open", (), {"state": State.OPEN})()) for _ in specs
+    ]
+
+    leases = [manager._lease(worker, pool=CPU_POOL.pool_key) for worker in workers]
+
+    assert [lease and lease.specs for lease in leases] == [
+        [spec] for spec in _ids(specs)
+    ]
+    # Sooner than the idle check, which nothing else would have cut short.
+    assert waits == [2.0] and manager_module._IDLE_CHECK_INTERVAL_S > 2.0
 
 
 def test_a_spec_goes_to_the_pools_that_can_run_it() -> None:

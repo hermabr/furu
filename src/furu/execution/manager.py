@@ -11,6 +11,11 @@ batches that fit whole, then as much of the oldest stopped batch as there is
 room for. A stopped batch is one that was handed out and did not finish. Its
 working folder is named for its specs in order, so it is continued only when
 it goes out alone.
+
+A batch goes out whole or waits for its throttles: it is never made smaller
+to fit what is left of a limit. The manager holds only what each throttle
+name has running and has started; the limits are each spec's own, and there
+is no fairness guarantee between jobs sharing a name.
 """
 
 from __future__ import annotations
@@ -19,11 +24,12 @@ import json
 import subprocess
 import threading
 import time
-from collections import Counter, OrderedDict
-from collections.abc import Callable, Generator, Iterator
+from collections import Counter, OrderedDict, deque
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from itertools import islice
+from math import inf
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import assert_never
@@ -35,6 +41,7 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 from furu import plan
 from furu.dag import Dag
 from furu.logging import _group_label, get_logger
+from furu.spec_metadata import Throttle
 from furu.storage import attempt_lock
 from furu.storage._layout import (
     attempt_parent_in,
@@ -56,7 +63,6 @@ from furu.worker.messages import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
-    JobThrottle,
     Launch,
     LocalPool,
     Pool,
@@ -115,7 +121,7 @@ class _Placed:
     class_dir: Path
     process: ProcessSettings
     pools: dict[str, Batch]
-    throttle: JobThrottle | None
+    throttles: tuple[Throttle, ...]
 
 
 @dataclass(eq=False, slots=True)
@@ -139,7 +145,8 @@ class _Lease:
     specs: list[str]
     job: Job
     pool: str
-    throttle: str | None
+    # What it counts as under each throttle name while it runs.
+    charges: dict[str, int]
     started: float
 
 
@@ -172,6 +179,10 @@ class Manager:
     # them does not run, until a script asks for them again.
     gave_up: set[str] = field(default_factory=set)
     leases: dict[ServerConnection, _Lease] = field(default_factory=dict)
+    # The starts under each throttle name some spec limits the starts of, as
+    # (when, charge), oldest first, back to the longest window asked of it.
+    started: dict[str, deque[tuple[float, int]]] = field(default_factory=dict)
+    longest_window: dict[str, float] = field(default_factory=dict)
     # Each class folder and pair of plans a smaller batch was warned about.
     warned: set[tuple[Path, frozenset[Path]]] = field(default_factory=set)
     # What to send once the lock is released: a send can wait on its reader.
@@ -311,8 +322,13 @@ class Manager:
         new: dict[Path, list[str]] = {}
         for group in message.groups:
             placed = _Placed(
-                listed, group.class_dir, group.process, group.pools, group.throttle
+                listed, group.class_dir, group.process, group.pools, group.throttles
             )
+            for rule in group.throttles:
+                if rule.per_seconds is not None:
+                    self.longest_window[rule.name] = max(
+                        self.longest_window.get(rule.name, 0.0), rule.per_seconds
+                    )
             for spec in group.specs:
                 holds[spec] = []
                 if spec in self.gave_up:
@@ -606,12 +622,15 @@ class Manager:
             with self.lock:
                 if self.stopping or connection.state is not State.OPEN:
                     return None
-                lease = self._hand_out(connection, pool)
-                if lease is None:
-                    self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
+                handed = self._hand_out(connection, pool)
+                if not isinstance(handed, _Lease):
+                    # Nobody notifies when a rate limit lets a job start.
+                    timeout = min(_IDLE_CHECK_INTERVAL_S, handed - time.monotonic())
+                    if timeout > 0:
+                        self.lock.wait(timeout=timeout)
             self._flush()  # forming a batch can leave a warning
-            if lease is not None:
-                return lease
+            if isinstance(handed, _Lease):
+                return handed
 
     def _check_stopped(self, pool: str) -> bool:
         """Check whether due stopped batches' working folders are free.
@@ -660,50 +679,51 @@ class Manager:
             self.lock.notify_all()
         return True
 
-    def _hand_out(self, connection: ServerConnection, pool: str) -> _Lease | None:
-        """Give a worker of ``pool`` its next job, if there is one for it.
+    def _hand_out(self, connection: ServerConnection, pool: str) -> _Lease | float:
+        """Give a worker of ``pool`` its next job, or say when to ask again.
 
         Unstarted specs go first, in the order they became ready. A stopped
-        batch leads a job only when no unstarted spec can.
+        batch leads a job only when no unstarted spec can. A job its
+        throttles do not let start waits whole, and the next one is tried.
+        With none to give, returns when a rate limit first lets one of them
+        start: inf if only a job that ends can.
         """
-        throttled = self._throttled()
-        lead = next(
-            (
-                placed
-                for plans in self.unstarted.get(pool, {}).values()
-                for queue in plans.values()
-                if not throttled(placed := self.placed[next(iter(queue))])
-            ),
-            None,
-        )
-        unstarted: list[str] = []
-        if lead is not None:
-            batch = lead.pools[pool]
-            queue = self.unstarted[pool][batch.batch][lead.plan]
-            unstarted = list(islice(queue, batch.cap))
-        else:
-            stopped = next(
-                self._startable(
-                    lambda spec: (
-                        pool in self.placed[spec].pools
-                        and not throttled(self.placed[spec])
-                    )
-                ),
-                None,
+        now = time.monotonic()
+        running = self._running()
+        wake_at = inf
+        for placed, queue in self._leads(pool):
+            specs, used = self._plan_batch(pool, placed, queue)
+            charges = _charges(placed.throttles, len(specs))
+            opens = self._opens(placed.throttles, charges, now, running)
+            if opens > now:
+                wake_at = min(wake_at, opens)
+                continue
+            self._commit_batch(pool, placed, specs, used)
+            for name, charge in charges.items():
+                if (window := self.longest_window.get(name)) is not None:
+                    started = self.started.setdefault(name, deque())
+                    while started and started[0][0] + window <= now:
+                        started.popleft()
+                    started.append((now, charge))
+            lease = self.leases[connection] = _Lease(
+                specs, self._job(specs), pool, charges, now
             )
-            if stopped is None:
-                return None
-            lead = self.placed[stopped.specs[0]]
-        specs = self._fill(unstarted, pool, lead)
-        throttle = self.placed[specs[0]].throttle
-        lease = self.leases[connection] = _Lease(
-            specs,
-            self._job(specs),
-            pool,
-            None if throttle is None else throttle.key,
-            time.monotonic(),
-        )
-        return lease
+            return lease
+        return wake_at
+
+    def _leads(self, pool: str) -> Iterator[tuple[_Placed, Iterable[str]]]:
+        """What can lead a job of ``pool``, in the order tried: how it runs, and
+        the unstarted specs it starts with."""
+        for plans in self.unstarted.get(pool, {}).values():
+            for queue in plans.values():
+                yield self.placed[next(iter(queue))], queue
+        tried = set()
+        for stopped in self._startable(lambda spec: pool in self.placed[spec].pools):
+            placed = self.placed[stopped.specs[0]]
+            # Stopped batches that join one another lead the same job.
+            if (job := (placed.plan, placed.pools[pool])) not in tried:
+                tried.add(job)
+                yield placed, ()
 
     def _job(self, specs: list[str]) -> Job:
         """The job that runs ``specs``: their lines and the lines their fields reach."""
@@ -727,22 +747,41 @@ class Manager:
             **dict(placed.plan.launch),
         )
 
-    def _throttled(self) -> Callable[[_Placed], bool]:
-        """Whether a spec's class already runs in as many jobs as its throttle allows.
+    def _running(self) -> Counter[str]:
+        """What the running jobs count as under each throttle name, across all scripts."""
+        running: Counter[str] = Counter()
+        for lease in self.leases.values():
+            running.update(lease.charges)
+        return running
 
-        Throttles count jobs across all scripts, so a running batch counts once.
+    def _opens(
+        self,
+        throttles: tuple[Throttle, ...],
+        charges: dict[str, int],
+        now: float,
+        running: Counter[str],
+        spent: Counter[str] | None = None,
+    ) -> float:
+        """When ``throttles`` let a job with ``charges`` start: ``now`` if they do.
+
+        inf if only a job that ends can make room. ``spent`` is what jobs
+        that start before it at ``now`` count as.
         """
-        running = Counter(
-            lease.throttle for lease in self.leases.values() if lease.throttle
-        )
-
-        def throttled(placed: _Placed) -> bool:
-            throttle = placed.throttle
-            return (
-                throttle is not None and running[throttle.key] >= throttle.max_running
-            )
-
-        return throttled
+        opens = now
+        for rule in throttles:
+            charge = charges[rule.name] + (0 if spent is None else spent[rule.name])
+            if (
+                rule.max_running is not None
+                and running[rule.name] + charge > rule.max_running
+            ):
+                return inf
+            if rule.max_starts is not None and rule.per_seconds is not None:
+                started = self.started.get(rule.name, ())
+                wait = _window_wait(
+                    started, rule.max_starts, rule.per_seconds, charge, now
+                )
+                opens = max(opens, wait)
+        return opens
 
     def _startable(self, wanted: Callable[[str], bool]) -> Iterator[_Stopped]:
         """The stopped batches that can go out now, oldest first.
@@ -761,13 +800,14 @@ class Manager:
             ):
                 yield stopped
 
-    def _fill(self, specs: list[str], pool: str, placed: _Placed) -> list[str]:
-        """Make ``specs``, unstarted, the job of a worker of ``pool``, filled from stopped batches.
+    def _plan_batch(
+        self, pool: str, placed: _Placed, queue: Iterable[str]
+    ) -> tuple[list[str], list[_Stopped]]:
+        """The job a worker of ``pool`` would get that the unstarted ``queue``
+        leads, and the stopped batches it takes specs from. Changes nothing.
 
-        Those that fit whole go in first, then as much of the oldest as there
-        is room for. The rest of a batch that was cut are unstarted specs
-        again. A stopped batch that is not the whole job starts over in a new
-        working folder, and its script is told where the old one is.
+        The job is filled from stopped batches: those that fit whole go in
+        first, then as much of the oldest as there is room for.
         """
         listed, batch = placed.plan, placed.pools[pool]
 
@@ -775,8 +815,7 @@ class Manager:
             other = self.placed[spec]
             return other.plan is listed and other.pools.get(pool) == batch
 
-        for spec in specs:
-            self._unqueue(spec)
+        specs = list(islice(queue, batch.cap))
         used: list[_Stopped] = []
         if len(specs) < batch.cap:
             startable = list(self._startable(joins))
@@ -791,7 +830,21 @@ class Manager:
                     room = batch.cap - len(specs)
                     specs += [spec for spec in stopped.specs if joins(spec)][:room]
                     used.append(stopped)
+        return specs, used
+
+    def _commit_batch(
+        self, pool: str, placed: _Placed, specs: list[str], used: list[_Stopped]
+    ) -> None:
+        """Make a planned job the job of a worker of ``pool``.
+
+        The rest of a batch that was cut are unstarted specs again. A
+        stopped batch that is not the whole job starts over in a new working
+        folder, and its script is told where the old one is.
+        """
+        listed, batch = placed.plan, placed.pools[pool]
         taken = set(specs)
+        for spec in specs:
+            self._unqueue(spec)
         for stopped in used:
             self.stopped.remove(stopped)
             for spec in stopped.specs:
@@ -826,10 +879,14 @@ class Manager:
                     )
                     logger.warning("%s", reason)
                     self.outbox.append((script, WarningMessage(reason=reason)))
-        return specs
 
     def demand(self, pool: str) -> int:
-        """Workers ``pool`` should have: busy ones plus jobs it could start."""
+        """Workers ``pool`` should have: busy ones plus jobs it could start now.
+
+        Jobs are counted in the order they would go out, each one charged to
+        its throttles. A stopped batch counts before its working folder is
+        known to be free: it is only looked at once a worker asks.
+        """
         with self.lock:
             max_workers = max(
                 (
@@ -839,28 +896,83 @@ class Manager:
                 ),
                 default=0,
             )
-            busy = sum(1 for lease in self.leases.values() if lease.pool == pool)
-            running = Counter(
-                lease.throttle for lease in self.leases.values() if lease.throttle
-            )
-            startable = sum(
-                not stopped.held
-                and pool in self.placed[stopped.specs[0]].pools
-                and not any(map(self.dag.waits, stopped.specs))
-                for stopped in self.stopped
-            )
+            now = time.monotonic()
+            running, spent = self._running(), Counter()
+            jobs = sum(1 for lease in self.leases.values() if lease.pool == pool)
+            if jobs >= max_workers:
+                return max_workers
+
+            stopped_by_job: dict[tuple[_Plan, Batch], tuple[_Placed, int]] = {}
+            for batch in self.stopped:
+                if (
+                    not batch.held
+                    and pool in (lead := self.placed[batch.specs[0]]).pools
+                    and not any(map(self.dag.waits, batch.specs))
+                ):
+                    key = (lead.plan, lead.pools[pool])
+                    _, total = stopped_by_job.get(key, (lead, 0))
+                    stopped_by_job[key] = (lead, total + len(batch.specs))
+
+            def count_chunks(placed: _Placed, left: int) -> bool:
+                nonlocal jobs
+                cap, throttles = placed.pools[pool].cap, placed.throttles
+                started_any = False
+                while left > 0 and jobs < max_workers:
+                    size = min(left, cap)
+                    charges = _charges(throttles, size)
+                    if self._opens(throttles, charges, now, running, spent) > now:
+                        break
+                    spent.update(charges)
+                    jobs += 1
+                    left -= size
+                    started_any = True
+                return started_any
+
             for plans in self.unstarted.get(pool, {}).values():
-                if busy + startable >= max_workers:
-                    break
                 for queue in plans.values():
+                    if jobs >= max_workers:
+                        return max_workers
                     placed = self.placed[next(iter(queue))]
-                    jobs = -(-len(queue) // placed.pools[pool].cap)
-                    if (throttle := placed.throttle) is not None:
-                        free = throttle.max_running - running[throttle.key]
-                        jobs = max(0, min(jobs, free))
-                        running[throttle.key] += jobs
-                    startable += jobs
-            return min(busy + startable, max_workers)
+                    key = (placed.plan, placed.pools[pool])
+                    stopped_count = (
+                        stopped_by_job[key][1] if key in stopped_by_job else 0
+                    )
+                    if count_chunks(placed, len(queue) + stopped_count):
+                        stopped_by_job.pop(key, None)
+
+            for placed, left in stopped_by_job.values():
+                if jobs >= max_workers:
+                    return max_workers
+                count_chunks(placed, left)
+            return min(jobs, max_workers)
+
+
+def _charges(throttles: Iterable[Throttle], size: int) -> dict[str, int]:
+    """What a job of ``size`` specs counts as under each name of ``throttles``."""
+    return {rule.name: 1 if rule.counts == "jobs" else size for rule in throttles}
+
+
+def _window_wait(
+    started: Iterable[tuple[float, int]],
+    max_starts: int,
+    per_seconds: float,
+    charge: int,
+    now: float,
+) -> float:
+    """When ``charge`` more may start under ``max_starts`` per ``per_seconds``.
+
+    ``now`` if they may at once, and inf if not even once every start in
+    ``started``, each a (when, charge) and the oldest first, is too old to count.
+    """
+    live = [(ts, n) for ts, n in started if ts + per_seconds > now]
+    excess = sum(n for _, n in live) + charge - max_starts
+    if excess <= 0:
+        return now
+    for ts, n in live:
+        excess -= n
+        if excess <= 0:
+            return ts + per_seconds
+    return inf
 
 
 def _peer(connection: ServerConnection) -> str:

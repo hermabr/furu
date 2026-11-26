@@ -35,7 +35,7 @@ from furu.migration.steps import MigrationStep, naming, stored_name
 from furu.resources import Worker
 from furu.serializer.artifact import field_fingerprints, is_default
 from furu.serializer.registry import Serializer
-from furu.spec_metadata import Metadata, Throttle
+from furu.spec_metadata import Metadata
 from furu.storage import attempt_lock
 from furu.storage._layout import (
     attempt_parent_in,
@@ -63,7 +63,7 @@ class Missing(Exception):
     pass
 
 
-_SPEC_CLASS_ATTRIBUTES = frozenset({"migrations", "throttle", "artifact_serializers"})
+_SPEC_CLASS_ATTRIBUTES = frozenset({"migrations", "artifact_serializers"})
 _RESERVED_FIELD_NAMES = frozenset(
     {
         "create",
@@ -73,7 +73,6 @@ _RESERVED_FIELD_NAMES = frozenset(
         "load_existing",
         "delete",
         "migrations",
-        "throttle",
         "artifact_serializers",
         "runs_on",
     }
@@ -116,7 +115,6 @@ class Spec(_FuruDataclassTransform, ABC):
     """
 
     _furu_create_hook: ClassVar[Callable[..., Any] | _BatchedHook]
-    throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
     artifact_serializers: ClassVar[tuple[type[Serializer], ...]] = ()
     # Whether the spec was built from a plan line, which gives it what naming

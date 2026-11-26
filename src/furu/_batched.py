@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import fields
+from dataclasses import asdict, fields
 from typing import TYPE_CHECKING, Any, NamedTuple, overload
 
 from furu.resources import Worker
@@ -33,15 +33,22 @@ def batch_of(
     The name is the class, the batch key written as a field is in a plan
     line, and the cap, so two launches give the same batch the same name. A
     key that a field could not hold is refused. A spec without
-    ``@furu.batched`` runs alone: a batch of one.
+    ``@furu.batched`` runs alone: a batch of one, named for its throttles
+    too, so the specs of one queue start under the same limits.
 
     A batch is one create() call in one process that publishes one folder,
     so two specs with one batch key and different Metadata stop the launch.
-    ``firsts`` holds the first spec seen in each batch on each worker.
+    ``firsts`` holds the first spec seen in each batch on each worker. A
+    throttle that counts specs is charged for each one in a batch, so a
+    batch holds no more than such a limit lets start.
     """
+    throttles = obj._metadata.throttles
     hook = getattr(type(obj), "_furu_create_hook", None)
     if not isinstance(hook, _BatchedHook):
-        return obj._stored_name, 1
+        if not throttles:
+            return obj._stored_name, 1
+        written = _stable_json_dump([asdict(rule) for rule in throttles])
+        return f"{obj._stored_name}:{written}", 1
     key, cap = hook.batch_fn(obj, worker)
     if type(cap) is not int or cap < 1:
         raise TypeError(
@@ -64,7 +71,14 @@ def batch_of(
             "Metadata: give the specs different batch keys or the same "
             "Metadata."
         )
-    return name, cap
+    limits = [
+        limit
+        for rule in throttles
+        if rule.counts == "specs"
+        for limit in (rule.max_running, rule.max_starts)
+        if limit is not None
+    ]
+    return name, min([cap, *limits])
 
 
 class batched:

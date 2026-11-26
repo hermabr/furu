@@ -37,7 +37,6 @@ from furu.worker.messages import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
-    JobThrottle,
     Launch,
     ProcessSettings,
     RerunMessage,
@@ -90,8 +89,9 @@ class Run:
     def place(self, objs: Sequence[Spec]) -> list[Group]:
         """Say how ``objs`` run, and wait for the ones that are new to this run.
 
-        Specs that run the same way are one group: the same class folder and
-        process, and on each pool that can run them the same batch.
+        Specs that run the same way are one group: the same class folder,
+        process and throttles, and on each pool that can run them the same
+        batch.
         """
         groups: dict[tuple[object, ...], Group] = {}
         nowhere = []
@@ -110,9 +110,9 @@ class Run:
                 tuple(sorted(metadata.environment.items())),
                 metadata.required_environment_variables,
                 metadata.reuse,
+                metadata.throttles,
             )
             if (group := groups.get(how)) is None:
-                throttle = obj.throttle
                 group = groups[how] = Group(
                     specs=[],
                     class_dir=obj._class_dir,
@@ -120,11 +120,7 @@ class Run:
                     pools={
                         key: Batch(batch=name, cap=cap) for key, (name, cap) in pools
                     },
-                    throttle=None
-                    if throttle is None
-                    else JobThrottle(
-                        key=obj._stored_name, max_running=throttle.max_running
-                    ),
+                    throttles=metadata.throttles,
                 )
             group.specs.append(obj.object_id)
         if nowhere:

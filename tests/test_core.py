@@ -7,7 +7,6 @@ import types
 from dataclasses import (
     FrozenInstanceError,
     dataclass,
-    fields,
     is_dataclass,
     replace,
 )
@@ -62,14 +61,6 @@ class Node(Spec):
 
     def create(self) -> str:
         return f"Node({self.name})"
-
-
-class ThrottleIdentityNode(Spec):
-    name: str
-    throttle = Throttle(max_running=1)
-
-    def create(self) -> str:
-        return self.name
 
 
 class WeightedNode(Node):
@@ -616,7 +607,6 @@ def test_reserved_field_name_raises_at_class_creation():
         "load_existing",
         "delete",
         "migrations",
-        "throttle",
     ):
         assert f"'{name}'" in message
 
@@ -1106,38 +1096,75 @@ def test_worker_here_counts_cuda_visible_devices(
     assert Worker.here().cpus >= 1
 
 
-def test_throttle_defaults_to_none():
-    assert Node(name="x").throttle is None
+def test_a_throttle_takes_a_name_and_limits_and_says_what_it_counts():
+    assert Throttle("api", max_running=5) == Throttle(
+        name="api", max_running=5, max_starts=None, per_seconds=None, counts="jobs"
+    )
+    per_minute = Throttle("api", max_starts=3, per_seconds=60, counts="specs")
+    assert type(per_minute.per_seconds) is float and per_minute.per_seconds == 60.0
 
 
-def test_throttle_can_be_overridden_as_class_attribute():
-    class LimitedNode(Spec):
-        name: str
-        throttle = Throttle(max_running=5)
+@pytest.mark.parametrize(
+    ("limits", "match"),
+    [
+        ({"name": "", "max_running": 1}, "needs a name"),
+        ({"name": "api"}, "needs max_running or max_starts"),
+        ({"name": "api", "max_starts": 1}, "go together"),
+        ({"name": "api", "max_running": 1, "per_seconds": 1.0}, "go together"),
+        ({"name": "api", "max_running": 0}, "max_running must be a positive int"),
+        ({"name": "api", "max_running": True}, "max_running must be a positive int"),
+        ({"name": "api", "max_running": 2.0}, "max_running must be a positive int"),
+        (
+            {"name": "api", "max_starts": 0, "per_seconds": 1.0},
+            "max_starts must be a positive int",
+        ),
+        *(
+            (
+                {"name": "api", "max_starts": 1, "per_seconds": per_seconds},
+                "per_seconds must be positive",
+            )
+            for per_seconds in (
+                0,
+                -1.0,
+                True,
+                float("inf"),
+                float("nan"),
+                10**400,
+                "60",
+            )
+        ),
+        ({"name": "api", "max_running": 1, "counts": "tokens"}, "counts must be"),
+    ],
+)
+def test_a_throttle_refuses_limits_it_cannot_keep(limits: dict[str, Any], match: str):
+    with pytest.raises(ValueError, match=match):
+        Throttle(**limits)
 
-        def create(self) -> str:
-            return self.name
 
-    assert LimitedNode(name="x").throttle == Throttle(max_running=5)
-    assert "throttle" not in {field.name for field in fields(LimitedNode)}
+def test_metadata_holds_its_throttles_in_one_order_and_one_name_counts_one_thing():
+    per_minute = Throttle("api", max_starts=3, per_seconds=60)
+    per_hour = Throttle("api", max_starts=100, per_seconds=3600)
+    at_once = Throttle("gpu", max_running=2, counts="specs")
+
+    one = Metadata(throttles=(at_once, per_minute, per_hour, per_minute))
+    assert one == Metadata(throttles=(per_hour, at_once, per_minute))
+    assert one.throttles == (per_minute, per_hour, at_once)
+
+    with pytest.raises(ValueError, match="throttle 'api' counts both jobs and specs"):
+        Metadata(throttles=(per_minute, Throttle("api", max_running=1, counts="specs")))
+    with pytest.raises(TypeError, match="throttles must contain Throttle"):
+        Metadata(throttles=cast(Any, ("api",)))
 
 
-def test_throttle_does_not_affect_object_identity():
-    original_throttle = ThrottleIdentityNode.throttle
-    before = ThrottleIdentityNode(name="x")
-    before_class_part = before._class_part
-    before_artifact_hash = before._artifact_hash
-    before_object_id = before.object_id
+def test_throttles_do_not_affect_object_identity(monkeypatch: pytest.MonkeyPatch):
+    before = Node(name="x")
+    throttled = Metadata(throttles=(Throttle("api", max_running=5),))
+    monkeypatch.setattr(Node, "metadata", lambda self: throttled)
+    after = Node(name="x")
 
-    try:
-        ThrottleIdentityNode.throttle = Throttle(max_running=5)
-        after = ThrottleIdentityNode(name="x")
-    finally:
-        ThrottleIdentityNode.throttle = original_throttle
-
-    assert after._class_part == before_class_part
-    assert after._artifact_hash == before_artifact_hash
-    assert after.object_id == before_object_id
+    assert after._metadata.throttles
+    assert after._class_dir == before._class_dir
+    assert after.object_id == before.object_id
 
 
 def test_runs_on_can_depend_on_fields():
