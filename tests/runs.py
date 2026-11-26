@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from furu import Spec
+from furu.config import get_config
 from furu.core import attempt_parent
 from furu.storage import attempt_lock
 from furu.storage._layout import FIXED, log_path_in, run_dir_in
@@ -57,3 +58,12 @@ def ends_of(specs: Spec | Sequence[Spec]) -> list[dict[str, Any]]:
         for event in events_of(specs)
         if event["event"] == "end"
     ]
+
+
+def stored_files() -> dict[Path, bytes | None]:
+    """Every path in furu's directories, with what each file holds."""
+    return {
+        path: path.read_bytes() if path.is_file() else None
+        for _, directory in get_config().directories.anchored()
+        for path in sorted(directory.rglob("*"))
+    }

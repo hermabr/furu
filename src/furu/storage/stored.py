@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from furu._batched import is_batched
 from furu.code_trace import versions
+from furu.config import get_config
 from furu.dependencies import record_loaded
 from furu.migration.schema import check_defaults
 from furu.result.bundle import load_result_bundle
@@ -78,10 +79,11 @@ def look_again(class_dir: Path) -> None:
     folder above the name is opened or listed. Opening does not read the
     names, of which runs/ can hold very many.
     """
-    for version in version_dirs_in(class_dir):
-        for folder in (version, runs_dir_in(version)):
-            with suppress(OSError):
-                os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
+    for layer in get_config().layers(class_dir):
+        for version in version_dirs_in(layer):
+            for folder in (version, runs_dir_in(version)):
+                with suppress(OSError):
+                    os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
 
 
 def _listed(version: Path, batches: bool) -> dict[str, _First]:
@@ -131,14 +133,21 @@ class Stored:
         self._listed: dict[tuple[Path, bool], dict[str, _First]] = {}
 
     def _versions(self, obj: Spec) -> list[Path]:
-        """The code versions whose runs count for obj: the live ones."""
+        """The code versions whose runs count for obj: the live ones.
+
+        With an overlay, those in it and those under it.
+        """
         class_dir, code_version = obj._class_dir, obj._metadata.code_version
         if (class_dir, code_version) not in self._live:
-            self._live[class_dir, code_version] = (
-                [class_dir / FIXED]
-                if code_version == "fixed"
-                else [version for version, why in versions(class_dir) if why is None]
-            )
+            self._live[class_dir, code_version] = [
+                version
+                for layer in get_config().layers(class_dir)
+                for version in (
+                    [layer / FIXED]
+                    if code_version == "fixed"
+                    else [version for version, why in versions(layer) if why is None]
+                )
+            ]
         return self._live[class_dir, code_version]
 
     def row(self, obj: Spec) -> Row | None:
@@ -188,7 +197,8 @@ def why_rerun(class_dir: Path, run: str) -> str | None:
     """Why the newest run of this name under traced code no longer counts, if any."""
     outdated = [
         (folder.stat().st_mtime_ns, why)
-        for version, why in versions(class_dir)
+        for layer in get_config().layers(class_dir)
+        for version, why in versions(layer)
         if why is not None and (folder := run_dir_in(version, run)).is_dir()
     ]
     return max(outdated)[1] if outdated else None

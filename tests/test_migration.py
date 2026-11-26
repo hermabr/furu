@@ -15,11 +15,12 @@ from runs import run_of
 
 import furu
 from furu import Added, MovedFrom, Renamed, Spec, plan
-from furu.config import get_config
+from furu.config import _Config, get_config
 from furu.execution.launch import stage_table
 from furu.migration import schema
 from furu.migration.steps import MigrationError, naming
 from furu.storage._layout import schema_path_in
+from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 _runs = itertools.count()
@@ -842,3 +843,45 @@ def test_a_step_that_does_not_fit_the_class_is_refused(
 ) -> None:
     with pytest.raises(TypeError, match=problem):
         declare()
+
+
+def test_an_overlay_records_a_new_default_in_its_own_schema(overlaid: _Config) -> None:
+    def declaring(default: float) -> Callable[..., Spec]:
+        return _spec(
+            lemma=str,
+            min_overlap=(float, default),
+            migrations=(Added("min_overlap", default=default),),
+        )
+
+    before = _spec(lemma=str)
+    stored = before(lemma="comer").create()
+    under = schema_path_in(before(lemma="comer")._class_dir)
+    recorded = under.read_text()
+
+    with override_config(overlaid):
+        spec = declaring(0.5)(lemma="comer")
+        assert spec.create() == stored
+        # Only the step: the names are in the file under it.
+        assert _schema_lines(spec) == [{"added": "min_overlap", "default": 0.5}]
+        with pytest.raises(MigrationError, match="recorded 0.5"):
+            _ = declaring(0.8)(lemma="comer").done
+    assert under.read_text() == recorded
+
+    # A default recorded under the overlay since is the one that counts in it.
+    assert declaring(0.8)(lemma="comer").create() == stored
+    with override_config(overlaid), pytest.raises(MigrationError, match="recorded 0.8"):
+        _ = declaring(0.5)(lemma="comer").done
+
+
+def test_an_overlay_launch_asks_about_results_stored_under_it(
+    overlaid: _Config,
+) -> None:
+    before = _spec(lemma=str)
+    after = _spec(lemma=str, min_overlap=(float, 0.5))
+    before(lemma="comer").create()
+
+    with (
+        override_config(overlaid),
+        pytest.raises(MigrationError, match="would leave stored results behind"),
+    ):
+        after(lemma="comer").create()

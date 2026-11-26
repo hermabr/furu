@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
+from furu.config import get_config
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -99,6 +100,8 @@ def short_lock(path: Path) -> Generator[None]:
     stay right then too.
     """
     mine = secrets.token_hex(8)
+    # The class folder of an overlay is new when the one it stands for has the file.
+    path.parent.mkdir(parents=True, exist_ok=True)
     while True:
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -132,19 +135,25 @@ def short_lock(path: Path) -> Generator[None]:
 
 
 def _read(path: Path) -> list[dict[str, Any]] | None:
-    """The file's whole lines; None when there is no file."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        if _missing(exc):
-            return None
-        raise
-    lines = []
-    for line in text.splitlines():
+    """The file's whole lines; None when there is no file.
+
+    A file in the overlay goes on from the one it stands for, whose lines
+    come first.
+    """
+    lines = None
+    for layer in reversed(get_config().layers(path)):
         try:
-            lines.append(json.loads(line))
-        except ValueError:  # blank, or cut short when its writer was killed
-            continue
+            text = layer.read_text(encoding="utf-8")
+        except OSError as exc:
+            if _missing(exc):
+                continue
+            raise
+        lines = lines or []
+        for line in text.splitlines():
+            try:
+                lines.append(json.loads(line))
+            except ValueError:  # blank, or cut short when its writer was killed
+                continue
     return lines
 
 

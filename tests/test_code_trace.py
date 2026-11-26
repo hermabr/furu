@@ -8,7 +8,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from runs import ends_of, run_of, working_folder
+from runs import ends_of, run_of, stored_files, working_folder
 from tracedrepo import Repo, fresh_process
 
 import furu
@@ -524,6 +524,92 @@ def test_a_traced_dependency_change_reruns_only_traced_consumers(
     repo.edit("child.py", "return n + 2", "return n + 1")
 
     assert _version(traced) == traced_before
+
+
+def test_an_overlay_builds_on_the_code_versions_under_it(
+    repo: Repo, dependencies: ModuleType, overlaid: _Config
+) -> None:
+    child = dependencies.Child(n=1)
+    assert child.create() == 2
+    name = _built_on_name(child)
+    stored = stored_files()
+    assert overlaid.overlay is not None
+
+    with override_config(overlaid):
+        parent = dependencies.TracedParent(n=1)
+        assert parent.create() == 102
+        # The child's version has the name it has with no overlay.
+        assert run_of(parent).is_relative_to(overlaid.overlay)
+        assert _trace(parent)["built_on"] == [name]
+        fresh_process()
+        assert dependencies.TracedParent(n=1).done
+
+        # An edit under the overlay reaches what the overlay built on it.
+        repo.edit("child.py", "return n + 1", "return n + 2")
+        assert not dependencies.TracedParent(n=1).done
+        parents = repo.load("parents")
+        assert parents.TracedParent(n=1).create() == 103
+        child = parents.Child(n=1)
+        assert run_of(child).is_relative_to(overlaid.overlay)
+        assert _trace(parents.TracedParent(n=1))["built_on"] == [_built_on_name(child)]
+        fresh_process()
+        assert parents.TracedParent(n=1).done
+
+        repo.edit("child.py", "return n + 2", "return n + 1")
+        assert _built_on_name(repo.load("parents").Child(n=1)) == name
+        assert repo.load("parents").TracedParent(n=1).create() == 102
+
+    assert stored_files() == stored
+
+
+STORAGES = """\
+from pathlib import Path
+
+import furu
+
+
+class Elsewhere(furu.Spec):
+    n: int
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(storage=Path("ELSEWHERE"), code_version="traced")
+
+    def create(self) -> int:
+        return self.n + 1
+
+
+class Here(furu.Spec):
+    n: int
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        return Elsewhere(n=self.n).create() + 100
+"""
+
+
+def test_an_overlay_names_a_code_version_in_other_storage_as_no_overlay_does(
+    repo: Repo, overlaid: _Config, tmp_path: Path
+) -> None:
+    repo.write("storages.py", STORAGES.replace("ELSEWHERE", str(tmp_path / "kept")))
+    storages = repo.load("storages")
+    assert storages.Elsewhere(n=1).create() == 2
+    assert overlaid.overlay is not None
+
+    with override_config(overlaid):
+        here = storages.Here(n=1)
+        assert here.create() == 102
+        assert run_of(here).is_relative_to(overlaid.overlay)
+        in_overlay = _version(here), _trace(here)["built_on"]
+        fresh_process()
+        assert storages.Here(n=1).done
+
+    here = storages.Here(n=1)
+    assert not here.done
+    assert here.create() == 102
+    assert (_version(here), _trace(here)["built_on"]) == in_overlay
+    assert in_overlay[1][0].startswith("..")
 
 
 def test_a_fixed_create_cannot_load_a_traced_result(dependencies: ModuleType) -> None:

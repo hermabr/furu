@@ -69,6 +69,24 @@ def test_furu_data_directories_do_not_count_as_changes(git_repo: Path) -> None:
         _require_pushed(git_repo)
 
 
+def test_an_overlay_does_not_count_as_changes_and_no_directory_is_made(
+    git_repo: Path,
+) -> None:
+    data = get_config().model_dump()
+    data["directories"] = {
+        name: git_repo / "furu-data" / name for name in data["directories"]
+    }
+    data["overlay"] = git_repo / "debug"
+    config = _Config.model_validate(data)
+    result = config.write_directories.objects / "result.txt"
+    result.parent.mkdir(parents=True)
+    result.write_text("x\n")
+
+    with override_config(config):
+        _require_pushed(git_repo)
+    assert not (git_repo / "furu-data").exists()
+
+
 def test_long_change_lists_are_truncated(git_repo: Path) -> None:
     for i in range(12):
         (git_repo / f"new{i:02}.txt").write_text("x\n")

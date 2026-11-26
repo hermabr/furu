@@ -11,14 +11,15 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from runs import run_of
+from runs import run_of, stored_files
 from tracedrepo import Repo, fresh_process
 
 import furu
 from furu import Spec, plan
-from furu.config import get_config
+from furu.config import _Config, get_config
 from furu.storage._layout import remembered_dir_in
 from furu.storage.attempt_lock import HeldError
+from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 # The seeds of each call of LooTable.runs in this process.
@@ -626,3 +627,29 @@ def test_a_create_that_a_method_runs_reads_a_list_that_was_filled_before_the_cal
 def test_a_spec_built_from_an_init_only_value_is_copied_without_it() -> None:
     assert SCALED.parts == [Cifar(split="s4")]
     assert ScaledSweep(name="sweep").runs == [Cifar(split="s4")]
+
+
+def test_an_overlay_goes_on_from_what_is_remembered_under_it(overlaid: _Config) -> None:
+    data = Cifar(split="train")
+    assert furu.create(LooTable(data=data, seeds=2)) == 1
+    assert _calls == [2]
+    stored = stored_files()
+    assert overlaid.overlay is not None
+
+    fresh_process()
+    with override_config(overlaid):
+        assert LooTable(data=data, seeds=2).done
+        assert _calls == [2]  # the line under the overlay holds
+
+        table = LooTable(data=data, seeds=3)
+        assert furu.create(table) == 3
+        assert _calls == [2, 3]
+        (line,) = _remembered(table)
+        assert line["returned"] == table._returned["runs"]
+        assert remembered_dir_in(table._class_dir).is_relative_to(overlaid.overlay)
+
+        fresh_process()
+        assert LooTable(data=data, seeds=3).done
+        assert _calls == [2, 3]
+
+    assert stored_files() == stored

@@ -190,7 +190,7 @@ class Returned:
         the specs in it, on a copy of each that was named or filled before
         (`fresh`). It fills the field and is remembered.
         """
-        class_dir, storage = obj._class_dir, obj._metadata.storage
+        class_dir, storage = obj._class_dir, obj._storage
         if (known := remember.lookup(class_dir, name, fields, storage)) is not None:
             return known
         with (
