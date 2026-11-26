@@ -101,6 +101,7 @@ class _Script:
     # The plans it sent lines of, by file: its launch's, and one for each
     # process whose create() asked for specs.
     plans: dict[Path, _Plan] = field(default_factory=dict)
+    overlay: Path | None = None
 
     def send(self, message: _ToScript) -> None:
         with suppress(ConnectionClosed):
@@ -134,23 +135,15 @@ class _Stopped:
     why: str | None = ""
 
 
-@dataclass(eq=False, slots=True)
-class _Lease:
-    specs: list[str]
-    job: Job
-    pool: str
-    throttle: str | None
-    started: float
-
-
 @dataclass(eq=False)
-class Manager:
-    url: str
-    manager_dir: Path | None  # None for a script's in-process manager
-    lock: threading.Condition = field(default_factory=threading.Condition)
-    scripts: list[_Script] = field(default_factory=list)
-    pools: dict[str, WorkerPool] = field(default_factory=dict)
-    stopping: bool = False
+class _Scope:
+    """One store's queue and graph: the real store (``overlay=None``) or one overlay.
+
+    Isolates spec deduplication, DAG waits, stopped batches, and notifications
+    between concurrent real and overlay launches while sharing worker pools.
+    """
+
+    overlay: Path | None
     # What every spec that is not finished waits for.
     dag: Dag = field(default_factory=Dag)
     # The specs that a connected script asked for and that are not finished,
@@ -171,11 +164,244 @@ class Manager:
     # The specs a script gave up on. They stay unfinished, so what waits for
     # them does not run, until a script asks for them again.
     gave_up: set[str] = field(default_factory=set)
-    leases: dict[ServerConnection, _Lease] = field(default_factory=dict)
     # Each class folder and pair of plans a smaller batch was warned about.
     warned: set[tuple[Path, frozenset[Path]]] = field(default_factory=set)
+
+    def find_stopped(self, class_dir: Path, specs: list[str]) -> None:
+        """Take as stopped the working folders on disk that hold only ``specs``,
+        none of which waits for another.
+
+        They were left by workers this manager did not hand them to, or
+        does not remember. One whose worker is still alive is that worker's
+        by its name.
+        """
+        runs = [
+            name for name in list_names(attempts_dir_in(class_dir)) if "." not in name
+        ]
+        by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
+        for run in runs:
+            attempt = attempt_lock.current(attempt_parent_in(class_dir, run))
+            hashes = [
+                spec
+                for opened in (read_events(attempt)[:1] if attempt else ())
+                for spec in opened.get("specs", ())
+            ]
+            if hashes and all(
+                spec in by_hash and by_hash[spec] not in self.stopped_in
+                for spec in hashes
+            ):
+                batch = [by_hash[spec] for spec in hashes]
+                # One that waits for another could never go out with it.
+                if not any(
+                    spec in batch
+                    for one in batch
+                    for spec in self.dag.waiting_for([one])
+                ):
+                    self.stop(batch, run, held=False)
+
+    def stop(self, specs: list[str], run: str, *, held: bool) -> None:
+        stopped = _Stopped(specs, run, held)
+        self.stopped.append(stopped)
+        for spec in specs:
+            self.stopped_in[spec] = stopped
+
+    def queue(self, spec: str) -> None:
+        placed = self.placed[spec]
+        for pool, batch in placed.pools.items():
+            batches = self.unstarted.setdefault(pool, OrderedDict())
+            plans = batches.setdefault(batch.batch, {})
+            plans.setdefault(placed.plan, OrderedDict())[spec] = None
+
+    def queue_ready(self) -> None:
+        """Queue the specs that have nothing left to wait for.
+
+        A spec of a stopped batch goes out with that batch.
+        """
+        for spec in self.dag.ready:
+            if spec not in self.stopped_in:
+                self.queue(spec)
+        self.dag.ready.clear()
+
+    def unqueue(self, spec: str) -> None:
+        placed = self.placed[spec]
+        for pool, batch in placed.pools.items():
+            batches = self.unstarted.get(pool, {})
+            plans = batches.get(batch.batch, {})
+            queue = plans.get(placed.plan, {})
+            queue.pop(spec, None)
+            if not queue:
+                plans.pop(placed.plan, None)
+            if not plans:
+                batches.pop(batch.batch, None)
+
+    def unstop(self, spec: str) -> None:
+        if (stopped := self.stopped_in.pop(spec, None)) is not None:
+            stopped.specs.remove(spec)
+            if not stopped.specs:
+                self.stopped.remove(stopped)
+
+    def forget(self, spec: str) -> None:
+        self.unqueue(spec)
+        self.unstop(spec)
+        self.gave_up.discard(spec)
+        del self.placed[spec], self.asked_by[spec]
+
+    def answers(self, script: _Script, spec: str) -> bool:
+        """Whether ``spec`` waits for ``script`` to say what happens to it."""
+        stopped = self.stopped_in.get(spec)
+        return stopped is not None and stopped.held and self.asked_by[spec][0] is script
+
+    def startable(self, wanted: Callable[[str], bool]) -> Iterator[_Stopped]:
+        """The stopped batches that can go out now, oldest first.
+
+        ``wanted`` says whether the caller has a use for a batch, given its
+        first spec. A batch whose working folder was not free to take when it
+        was last looked at waits: its worker is alive, or nothing says that it
+        is dead.
+        """
+        for stopped in list(self.stopped):
+            if (
+                stopped.why is None
+                and not stopped.held
+                and not any(map(self.dag.waits, stopped.specs))
+                and wanted(stopped.specs[0])
+            ):
+                yield stopped
+
+    def job(self, specs: list[str]) -> Job:
+        """The job that runs ``specs``: their lines and the lines their fields reach."""
+        placed = self.placed[specs[0]]
+        lines = placed.plan.lines
+        reached = dict.fromkeys(specs)
+        pending = list(specs)
+        while pending:
+            for key in plan.holds(lines[pending.pop()], returned=False):
+                # What a serializer wrote can look like a pointer and have no line.
+                if key not in reached and key in lines:
+                    reached[key] = None
+                    pending.append(key)
+        if "moved" in lines:
+            reached["moved"] = None
+        return Job(
+            specs=specs,
+            lines=[lines[key] for key in reached],
+            class_dir=placed.class_dir,
+            process=placed.process,
+            **dict(placed.plan.launch),
+        )
+
+    def fill(
+        self,
+        specs: list[str],
+        pool: str,
+        placed: _Placed,
+        outbox: list[tuple[_Script, _ToScript]],
+    ) -> list[str]:
+        """Make ``specs``, unstarted, the job of a worker of ``pool``, filled from stopped batches.
+
+        Those that fit whole go in first, then as much of the oldest as there
+        is room for. The rest of a batch that was cut are unstarted specs
+        again. A stopped batch that is not the whole job starts over in a new
+        working folder, and its script is told where the old one is.
+        """
+        listed, batch = placed.plan, placed.pools[pool]
+
+        def joins(spec: str) -> bool:
+            other = self.placed[spec]
+            return other.plan is listed and other.pools.get(pool) == batch
+
+        for spec in specs:
+            self.unqueue(spec)
+        used: list[_Stopped] = []
+        if len(specs) < batch.cap:
+            startable = list(self.startable(joins))
+            for stopped in startable:
+                if len(specs) + len(stopped.specs) <= batch.cap and all(
+                    map(joins, stopped.specs)
+                ):
+                    specs += stopped.specs
+                    used.append(stopped)
+            for stopped in startable:
+                if len(specs) < batch.cap and stopped not in used:
+                    room = batch.cap - len(specs)
+                    specs += [spec for spec in stopped.specs if joins(spec)][:room]
+                    used.append(stopped)
+        taken = set(specs)
+        for stopped in used:
+            self.stopped.remove(stopped)
+            for spec in stopped.specs:
+                del self.stopped_in[spec]
+                if spec not in taken:
+                    self.queue(spec)
+
+        script = self.asked_by[specs[0]][0]
+        label = _group_label(specs[0], len(specs))
+        run = run_name([spec.rpartition(":")[2] for spec in specs])
+        for stopped in used:
+            if stopped.run != run:
+                reason = (
+                    f"{label} starts in a new working folder: it holds specs of a "
+                    "batch that stopped and is not that batch alone, so what the "
+                    "batch had done is dropped. Its working folder stays in "
+                    f"attempts/: {attempt_parent_in(placed.class_dir, stopped.run)}"
+                )
+                logger.warning("%s", reason)
+                outbox.append((script, WarningMessage(reason=reason)))
+        if len(specs) < batch.cap:
+            for other in self.unstarted.get(pool, {}).get(batch.batch, {}):
+                plans = frozenset({listed.launch.plan, other.launch.plan})
+                if other is not listed and (placed.class_dir, plans) not in self.warned:
+                    self.warned.add((placed.class_dir, plans))
+                    reason = (
+                        f"{label} is a smaller batch than its worker can take "
+                        f"({batch.cap}), while unstarted specs with the same batch "
+                        "key wait: a batch holds specs from one plan, and those "
+                        f"are listed in {other.launch.plan}, not "
+                        f"{listed.launch.plan}"
+                    )
+                    logger.warning("%s", reason)
+                    outbox.append((script, WarningMessage(reason=reason)))
+        return specs
+
+
+@dataclass(eq=False, slots=True)
+class _Lease:
+    scope: _Scope
+    specs: list[str]
+    job: Job
+    pool: str
+    throttle: str | None
+    started: float
+
+
+@dataclass(eq=False)
+class Manager:
+    url: str
+    manager_dir: Path | None  # None for a script's in-process manager
+    lock: threading.Condition = field(default_factory=threading.Condition)
+    scripts: list[_Script] = field(default_factory=list)
+    pools: dict[str, WorkerPool] = field(default_factory=dict)
+    stopping: bool = False
+    # One queue/DAG per store: None for the real store, or an overlay root.
+    scopes: dict[Path | None, _Scope] = field(default_factory=dict)
+    leases: dict[ServerConnection, _Lease] = field(default_factory=dict)
     # What to send once the lock is released: a send can wait on its reader.
     outbox: list[tuple[_Script, _ToScript]] = field(default_factory=list)
+
+    def _scope(self, overlay: Path | None) -> _Scope:
+        if (scope := self.scopes.get(overlay)) is None:
+            scope = self.scopes[overlay] = _Scope(overlay)
+        return scope
+
+    def _prune(self, overlay: Path | None) -> None:
+        scope = self.scopes.get(overlay)
+        if (
+            scope is not None
+            and not scope.placed
+            and not scope.dag.nodes
+            and not any(lease.scope is scope for lease in self.leases.values())
+        ):
+            del self.scopes[overlay]
 
     @classmethod
     @contextmanager
@@ -264,7 +490,7 @@ class Manager:
                 self.scripts.remove(script)
                 dropped = self._drop(script)
                 running = sum(
-                    not any(spec in self.placed for spec in lease.specs)
+                    not any(spec in lease.scope.placed for spec in lease.specs)
                     for lease in self.leases.values()
                 )
                 self.lock.notify_all()
@@ -300,6 +526,8 @@ class Manager:
     def _add(self, script: _Script, message: SubmitMessage) -> int:
         """Hold a plan's lines and queue the specs of its groups that are new here."""
         launch = message.launch
+        script.overlay = launch.config.overlay
+        scope = self._scope(script.overlay)
         listed = script.plans.setdefault(launch.plan, _Plan(launch))
         values = set()
         for text in message.lines:
@@ -315,103 +543,24 @@ class Manager:
             )
             for spec in group.specs:
                 holds[spec] = []
-                if spec in self.gave_up:
-                    self.gave_up.remove(spec)
-                    self.placed[spec], self.asked_by[spec] = placed, [script]
-                    self._queue(spec)
-                elif spec in self.placed:
-                    if script not in self.asked_by[spec]:
-                        self.asked_by[spec].append(script)
+                if spec in scope.gave_up:
+                    scope.gave_up.remove(spec)
+                    scope.placed[spec], scope.asked_by[spec] = placed, [script]
+                    scope.queue(spec)
+                elif spec in scope.placed:
+                    if script not in scope.asked_by[spec]:
+                        scope.asked_by[spec].append(script)
                 else:
-                    self.placed[spec], self.asked_by[spec] = placed, [script]
+                    scope.placed[spec], scope.asked_by[spec] = placed, [script]
                     # Otherwise it still runs for a script that left.
-                    if spec not in self.dag.nodes:
+                    if spec not in scope.dag.nodes:
                         holds[spec] = plan.holds(listed.lines[spec])
                         new.setdefault(group.class_dir, []).append(spec)
-        self.dag.add(holds, values)
+        scope.dag.add(holds, values)
         for class_dir, specs in new.items():
-            self._find_stopped(class_dir, specs)
-        self._queue_ready()
+            scope.find_stopped(class_dir, specs)
+        scope.queue_ready()
         return sum(map(len, new.values()))
-
-    def _find_stopped(self, class_dir: Path, specs: list[str]) -> None:
-        """Take as stopped the working folders on disk that hold only ``specs``,
-        none of which waits for another.
-
-        They were left by workers this manager did not hand them to, or
-        does not remember. One whose worker is still alive is that worker's
-        by its name.
-        """
-        runs = [
-            name for name in list_names(attempts_dir_in(class_dir)) if "." not in name
-        ]
-        by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
-        for run in runs:
-            attempt = attempt_lock.current(attempt_parent_in(class_dir, run))
-            hashes = [
-                spec
-                for opened in (read_events(attempt)[:1] if attempt else ())
-                for spec in opened.get("specs", ())
-            ]
-            if hashes and all(
-                spec in by_hash and by_hash[spec] not in self.stopped_in
-                for spec in hashes
-            ):
-                batch = [by_hash[spec] for spec in hashes]
-                # One that waits for another could never go out with it.
-                if not any(
-                    spec in batch
-                    for one in batch
-                    for spec in self.dag.waiting_for([one])
-                ):
-                    self._stop(batch, run, held=False)
-
-    def _stop(self, specs: list[str], run: str, *, held: bool) -> None:
-        stopped = _Stopped(specs, run, held)
-        self.stopped.append(stopped)
-        for spec in specs:
-            self.stopped_in[spec] = stopped
-
-    def _queue(self, spec: str) -> None:
-        placed = self.placed[spec]
-        for pool, batch in placed.pools.items():
-            batches = self.unstarted.setdefault(pool, OrderedDict())
-            plans = batches.setdefault(batch.batch, {})
-            plans.setdefault(placed.plan, OrderedDict())[spec] = None
-
-    def _queue_ready(self) -> None:
-        """Queue the specs that have nothing left to wait for.
-
-        A spec of a stopped batch goes out with that batch.
-        """
-        for spec in self.dag.ready:
-            if spec not in self.stopped_in:
-                self._queue(spec)
-        self.dag.ready.clear()
-
-    def _unqueue(self, spec: str) -> None:
-        placed = self.placed[spec]
-        for pool, batch in placed.pools.items():
-            batches = self.unstarted.get(pool, {})
-            plans = batches.get(batch.batch, {})
-            queue = plans.get(placed.plan, {})
-            queue.pop(spec, None)
-            if not queue:
-                plans.pop(placed.plan, None)
-            if not plans:
-                batches.pop(batch.batch, None)
-
-    def _unstop(self, spec: str) -> None:
-        if (stopped := self.stopped_in.pop(spec, None)) is not None:
-            stopped.specs.remove(spec)
-            if not stopped.specs:
-                self.stopped.remove(stopped)
-
-    def _forget(self, spec: str) -> None:
-        self._unqueue(spec)
-        self._unstop(spec)
-        self.gave_up.discard(spec)
-        del self.placed[spec], self.asked_by[spec]
 
     def _start_pool(self, key: str, definition: Pool) -> WorkerPool:
         logger.info("starting pool %s", key)
@@ -432,59 +581,68 @@ class Manager:
 
     def _rerun(self, script: _Script, message: RerunMessage) -> None:
         with self.lock:
-            theirs = [spec for spec in message.specs if self._answers(script, spec)]
+            if (scope := self.scopes.get(script.overlay)) is None:
+                return
+            theirs = [spec for spec in message.specs if scope.answers(script, spec)]
             try:
                 for spec in theirs:
-                    self.dag.block(spec, message.after)
+                    scope.dag.block(spec, message.after)
             except RuntimeError as exc:  # a dependency cycle
                 self.outbox.append((script, ErrorMessage(reason=str(exc))))
             for spec in theirs:
-                self.stopped_in[spec].held = False
-            self._queue_ready()
+                scope.stopped_in[spec].held = False
+            scope.queue_ready()
             self.lock.notify_all()
 
     def _gave_up(self, script: _Script, message: GaveUpMessage) -> None:
         with self.lock:
-            theirs = [spec for spec in message.specs if self._answers(script, spec)]
+            if (scope := self.scopes.get(script.overlay)) is None:
+                return
+            theirs = [spec for spec in message.specs if scope.answers(script, spec)]
             told: dict[_Script, list[str]] = {}
             for spec in theirs:
-                self._unstop(spec)
-                self.gave_up.add(spec)
-                for asked in self.asked_by[spec]:
+                scope.unstop(spec)
+                scope.gave_up.add(spec)
+                for asked in scope.asked_by[spec]:
                     told.setdefault(asked, []).append(spec)
-            waiting = self.dag.waiting_for(theirs)
+            waiting = scope.dag.waiting_for(theirs)
             for asked, specs in told.items():
                 blocked = [
-                    spec for spec in waiting if asked in self.asked_by.get(spec, ())
+                    spec for spec in waiting if asked in scope.asked_by.get(spec, ())
                 ]
                 reply = message.model_copy(update={"specs": specs, "blocked": blocked})
                 self.outbox.append((asked, reply))
                 # It counts them as ended, so they no longer run for it.
                 for spec in blocked:
-                    self.asked_by[spec].remove(asked)
-                    if not self.asked_by[spec]:
-                        self._forget(spec)
-                        self.dag.complete(spec)
-            self._queue_ready()
+                    scope.asked_by[spec].remove(asked)
+                    if not scope.asked_by[spec]:
+                        scope.forget(spec)
+                        scope.dag.complete(spec)
+            scope.queue_ready()
+            self._prune(scope.overlay)
             self.lock.notify_all()
-
-    def _answers(self, script: _Script, spec: str) -> bool:
-        """Whether ``spec`` waits for ``script`` to say what happens to it."""
-        stopped = self.stopped_in.get(spec)
-        return stopped is not None and stopped.held and self.asked_by[spec][0] is script
 
     def _cancel(self, script: _Script) -> None:
         with self.lock:
-            running = [
-                worker
-                for worker, lease in self.leases.items()
-                if any(script in self.asked_by.get(spec, ()) for spec in lease.specs)
-            ]
+            scope = self.scopes.get(script.overlay)
+            running = (
+                [
+                    worker
+                    for worker, lease in self.leases.items()
+                    if lease.scope is scope
+                    and any(script in scope.asked_by.get(spec, ()) for spec in lease.specs)
+                ]
+                if scope is not None
+                else []
+            )
             dropped = self._drop(script)
             workers = [
                 worker
                 for worker in running
-                if not any(spec in self.placed for spec in self.leases[worker].specs)
+                if not any(
+                    spec in self.leases[worker].scope.placed
+                    for spec in self.leases[worker].specs
+                )
             ]
             self.lock.notify_all()
         logger.info(
@@ -504,21 +662,29 @@ class Manager:
         spec no longer does: whoever still wants that asks for the spec again
         when its create() finds it missing.
         """
-        running = {spec for lease in self.leases.values() for spec in lease.specs}
+        if (scope := self.scopes.get(script.overlay)) is None:
+            return 0
+        running = {
+            spec
+            for lease in self.leases.values()
+            if lease.scope is scope
+            for spec in lease.specs
+        }
         dropped = 0
-        for spec, asked in list(self.asked_by.items()):
+        for spec, asked in list(scope.asked_by.items()):
             if script not in asked:
                 continue
             answered = asked[0] is script
             asked.remove(script)
             if not asked:
-                self._forget(spec)
+                scope.forget(spec)
                 if spec not in running:
-                    self.dag.complete(spec)
+                    scope.dag.complete(spec)
                     dropped += 1
-            elif answered and spec in self.stopped_in:
-                self.stopped_in[spec].held = False
-        self._queue_ready()
+            elif answered and spec in scope.stopped_in:
+                scope.stopped_in[spec].held = False
+        scope.queue_ready()
+        self._prune(scope.overlay)
         return dropped
 
     def notify(self, pool: str, message: WarningMessage | ErrorMessage) -> None:
@@ -569,27 +735,29 @@ class Manager:
         Specs that did not complete are a stopped batch for each script that
         answers for some, held until it says whether they run again.
         """
+        scope = lease.scope
         theirs = []
         for spec in lease.specs:
-            if spec in self.placed:
+            if spec in scope.placed:
                 theirs.append(spec)
-            elif spec in self.dag.nodes:  # every script that asked for it left
-                self.dag.complete(spec)
+            elif spec in scope.dag.nodes:  # every script that asked for it left
+                scope.dag.complete(spec)
         told: dict[_Script, list[str]] = {}
         if isinstance(result, JobCompletedResult):
             for spec in theirs:
-                for asked in self.asked_by[spec]:
+                for asked in scope.asked_by[spec]:
                     told.setdefault(asked, []).append(spec)
-                self._forget(spec)
-                self.dag.complete(spec)
+                scope.forget(spec)
+                scope.dag.complete(spec)
         elif theirs:
             for spec in theirs:
-                self._unstop(spec)  # found on disk when its script came back
-                told.setdefault(self.asked_by[spec][0], []).append(spec)
+                scope.unstop(spec)  # found on disk when its script came back
+                told.setdefault(scope.asked_by[spec][0], []).append(spec)
             run = run_name([spec.rpartition(":")[2] for spec in lease.specs])
             for specs in told.values():
-                self._stop(specs, run, held=True)
-        self._queue_ready()
+                scope.stop(specs, run, held=True)
+        scope.queue_ready()
+        self._prune(scope.overlay)
         seconds = time.monotonic() - lease.started
         for script, specs in told.items():
             message = ResultMessage(object_ids=specs, result=result, seconds=seconds)
@@ -622,23 +790,28 @@ class Manager:
         """
         with self.lock:
             now = time.monotonic()
-            due = []
-            for stopped in self.stopped:
-                placed = self.placed[stopped.specs[0]]
-                if (
-                    not stopped.held
-                    and now >= stopped.look_at
-                    and pool in placed.pools
-                    and not any(map(self.dag.waits, stopped.specs))
-                ):
-                    stopped.look_at = now + _HELD_CHECK_INTERVAL_S
-                    due.append(
-                        (stopped, attempt_parent_in(placed.class_dir, stopped.run))
-                    )
+            due: list[tuple[_Scope, _Stopped, Path]] = []
+            for scope in self.scopes.values():
+                for stopped in scope.stopped:
+                    placed = scope.placed[stopped.specs[0]]
+                    if (
+                        not stopped.held
+                        and now >= stopped.look_at
+                        and pool in placed.pools
+                        and not any(map(scope.dag.waits, stopped.specs))
+                    ):
+                        stopped.look_at = now + _HELD_CHECK_INTERVAL_S
+                        due.append(
+                            (
+                                scope,
+                                stopped,
+                                attempt_parent_in(placed.class_dir, stopped.run),
+                            )
+                        )
         if not due:
             return False
         whys: list[str | None] = []
-        for _, folder in due:
+        for _, _, folder in due:
             try:
                 attempt_lock.free(folder)
             except (attempt_lock.HeldError, OSError, subprocess.SubprocessError) as exc:
@@ -647,14 +820,14 @@ class Manager:
                 whys.append(None)
         next_look = time.monotonic() + _HELD_CHECK_INTERVAL_S
         with self.lock:
-            for (stopped, _), why in zip(due, whys):
+            for (scope, stopped, _), why in zip(due, whys):
                 stopped.look_at = next_look
                 # Not if its specs finished or were given up on meanwhile.
-                if why is not None and why != stopped.why and stopped in self.stopped:
+                if why is not None and why != stopped.why and stopped in scope.stopped:
                     label = _group_label(stopped.specs[0], len(stopped.specs))
                     reason = f"{label} waits: {why}"
                     logger.warning("%s", reason)
-                    script = self.asked_by[stopped.specs[0]][0]
+                    script = scope.asked_by[stopped.specs[0]][0]
                     self.outbox.append((script, WarningMessage(reason=reason)))
                 stopped.why = why
             self.lock.notify_all()
@@ -667,65 +840,50 @@ class Manager:
         batch leads a job only when no unstarted spec can.
         """
         throttled = self._throttled()
-        lead = next(
-            (
-                placed
-                for plans in self.unstarted.get(pool, {}).values()
-                for queue in plans.values()
-                if not throttled(placed := self.placed[next(iter(queue))])
-            ),
-            None,
-        )
-        unstarted: list[str] = []
-        if lead is not None:
-            batch = lead.pools[pool]
-            queue = self.unstarted[pool][batch.batch][lead.plan]
-            unstarted = list(islice(queue, batch.cap))
-        else:
-            stopped = next(
-                self._startable(
-                    lambda spec: (
-                        pool in self.placed[spec].pools
-                        and not throttled(self.placed[spec])
-                    )
+        target: tuple[_Scope, _Placed, list[str]] | None = None
+        for scope in self.scopes.values():
+            lead = next(
+                (
+                    placed
+                    for plans in scope.unstarted.get(pool, {}).values()
+                    for queue in plans.values()
+                    if not throttled(placed := scope.placed[next(iter(queue))])
                 ),
                 None,
             )
-            if stopped is None:
-                return None
-            lead = self.placed[stopped.specs[0]]
-        specs = self._fill(unstarted, pool, lead)
-        throttle = self.placed[specs[0]].throttle
+            if lead is not None:
+                batch = lead.pools[pool]
+                queue = scope.unstarted[pool][batch.batch][lead.plan]
+                target = scope, lead, list(islice(queue, batch.cap))
+                break
+        if target is None:
+            for scope in self.scopes.values():
+                stopped = next(
+                    scope.startable(
+                        lambda spec, s=scope: (
+                            pool in s.placed[spec].pools
+                            and not throttled(s.placed[spec])
+                        )
+                    ),
+                    None,
+                )
+                if stopped is not None:
+                    target = scope, scope.placed[stopped.specs[0]], []
+                    break
+        if target is None:
+            return None
+        scope, lead, unstarted = target
+        specs = scope.fill(unstarted, pool, lead, self.outbox)
+        throttle = scope.placed[specs[0]].throttle
         lease = self.leases[connection] = _Lease(
+            scope,
             specs,
-            self._job(specs),
+            scope.job(specs),
             pool,
             None if throttle is None else throttle.key,
             time.monotonic(),
         )
         return lease
-
-    def _job(self, specs: list[str]) -> Job:
-        """The job that runs ``specs``: their lines and the lines their fields reach."""
-        placed = self.placed[specs[0]]
-        lines = placed.plan.lines
-        reached = dict.fromkeys(specs)
-        pending = list(specs)
-        while pending:
-            for key in plan.holds(lines[pending.pop()], returned=False):
-                # What a serializer wrote can look like a pointer and have no line.
-                if key not in reached and key in lines:
-                    reached[key] = None
-                    pending.append(key)
-        if "moved" in lines:
-            reached["moved"] = None
-        return Job(
-            specs=specs,
-            lines=[lines[key] for key in reached],
-            class_dir=placed.class_dir,
-            process=placed.process,
-            **dict(placed.plan.launch),
-        )
 
     def _throttled(self) -> Callable[[_Placed], bool]:
         """Whether a spec's class already runs in as many jobs as its throttle allows.
@@ -744,90 +902,6 @@ class Manager:
 
         return throttled
 
-    def _startable(self, wanted: Callable[[str], bool]) -> Iterator[_Stopped]:
-        """The stopped batches that can go out now, oldest first.
-
-        ``wanted`` says whether the caller has a use for a batch, given its
-        first spec. A batch whose working folder was not free to take when it
-        was last looked at waits: its worker is alive, or nothing says that it
-        is dead.
-        """
-        for stopped in list(self.stopped):
-            if (
-                stopped.why is None
-                and not stopped.held
-                and not any(map(self.dag.waits, stopped.specs))
-                and wanted(stopped.specs[0])
-            ):
-                yield stopped
-
-    def _fill(self, specs: list[str], pool: str, placed: _Placed) -> list[str]:
-        """Make ``specs``, unstarted, the job of a worker of ``pool``, filled from stopped batches.
-
-        Those that fit whole go in first, then as much of the oldest as there
-        is room for. The rest of a batch that was cut are unstarted specs
-        again. A stopped batch that is not the whole job starts over in a new
-        working folder, and its script is told where the old one is.
-        """
-        listed, batch = placed.plan, placed.pools[pool]
-
-        def joins(spec: str) -> bool:
-            other = self.placed[spec]
-            return other.plan is listed and other.pools.get(pool) == batch
-
-        for spec in specs:
-            self._unqueue(spec)
-        used: list[_Stopped] = []
-        if len(specs) < batch.cap:
-            startable = list(self._startable(joins))
-            for stopped in startable:
-                if len(specs) + len(stopped.specs) <= batch.cap and all(
-                    map(joins, stopped.specs)
-                ):
-                    specs += stopped.specs
-                    used.append(stopped)
-            for stopped in startable:
-                if len(specs) < batch.cap and stopped not in used:
-                    room = batch.cap - len(specs)
-                    specs += [spec for spec in stopped.specs if joins(spec)][:room]
-                    used.append(stopped)
-        taken = set(specs)
-        for stopped in used:
-            self.stopped.remove(stopped)
-            for spec in stopped.specs:
-                del self.stopped_in[spec]
-                if spec not in taken:
-                    self._queue(spec)
-
-        script = self.asked_by[specs[0]][0]
-        label = _group_label(specs[0], len(specs))
-        run = run_name([spec.rpartition(":")[2] for spec in specs])
-        for stopped in used:
-            if stopped.run != run:
-                reason = (
-                    f"{label} starts in a new working folder: it holds specs of a "
-                    "batch that stopped and is not that batch alone, so what the "
-                    "batch had done is dropped. Its working folder stays in "
-                    f"attempts/: {attempt_parent_in(placed.class_dir, stopped.run)}"
-                )
-                logger.warning("%s", reason)
-                self.outbox.append((script, WarningMessage(reason=reason)))
-        if len(specs) < batch.cap:
-            for other in self.unstarted.get(pool, {}).get(batch.batch, {}):
-                plans = frozenset({listed.launch.plan, other.launch.plan})
-                if other is not listed and (placed.class_dir, plans) not in self.warned:
-                    self.warned.add((placed.class_dir, plans))
-                    reason = (
-                        f"{label} is a smaller batch than its worker can take "
-                        f"({batch.cap}), while unstarted specs with the same batch "
-                        "key wait: a batch holds specs from one plan, and those "
-                        f"are listed in {other.launch.plan}, not "
-                        f"{listed.launch.plan}"
-                    )
-                    logger.warning("%s", reason)
-                    self.outbox.append((script, WarningMessage(reason=reason)))
-        return specs
-
     def demand(self, pool: str) -> int:
         """Workers ``pool`` should have: busy ones plus jobs it could start."""
         with self.lock:
@@ -845,21 +919,23 @@ class Manager:
             )
             startable = sum(
                 not stopped.held
-                and pool in self.placed[stopped.specs[0]].pools
-                and not any(map(self.dag.waits, stopped.specs))
-                for stopped in self.stopped
+                and pool in scope.placed[stopped.specs[0]].pools
+                and not any(map(scope.dag.waits, stopped.specs))
+                for scope in self.scopes.values()
+                for stopped in scope.stopped
             )
-            for plans in self.unstarted.get(pool, {}).values():
-                if busy + startable >= max_workers:
-                    break
-                for queue in plans.values():
-                    placed = self.placed[next(iter(queue))]
-                    jobs = -(-len(queue) // placed.pools[pool].cap)
-                    if (throttle := placed.throttle) is not None:
-                        free = throttle.max_running - running[throttle.key]
-                        jobs = max(0, min(jobs, free))
-                        running[throttle.key] += jobs
-                    startable += jobs
+            for scope in self.scopes.values():
+                for plans in scope.unstarted.get(pool, {}).values():
+                    if busy + startable >= max_workers:
+                        break
+                    for queue in plans.values():
+                        placed = scope.placed[next(iter(queue))]
+                        jobs = -(-len(queue) // placed.pools[pool].cap)
+                        if (throttle := placed.throttle) is not None:
+                            free = throttle.max_running - running[throttle.key]
+                            jobs = max(0, min(jobs, free))
+                            running[throttle.key] += jobs
+                        startable += jobs
             return min(busy + startable, max_workers)
 
 

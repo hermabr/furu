@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furu import code_trace
-from furu.config import get_config
+from furu.config import _reject_repo_root, get_config
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -53,7 +53,14 @@ def require_pushed(git: GitIdentity) -> None:
     """
     repo_root = Path(git.repo_root)
     # Keep furu's own directories out of `git status`, as uv does for .venv.
-    for _, directory in get_config().directories.anchored():
+    # Under an overlay, only the overlay is written to; base directories stay untouched.
+    config = get_config().anchored()
+    if config.overlay is not None:
+        _reject_repo_root(config.overlay, repo_root)
+        targets = [config.overlay]
+    else:
+        targets = [path for _, path in config.directories]
+    for directory in targets:
         if not (ignore := directory / ".gitignore").exists():
             directory.mkdir(parents=True, exist_ok=True)
             ignore.write_text("*\n")
@@ -112,7 +119,7 @@ def extract_snapshot(commit: str, *, repo: Path) -> Path:
     The tree lands in ``<snapshots>/<commit>`` once and is reused by every later
     caller.
     """
-    code_dir = get_config().directories.anchored().snapshots / commit
+    code_dir = get_config().write_directories.snapshots / commit
     if code_dir.is_dir():
         return code_dir
     archive = subprocess.run(

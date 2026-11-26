@@ -677,19 +677,26 @@ def _check(path: Path, storage_root: Path) -> tuple[Trace, str | None] | None:
 
     ``storage_root`` is what the code versions it names are relative to. None
     when the file cannot be read. It may only not be visible on this machine
-    yet, so that answer is not kept, nor one that rests on it.
+    yet, so that answer is not kept, nor one that rests on it. A file that
+    an overlay does not have is read from the path it stands for.
     """
     key = os.path.normpath(path)
     if (checked := _CHECKED.get(key)) is not None:
         return checked
-    try:
-        trace = Trace.model_validate_json(Path(key).read_bytes())
-    except (OSError, ValueError):
+    for layer in get_config().layers(path):
+        try:
+            trace = Trace.model_validate_json(
+                Path(os.path.normpath(layer)).read_bytes()
+            )
+            break
+        except (OSError, ValueError):
+            continue
+    else:
         return None
     why = _changed(trace)
     if why is None:
         for name in trace.built_on:
-            upstream = storage_root / name
+            upstream = Path(os.path.normpath(storage_root / name))
             if why_outdated(upstream) is not None:
                 why = f"it was built on {name}, which is outdated"
                 if os.path.normpath(trace_path_in(upstream)) not in _CHECKED:
@@ -819,9 +826,13 @@ class _Collector:
         self.log = log
         # furu's own data directories may live in the repo; reading them is fine.
         # A snapshot worker's root lies inside one, so skip those.
+        config = get_config().anchored()
+        data_dirs = [anchored for _, anchored in config.directories]
+        if config.overlay is not None:
+            data_dirs.append(config.overlay)
         self.data_dirs = tuple(
             path
-            for _, anchored in get_config().directories.anchored()
+            for anchored in data_dirs
             if not root.startswith(path := _realpath(str(anchored)) + os.sep)
         )
         self.opened: set[str] = set()  # repo files besides .py that create() read
@@ -975,7 +986,10 @@ class Recording:
         version = run.parent.parent
         if version.name == FIXED:
             return
-        name = os.path.relpath(version, self.storage_root)
+        # Between the paths that both stand for, so a version has one name
+        # whether its run is in the overlay or under it.
+        layers = get_config().layers
+        name = os.path.relpath(layers(version)[-1], layers(self.storage_root)[-1])
         if name not in self.built_on:
             self.built_on.add(name)
             if self._log is not None:

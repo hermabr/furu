@@ -45,6 +45,7 @@ def _replace_config_directories(
 ) -> _Config:
     data = config.model_dump()
     data["directories"] = directories
+    data["overlay"] = None
     return _Config.model_validate(data)
 
 

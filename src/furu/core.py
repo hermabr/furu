@@ -19,6 +19,8 @@ from typing import (
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
 from furu._declared_types import cached_type_hints
+from furu.code_trace import versions
+from furu.config import get_config
 from furu.dependencies import (
     Returned,
     _Dependency,
@@ -38,6 +40,7 @@ from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage import attempt_lock
 from furu.storage._layout import (
+    FIXED,
     attempt_parent_in,
     run_dir_in,
     run_name,
@@ -275,7 +278,8 @@ class Spec(_FuruDataclassTransform, ABC):
         the deleted results stays done. A spec with ``@furu.batched`` is a row
         in a run that other specs share, so this raises and names that run.
         A working folder that is not free to take raises too: its create() may
-        be running.
+        be running. With an overlay only what is in it is deleted, so this
+        raises when a live result exists under it.
         """
         if is_batched(type(self)):
             row = stored_row(self)
@@ -289,6 +293,19 @@ class Spec(_FuruDataclassTransform, ABC):
                     "folder deletes every spec in the batch."
                 )
             )
+        for under in get_config().layers(self._class_dir)[1:]:
+            live = (
+                [under / FIXED]
+                if self._metadata.code_version == "fixed"
+                else [version for version, why in versions(under) if why is None]
+            )
+            for version in live:
+                if (run := run_dir_in(version, self._artifact_hash)).is_dir():
+                    raise RuntimeError(
+                        f"{self.object_id}.delete(): its live result {run} is under "
+                        "the overlay, which only reads it. Delete it with no "
+                        "overlay set."
+                    )
         parent = attempt_parent([self])
         try:
             attempt = attempt_lock.free(parent)
@@ -375,8 +392,15 @@ class Spec(_FuruDataclassTransform, ABC):
 
     @final
     @cached_property
+    def _storage(self) -> Path:
+        """Where this spec's class folder is written: its Metadata's storage,
+        or that path in the overlay."""
+        return get_config().overlaid(self._metadata.storage)
+
+    @final
+    @cached_property
     def _class_dir(self) -> Path:
-        return self._metadata.storage / self._stored_name / self._class_part
+        return self._storage / self._stored_name / self._class_part
 
 
 def attempt_parent(specs: Sequence[Spec]) -> Path:

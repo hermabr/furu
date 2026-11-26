@@ -1012,7 +1012,8 @@ def test_a_spec_waits_for_what_its_line_points_to_and_its_job_holds_what_its_fie
         (spec,) = lease.specs
         # Everything it waits for is finished by now.
         assert all(
-            key not in manager.dag.nodes for key in plan.holds(lease.job.lines[0])
+            key not in manager.scopes[None].dag.nodes
+            for key in plan.holds(lease.job.lines[0])
         )
         jobs[spec] = {plan.key(json.loads(line)) for line in lease.job.lines}
         _end(manager, lease)
@@ -1047,10 +1048,10 @@ def test_a_spec_that_two_launches_ask_for_is_queued_once_under_the_first() -> No
     )
     # Nobody asks for the two that run any more. They finish all the same.
     manager._drop(second)
-    assert not manager.placed
+    assert not any(scope.placed for scope in manager.scopes.values())
     for lease in running:
         _end(manager, lease)
-    assert not manager.dag.nodes and _sent(manager) == []
+    assert not manager.scopes and _sent(manager) == []
 
 
 def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happens() -> (
@@ -1080,7 +1081,7 @@ def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happe
     # for it does not run for the script that was told it would not.
     _submit(manager, [leaf], plan_path=_plan("e2"))
     _end(manager, _leased(manager))
-    assert _lease(manager) is None and not manager.placed
+    assert _lease(manager) is None and not manager.scopes
 
 
 def test_each_script_answers_for_its_own_specs_of_a_batch_that_did_not_complete() -> (
@@ -1153,7 +1154,7 @@ def test_a_batch_whose_create_asks_for_one_of_its_own_specs_fails_loudly() -> No
     (why,) = run.failures[asks]
     assert f"asked for {found}, which is in the same batch" in why
     assert str(attempt_parent([objs[asks], objs[found]])) in why
-    assert manager.gave_up == set(objs) and _sent(manager) == []
+    assert manager.scopes[None].gave_up == set(objs) and _sent(manager) == []
 
 
 def _stopped_sweep(count: int) -> tuple[Manager, list[str]]:
@@ -1361,7 +1362,7 @@ def test_a_working_folder_on_disk_whose_specs_wait_for_one_another_is_not_resume
 
     manager = _manager([then])
 
-    assert not manager.stopped
+    assert not manager.scopes[None].stopped
     lease = _leased(manager)
     assert lease.specs == [first.object_id]
     _end(manager, lease)
@@ -1397,7 +1398,10 @@ def _submit_over(manager: Manager, *objs: Spec) -> ClientConnection:
     connection.send(submit.model_dump_json())
     # Workers of a pool the manager has not started yet are turned away.
     deadline = time.monotonic() + 5
-    while len(manager.placed) < len(objs) and time.monotonic() < deadline:
+    while (
+        sum(len(scope.placed) for scope in manager.scopes.values()) < len(objs)
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.01)
     return connection
 

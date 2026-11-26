@@ -362,7 +362,7 @@ def listing() -> Path:
 
 def launch() -> str:
     """The id of the launch whose plan, or whose folder of found specs, holds ``listing()``."""
-    plans = get_config().directories.anchored().plans
+    plans = get_config().write_directories.plans
     return listing().relative_to(plans).parts[0].removesuffix(".plan")
 
 
@@ -377,7 +377,7 @@ def save_found(found: Sequence[Line]) -> Path:
     They go to this process's own file in the launch's folder, which the
     specs' runs then name as their plan.
     """
-    folder = get_config().directories.anchored().plans / launch()
+    folder = get_config().write_directories.plans / launch()
     if (file := _own.get(folder)) is None:
         file = _own[folder] = File.new(folder, ".plan")
     file.add([{"asked_by": sorted(creation().specs)}, *found])

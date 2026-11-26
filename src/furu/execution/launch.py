@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from furu._batched import is_batched
 from furu._tree import specs_in
+from furu.config import get_config
 from furu.core import Spec
 from furu.dag import Dag
 from furu.dependencies import creation
@@ -217,28 +218,31 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
     unexplained: defaultdict[str, list[str]] = defaultdict(list)
     for class_dir, cls in class_dirs.items():
         explained = set(map(class_part_of, explained_names(cls)))
-        try:
-            folders = set(os.listdir(class_dir.parent))
-        except FileNotFoundError:
-            folders = set()
-        for folder in folders - explained:
-            path = class_dir.parent / folder
-            if os.listdir(path) == [REMEMBERED]:
-                continue  # what dependency methods returned, and no result
-            unexplained[f"{stored_name(cls)}:{folder}"].append(
-                f"{stored_name(cls)}: {path} was {_stored(cls, schema.stored_names(path))}"
-                f", and this launch stores in {class_dir}"
-            )
-        held_here = holds.get(class_dir, {})
-        recorded = schema.nested_names(class_dir) if held_here else {}
-        for nested, at in held_here.items():
-            seen = recorded.get(stored_name(nested), set())
-            for names in seen - explained_names(nested):
-                unexplained[f"{stored_name(cls)}:{class_dir.name}"].append(
-                    f"{stored_name(cls)}: {nested.__name__} at {'.'.join(at)} was "
-                    f"{_stored(nested, names)} in {class_dir}, where this launch "
-                    "stores too"
+        for parent in get_config().layers(class_dir.parent):
+            try:
+                folders = set(os.listdir(parent))
+            except FileNotFoundError:
+                folders = set()
+            for folder in folders - explained:
+                path = parent / folder
+                if os.listdir(path) == [REMEMBERED]:
+                    continue  # what dependency methods returned, and no result
+                unexplained[f"{stored_name(cls)}:{folder}"].append(
+                    f"{stored_name(cls)}: {path} was "
+                    f"{_stored(cls, schema.stored_names(path))}"
+                    f", and this launch stores in {class_dir}"
                 )
+        held_here = holds.get(class_dir, {})
+        for layer in get_config().layers(class_dir) if held_here else ():
+            recorded = schema.nested_names(layer)
+            for nested, at in held_here.items():
+                seen = recorded.get(stored_name(nested), set())
+                for names in seen - explained_names(nested):
+                    unexplained[f"{stored_name(cls)}:{class_dir.name}"].append(
+                        f"{stored_name(cls)}: {nested.__name__} at {'.'.join(at)} was "
+                        f"{_stored(nested, names)} in {layer}, where this launch "
+                        "stores too"
+                    )
 
     for name in sorted(ignore - unexplained.keys() - {""}):
         logger.warning(

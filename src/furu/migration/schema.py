@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
+from furu.config import get_config
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -169,17 +170,50 @@ def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
     return recorded
 
 
+def _compare(
+    declared: dict[_Step, tuple[str, JsonValue]],
+    path: Path,
+    lines: list[dict[str, Any]],
+) -> None:
+    """Stop when a default the source declares is not the one ``path`` recorded."""
+    recorded = _recorded_defaults(lines)
+    for step, (label, default) in declared.items():
+        if step in recorded and (
+            _stable_json_dump(recorded[step]) != _stable_json_dump(default)
+        ):
+            raise MigrationError(
+                f"{label} declares the default {_stable_json_dump(default)}, "
+                f"but {path} recorded {_stable_json_dump(recorded[step])} "
+                "when the step was first seen. A spec at the declared "
+                "default is named as it was before the field existed, so it "
+                "would load a result computed at the recorded one. Put the "
+                "recorded default back in the step."
+            )
+
+
 def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
     """Stop when a default the source declares is not the one recorded.
 
     A declared default with no line gets one. A folder with no file gets one
     only with ``record``, when the folder is made: until then nothing in it was
-    stored under any default.
+    stored under any default. Under an overlay, the base layer's file is
+    checked read-only (never locked or written) alongside the overlay's own.
     """
     key = (cls, class_dir, len(held[cls]))
     if (*key, record) in _checked:
         return
     declared = _declared_defaults(cls)
+    base_checked_all = True
+    for below in get_config().layers(class_dir)[1:] if declared else ():
+        below_path = schema_path_in(below)
+        below_lines = _read(below_path)
+        if below_lines is not None:
+            _compare(declared, below_path, below_lines)
+        if (
+            below_lines is None
+            or declared.keys() - _recorded_defaults(below_lines).keys()
+        ):
+            base_checked_all = False
     path = schema_path_in(class_dir)
     lines = _read(path) if declared or record else None
     if lines is not None or record:
@@ -200,21 +234,12 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
                     # What counts is what the file holds: a writer that lost
                     # the lock while it held it can have recorded first.
                     lines = _read(path) or []
-        recorded = _recorded_defaults(lines)
-        for step, (label, default) in declared.items():
-            if _stable_json_dump(recorded[step]) != _stable_json_dump(default):
-                raise MigrationError(
-                    f"{label} declares the default {_stable_json_dump(default)}, "
-                    f"but {path} recorded {_stable_json_dump(recorded[step])} "
-                    "when the step was first seen. A spec at the declared "
-                    "default is named as it was before the field existed, so it "
-                    "would load a result computed at the recorded one. Put the "
-                    "recorded default back in the step."
-                )
-        _checked.add((*key, True))
-    # A folder with no file may get one from a checkout that declares another
-    # default, so a declared default is looked for again.
-    if lines is not None or not declared:
+        _compare(declared, path, lines)
+        if base_checked_all:
+            _checked.add((*key, True))
+    # A folder with no file (or a base without the step yet) may get one from a
+    # checkout that declares another default, so look again until recorded.
+    if base_checked_all and (lines is not None or not declared):
         _checked.add((*key, False))
 
 
