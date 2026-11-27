@@ -10,6 +10,7 @@ from furu.config import _Config, _set_config
 from furu.dependencies import _DependencyNotReady, creating
 from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import _configure_child_logging
+from furu.worker.execute import CPUS_ENV_VAR
 from furu.worker.messages import (
     Job,
     JobBlockedResult,
@@ -41,6 +42,9 @@ def _execute(job: Job, token: str) -> JobResult:
 
 
 def main() -> int:
+    # Before anything counts the CPUs: this child's share of its allocation.
+    if cpus := os.environ.get(CPUS_ENV_VAR):
+        os.sched_setaffinity(0, map(int, cpus.split(",")))
     # Keep a private copy of stdout for the parent protocol. Fds 1 and 2 go to
     # the worker's stderr, and to a run's log while its create() runs.
     protocol_out = os.fdopen(os.dup(sys.stdout.fileno()), "w")

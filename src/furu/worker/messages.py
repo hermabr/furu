@@ -6,6 +6,7 @@ a worker sends ``hello``.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -54,6 +55,10 @@ class Launch(_Message):
 
 class Job(Launch):
     kind: Literal["job"] = "job"
+    # Names the job on its allocation's connection, which carries several at
+    # once, and how many of the allocation's slots it takes.
+    lease: int = 0
+    slots: int = 1
     # One create() call: the ids of the specs of one batch in row order, or of
     # one spec.
     specs: list[str]
@@ -81,7 +86,16 @@ class Job(Launch):
 
 
 class CancelMessage(_Message):
+    """A script cancels its launch."""
+
     kind: Literal["cancel"] = "cancel"
+
+
+class CancelJobMessage(_Message):
+    """The manager cancels one job of an allocation."""
+
+    kind: Literal["cancel"] = "cancel"
+    lease: int
 
 
 class JobCompletedResult(_Message):
@@ -112,6 +126,13 @@ type JobResult = Annotated[
 job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
 
 
+class JobEndedMessage(_Message):
+    """An allocation says how one of its jobs ended."""
+
+    lease: int
+    result: JobResult
+
+
 # --- worker <-> manager --------------------------------------------------------
 
 
@@ -123,7 +144,7 @@ class HelloMessage(_Message):
     log: Path | None = None  # the worker's own log file, if it has one
 
 
-type ServerMessage = Annotated[Job | CancelMessage, Field(discriminator="kind")]
+type ServerMessage = Annotated[Job | CancelJobMessage, Field(discriminator="kind")]
 
 server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
 
@@ -132,10 +153,12 @@ server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
 
 
 class SlurmPool(_Message):
-    """How the manager starts a worker; identical recipes share one pool."""
+    """How the manager starts an allocation; identical recipes share one pool."""
 
     kind: Literal["slurm"] = "slurm"
-    max_workers: int
+    max_allocations: int
+    # How many jobs of the smallest size one allocation runs at once.
+    slots: int
     sbatch_args: list[str]
     pre_worker_commands: list[str]
     use_job_arrays: bool
@@ -149,14 +172,29 @@ class LocalPool(_Message):
     kind: Literal["local"] = "local"
     max_workers: int
 
+    # To the manager each thread is an allocation of one slot that never idles out.
+    @property
+    def max_allocations(self) -> int:
+        return self.max_workers
+
+    @property
+    def slots(self) -> int:
+        return 1
+
+    @property
+    def idle_timeout_seconds(self) -> float:
+        return math.inf
+
 
 type Pool = Annotated[SlurmPool | LocalPool, Field(discriminator="kind")]
 
 
 class Batch(_Message):
-    # Specs of one plan with the same name may share a create() call.
+    # Specs of one plan with the same name may share a create() call, which
+    # takes ``slots`` of its allocation's slots.
     batch: str
     cap: int
+    slots: int = 1
 
 
 class JobThrottle(_Message):

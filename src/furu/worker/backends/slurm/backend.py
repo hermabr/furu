@@ -17,10 +17,23 @@ type SlurmExport = Literal["NIL", "ALL"] | tuple[str, ...] | None
 
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerBackend:
-    """Slurm workers started by the furu manager; same recipe, same pool."""
+    """Slurm allocations started by the furu manager; same recipe, same pool.
 
-    max_workers: int
+    ``resources`` is what one allocation asks Slurm for. It is cut into
+    ``slots`` even parts, and a job takes as many of them as its spec needs,
+    so one allocation runs several jobs at once: with 8 GPUs and ``slots=8``,
+    eight jobs on one GPU each, or one on four beside four on one, with
+    nothing queued again in between. A job that takes ``k`` slots is offered
+    ``k * total // slots`` of each resource.
+
+    Each job's process sees its own GPUs (``CUDA_VISIBLE_DEVICES``) and is
+    bound to its own CPUs. Memory is not enforced for a job: Slurm limits the
+    allocation as a whole.
+    """
+
+    max_allocations: int
     resources: SlurmResources
+    slots: int = 1
     job_name: str = "furu-worker"
     idle_timeout_seconds: float = 60.0
     pre_worker_commands: tuple[str, ...] = ()
@@ -29,19 +42,44 @@ class SlurmWorkerBackend:
     labels: tuple[str, ...] = ()
     accepts: Callable[[Spec], bool] | None = None
 
+    def __post_init__(self) -> None:
+        if self.slots < 1:
+            raise ValueError(f"slots must be at least 1, got {self.slots}")
+        if self.slots > 1 and self.resources.nodes != 1:
+            raise ValueError(
+                f"slots={self.slots} cuts one node into parts, and resources "
+                f"asks for {self.resources.nodes} nodes"
+            )
+        if self.resources.gpus % self.slots:
+            raise ValueError(
+                f"{self.resources.gpus} GPUs do not divide evenly into "
+                f"{self.slots} slots"
+            )
+        if self.resources.cpus < self.slots:
+            raise ValueError(
+                f"{self.resources.cpus} CPUs leave none for each of {self.slots} slots"
+            )
+
     @property
-    def worker(self) -> Worker:
-        return Worker(
-            cpus=self.resources.cpus_per_worker,
-            gpus=self.resources.gpus,
-            memory_gib=self.resources.memory_gib,
-            labels=self.labels,
-        )
+    def workers(self) -> dict[int, Worker]:
+        """What a job gets for each number of slots it may take: a divisor of
+        ``slots``, so that jobs of any mix of sizes fill an allocation."""
+        resources = self.resources
+        return {
+            taken: Worker(
+                cpus=taken * resources.cpus // self.slots,
+                gpus=taken * resources.gpus // self.slots,
+                memory_gib=taken * resources.memory_gib // self.slots,
+                labels=self.labels,
+            )
+            for taken in range(1, self.slots + 1)
+            if self.slots % taken == 0
+        }
 
     @property
     def pool_key(self) -> str:
         recipe = self.pool().model_dump(
-            exclude={"max_workers", "job_name", "idle_timeout_seconds"}
+            exclude={"max_allocations", "job_name", "idle_timeout_seconds"}
         )
         return "slurm:" + _hash_dict_deterministically(
             {**recipe, "labels": list(self.labels)}
@@ -58,7 +96,8 @@ class SlurmWorkerBackend:
             case _:
                 assert_never(self.export)
         return SlurmPool(
-            max_workers=self.max_workers,
+            max_allocations=self.max_allocations,
+            slots=self.slots,
             sbatch_args=[*self.resources.to_sbatch_args(), *export_args],
             pre_worker_commands=list(self.pre_worker_commands),
             use_job_arrays=self.use_job_arrays,

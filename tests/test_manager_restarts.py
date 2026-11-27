@@ -176,7 +176,7 @@ def test_ctrl_c_cancels_running_jobs_and_sigterm_leaves_them(
             _wait_until(lambda: not manager.scripts)
             if finishes:
                 (tmp_path / "open").touch()
-            _wait_until(lambda: not manager.leases)
+            _wait_until(lambda: not list(manager._leases()))
         finally:
             script.kill()
     if finishes:

@@ -183,6 +183,42 @@ def test_accelerator_probe_falls_back_to_cuda_visible_devices(
     assert provenance._probe_accelerators() == ("cuda ×3",)
 
 
+def test_accelerator_probe_lists_only_the_gpus_this_process_may_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[list[str]] = []
+
+    def nvidia_smi(argv: list[str], **kwargs: object) -> object:
+        asked.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="A100\nA100\n")
+
+    monkeypatch.setattr(provenance.subprocess, "run", nvidia_smi)
+    # One job of several that share a node's GPUs: it has these two.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+    assert provenance._probe_accelerators() == ("A100 ×2",)
+    assert asked[0][-1] == "--id=4,5"
+
+    provenance._probe_accelerators.cache_clear()
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert provenance._probe_accelerators() == ("A100 ×2",)
+    assert not any(arg.startswith("--id") for arg in asked[1])
+
+    # A job without GPUs has none, whatever the node has.
+    provenance._probe_accelerators.cache_clear()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert provenance._probe_accelerators() == ()
+    assert len(asked) == 2
+
+
+def test_a_process_records_the_cpus_it_is_bound_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provenance.os, "sched_getaffinity", lambda pid: {3, 4, 5})
+    monkeypatch.setattr(provenance, "_probe_accelerators", lambda: ())
+
+    assert provenance.worker()["cpus"] == 3
+
+
 def test_accelerator_probe_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     def missing_nvidia_smi(*args: object, **kwargs: object) -> object:
         raise FileNotFoundError("nvidia-smi")

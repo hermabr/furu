@@ -118,6 +118,23 @@ class SubprocessChattyLeaf(Spec):
         return _pid_and_variable("FURU_TEST_VARIABLE")
 
 
+class SubprocessShareLeaf(Spec):
+    """Says which GPUs and CPUs its process has. With ``hold``, a folder, it
+    first says there that it started and waits for the file ``go``."""
+
+    marker: int = 0
+    hold: str | None = None
+
+    def create(self) -> str:
+        if self.hold is not None:
+            Path(self.hold, f"started-{self.marker}").touch()
+            deadline = time.monotonic() + 30
+            while not Path(self.hold, "go").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+        cpus = ",".join(map(str, sorted(os.sched_getaffinity(0))))
+        return f"{_pid_and_variable('CUDA_VISIBLE_DEVICES')}:{cpus}"
+
+
 class SubprocessForkingLeaf(Spec):
     """Forks a helper that outlives the job, then waits to be cancelled."""
 

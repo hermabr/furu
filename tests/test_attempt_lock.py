@@ -187,6 +187,62 @@ def test_a_slurm_jobs_folder_is_held_until_slurm_calls_the_job_gone(
     assert os.listdir(run) == [attempt.name]
 
 
+@pytest.mark.parametrize(
+    ("restart", "free"), [("3", True), ("2", False), (None, False)]
+)
+def test_a_job_that_slurm_started_again_takes_the_folders_of_its_earlier_runs(
+    run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job_is: Callable[[bool], list[tuple[str, str]]],
+    restart: str | None,
+    free: bool,
+) -> None:
+    # A requeued job keeps its id, so Slurm never calls it gone while it runs.
+    held = "slurm__sc__123__2__a1b2c3d4e5f60718"
+    (run / held).mkdir(parents=True)
+    (run / held / "checkpoint").write_text("step 7")
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.setenv("SLURM_CLUSTER_NAME", "sc")
+    if restart is not None:
+        monkeypatch.setenv("SLURM_RESTART_COUNT", restart)
+    asked = job_is(False)
+
+    if not free:  # this run's own folder, or one a later run took
+        with pytest.raises(HeldError, match="Slurm job 123 on cluster sc"):
+            attempt_lock.acquire(run)
+        assert os.listdir(run) == [held]
+        return
+    attempt, _ = attempt_lock.acquire(run)
+
+    assert asked == []  # the job knows without asking Slurm
+    assert attempt.name.startswith("slurm__sc__123__3__")
+    assert (attempt / "checkpoint").read_text() == "step 7"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"SLURM_JOB_ID": "124", "SLURM_CLUSTER_NAME": "sc"},
+        {"SLURM_JOB_ID": "123", "SLURM_CLUSTER_NAME": "other"},
+    ],
+    ids=["another job", "another cluster"],
+)
+def test_a_restart_count_frees_only_the_folders_of_the_same_job(
+    run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job_is: Callable[[bool], list[tuple[str, str]]],
+    env: dict[str, str],
+) -> None:
+    (run / JOB).mkdir(parents=True)
+    for key, value in {**env, "SLURM_RESTART_COUNT": "5"}.items():
+        monkeypatch.setenv(key, value)
+    asked = job_is(False)
+
+    with pytest.raises(HeldError, match="Slurm job 123 on cluster sc"):
+        attempt_lock.free(run)
+    assert asked == [("sc", "123")]
+
+
 def test_two_folders_hold_the_run_however_they_are_named(run: Path) -> None:
     (run / "free__manual").mkdir(parents=True)
     (run / "free__other").mkdir()

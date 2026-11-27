@@ -14,8 +14,9 @@ way in or out has a dotted name in ``attempts/``, never in ``attempts/<run>/``.
 
 Nothing in the folder says whether its owner is alive, no clock is read and
 nobody waits. A Slurm job's folder may be taken once Slurm says the job is
-gone. A process's outside Slurm is freed by the worker that started it and saw
-it die, and otherwise only by hand.
+gone, and by the job itself once Slurm has started it again: the run that
+took the folder is over. A process's outside Slurm is freed by the worker
+that started it and saw it die, and otherwise only by hand.
 """
 
 from __future__ import annotations
@@ -40,21 +41,29 @@ class HeldError(RuntimeError):
     """A run's working folder is another's, or may be."""
 
 
+def _job() -> tuple[str, str, str] | None:
+    """The Slurm job this process runs in, if it runs in one: its cluster, its
+    id and how many times Slurm has started it again."""
+    if not (job := os.environ.get("SLURM_JOB_ID")):
+        return None
+    restart = os.environ.get("SLURM_RESTART_COUNT") or "0"
+    if not job.isdigit() or not restart.isdigit():
+        raise ValueError(
+            f"invalid SLURM_JOB_ID={job!r} or SLURM_RESTART_COUNT={restart!r}"
+        )
+    cluster = slurm.cluster()
+    if not cluster:
+        raise RuntimeError(
+            f"SLURM_JOB_ID={job} is set, but the Slurm cluster name could not "
+            "be determined from SLURM_CLUSTER_NAME or `scontrol show config`"
+        )
+    return cluster, job, restart
+
+
 def _me() -> str:
     """This process as an owner: the Slurm job it runs in, if it runs in one."""
-    if job := os.environ.get("SLURM_JOB_ID"):
-        restart = os.environ.get("SLURM_RESTART_COUNT") or "0"
-        if not job.isdigit() or not restart.isdigit():
-            raise ValueError(
-                f"invalid SLURM_JOB_ID={job!r} or SLURM_RESTART_COUNT={restart!r}"
-            )
-        cluster = slurm.cluster()
-        if not cluster:
-            raise RuntimeError(
-                f"SLURM_JOB_ID={job} is set, but the Slurm cluster name could not "
-                "be determined from SLURM_CLUSTER_NAME or `scontrol show config`"
-            )
-        return f"slurm__{cluster}__{job}__{restart}"
+    if (job := _job()) is not None:
+        return "slurm__" + "__".join(job)
     return f"local__{socket.gethostname()}__{os.getpid()}"
 
 
@@ -89,7 +98,15 @@ def free(run: Path) -> Path | None:
         case ["slurm", cluster, job, restart, tok] if (
             cluster and job.isdigit() and restart.isdigit() and tok
         ):
-            if slurm.gone(cluster, job):
+            # The folder of an earlier run of the job this process is in:
+            # Slurm started the job again, so that run is over.
+            mine = _job()
+            earlier = (
+                mine is not None
+                and mine[:2] == (cluster, job)
+                and int(restart) < int(mine[2])
+            )
+            if earlier or slurm.gone(cluster, job):
                 return run / name
             whose = (
                 f"is the working folder of Slurm job {job} on cluster {cluster}, "
