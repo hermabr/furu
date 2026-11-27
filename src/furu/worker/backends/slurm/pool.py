@@ -93,7 +93,8 @@ class SlurmWorkerPool:
             f"    --pool {shlex.quote(key)} \\\n"
             '    --component "${component}" \\\n'
             f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log" \\\n'
-            f"    --idle-timeout {definition.idle_timeout_seconds}\n"
+            f"    --idle-timeout {definition.idle_timeout_seconds} \\\n"
+            f"    --slots {definition.slots}\n"
         )
         self._sbatch_args = (
             f"--chdir={directory}",

@@ -14,7 +14,12 @@ class WorkerBackend(Protocol):
 
     @property
     def worker(self) -> Worker:
-        """What every worker in this pool offers."""
+        """What each allocation in this pool offers, all its slots together."""
+        ...
+
+    @property
+    def slots(self) -> int:
+        """The even shares of an allocation that a job takes one or more of."""
         ...
 
     @property
@@ -42,7 +47,15 @@ class WorkerPool(Protocol):
     def stop(self) -> None: ...
 
 
-def can_run(backend: WorkerBackend, spec: Spec) -> bool:
-    return (backend.accepts is None or backend.accepts(spec)) and spec.runs_on(
-        backend.worker
+def slots_for(backend: WorkerBackend, spec: Spec) -> int | None:
+    """The fewest slots of ``backend``'s allocations that run ``spec``, if any do."""
+    if backend.accepts is not None and not backend.accepts(spec):
+        return None
+    return next(
+        (
+            k
+            for k in range(1, backend.slots + 1)
+            if spec.runs_on(backend.worker.share(k, backend.slots))
+        ),
+        None,
     )

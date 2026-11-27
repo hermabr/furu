@@ -26,13 +26,17 @@ class LocalThreadWorkerBackend:
     accepts: Callable[[Spec], bool] | None = None
 
     @property
+    def slots(self) -> int:
+        return 1
+
+    @property
     def pool_key(self) -> str:
         return "local:" + _hash_dict_deterministically(
             {"worker": dataclasses.asdict(self.worker)}
         )
 
     def pool(self) -> LocalPool:
-        return LocalPool(max_workers=self.max_workers)
+        return LocalPool(max_allocations=self.max_workers)
 
 
 class LocalThreadPool:
@@ -46,7 +50,7 @@ class LocalThreadPool:
                 args=(manager, key, f"w{index}"),
                 name=f"furu-local-worker-{index}",
             )
-            for index in range(definition.max_workers)
+            for index in range(definition.max_allocations)
         ]
         for thread in self._threads:
             thread.start()

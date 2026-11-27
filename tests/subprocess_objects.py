@@ -13,7 +13,7 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import furu
 from furu import Metadata, Spec, batched
@@ -131,3 +131,27 @@ class SubprocessForkingLeaf(Spec):
         os.replace(self.pid_file + ".tmp", self.pid_file)
         time.sleep(30)
         return "unreachable"
+
+
+class SlotProbeLeaf(Spec):
+    """Says which process ran it and which GPUs and CPUs that process had."""
+
+    marker: int
+    gpus: int = 0
+    # Waits for this file, if named, so that probes run at once.
+    gate: str = ""
+
+    def runs_on(self, worker: furu.Worker) -> bool:
+        return worker.gpus >= self.gpus
+
+    def create(self) -> dict[str, Any]:
+        deadline = time.monotonic() + 30
+        while self.gate and not Path(self.gate).exists():
+            if time.monotonic() > deadline:
+                raise TimeoutError("never released")
+            time.sleep(0.01)
+        return {
+            "pid": os.getpid(),
+            "gpus": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "cpus": sorted(os.sched_getaffinity(0)),
+        }

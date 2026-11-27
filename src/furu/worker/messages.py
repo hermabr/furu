@@ -64,6 +64,9 @@ class Job(Launch):
     # the spec class.
     class_dir: Path
     process: ProcessSettings
+    # Which of its allocation's leases this is, and how many slots it takes.
+    lease: int = 0
+    slots: int = 1
 
     @property
     def label(self) -> str:
@@ -81,7 +84,16 @@ class Job(Launch):
 
 
 class CancelMessage(_Message):
+    """A script's Ctrl-C: drop what only it asked for."""
+
     kind: Literal["cancel"] = "cancel"
+
+
+class CancelJobMessage(_Message):
+    """Kill the child that runs one lease; its result is sent as usual."""
+
+    kind: Literal["cancel_job"] = "cancel_job"
+    lease: int
 
 
 class JobCompletedResult(_Message):
@@ -116,16 +128,38 @@ job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
 
 
 class HelloMessage(_Message):
+    """A worker: one allocation, whose ``slots`` its leases share."""
+
     kind: Literal["hello"] = "hello"
     worker: str
     backend: str
     pool: str
     log: Path | None = None  # the worker's own log file, if it has one
+    slots: int = 1
 
 
-type ServerMessage = Annotated[Job | CancelMessage, Field(discriminator="kind")]
+class DoneMessage(_Message):
+    """How the job of one lease ended."""
+
+    kind: Literal["done"] = "done"
+    lease: int
+    result: JobResult
+
+
+class ByeMessage(_Message):
+    """An idle worker would exit. The manager closes the connection if it has
+    leased it nothing meanwhile; a job it did lease voids the goodbye."""
+
+    kind: Literal["bye"] = "bye"
+
+
+type ServerMessage = Annotated[Job | CancelJobMessage, Field(discriminator="kind")]
 
 server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
+
+type WorkerMessage = Annotated[DoneMessage | ByeMessage, Field(discriminator="kind")]
+
+worker_message_adapter: TypeAdapter[WorkerMessage] = TypeAdapter(WorkerMessage)
 
 
 # --- script <-> manager --------------------------------------------------------
@@ -135,7 +169,9 @@ class SlurmPool(_Message):
     """How the manager starts a worker; identical recipes share one pool."""
 
     kind: Literal["slurm"] = "slurm"
-    max_workers: int
+    max_allocations: int
+    # The even shares of one allocation that its jobs take one or more of.
+    slots: int
     sbatch_args: list[str]
     pre_worker_commands: list[str]
     use_job_arrays: bool
@@ -147,16 +183,23 @@ class LocalPool(_Message):
     """Threads in the script's own process, against its in-process manager."""
 
     kind: Literal["local"] = "local"
-    max_workers: int
+    # Threads, each an allocation of one slot.
+    max_allocations: int
+
+    @property
+    def slots(self) -> int:
+        return 1
 
 
 type Pool = Annotated[SlurmPool | LocalPool, Field(discriminator="kind")]
 
 
 class Batch(_Message):
-    # Specs of one plan with the same name may share a create() call.
+    # Specs of one plan with the same name may share a create() call, which
+    # takes ``slots`` slots of an allocation.
     batch: str
     cap: int
+    slots: int = 1
 
 
 class JobThrottle(_Message):

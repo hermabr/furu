@@ -190,3 +190,24 @@ def test_accelerator_probe_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(provenance.subprocess, "run", missing_nvidia_smi)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     assert provenance._probe_accelerators() == ()
+
+
+def test_accelerator_probe_names_only_the_visible_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[list[str]] = []
+
+    def nvidia_smi(argv: list[str], **kwargs: object) -> object:
+        asked.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="H100\nH100\n")
+
+    monkeypatch.setattr(provenance.subprocess, "run", nvidia_smi)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,5")
+    assert provenance._probe_accelerators() == ("H100 ×2",)
+    assert asked[0][-1] == "--id=2,5"
+
+    # A slot without GPUs sees none, and nvidia-smi is not asked.
+    provenance._probe_accelerators.cache_clear()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert provenance._probe_accelerators() == ()
+    assert len(asked) == 1

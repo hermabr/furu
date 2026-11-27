@@ -70,12 +70,15 @@ def cluster() -> str | None:
     return _cluster
 
 
-def gone(cluster_name: str, job: str) -> bool:
-    """Whether Slurm says that ``job`` ended and left no process behind.
+def gone(cluster_name: str, job: str, restart: int) -> bool:
+    """Whether Slurm says that run ``restart`` of ``job`` ended and left no
+    process behind.
 
-    True only when the queue no longer runs the job and accounting has a clean
-    end for it. Raises if a Slurm command fails, times out, or prints
-    unexpected output.
+    True when the queue no longer runs the job and accounting has a clean end
+    for it, or when the queue runs it again and accounting has a clean end
+    for that run and every one before it: a requeued job starts over with
+    ``SLURM_RESTART_COUNT`` one higher. Raises if a Slurm command fails, times
+    out, or prints unexpected output.
     """
     if cluster_name != cluster():
         return False
@@ -90,12 +93,12 @@ def gone(cluster_name: str, job: str) -> bool:
         if (exc.stdout or "").strip() or "Invalid job id" not in (exc.stderr or ""):
             raise
         queued = ""
+    running = False
     for line in queued.splitlines():
         match line.split():
             case [job_id, state]:
                 # The other tasks of its array are listed with it.
-                if job_id == job and state not in _GONE:
-                    return False
+                running |= job_id == job and state not in _GONE
             case _:
                 raise ValueError(f"unexpected squeue output: {line!r}")
     # -D: a requeued job has a row for each time it ran.
@@ -115,6 +118,11 @@ def gone(cluster_name: str, job: str) -> bool:
                 states.append(state.partition(" ")[0])  # "CANCELLED by <uid>"
             case _:
                 raise ValueError(f"unexpected sacct output: {line!r}")
+    if running:
+        # Each run that was requeued has a row that says so, the first run's
+        # first. None of a node that stopped answering ended a run.
+        requeued = sum(state in {"REQUEUED", "PREEMPTED"} for state in states)
+        return restart < requeued and not {"NODE_FAIL", "BOOT_FAIL"} & {*states}
     # A row that says the job was requeued is no end: accounting can have it
     # before the row of the run that followed. Without any row it is behind
     # the queue.

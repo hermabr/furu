@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,8 +68,8 @@ class _StubManager:
 
 def _slurm_backend(**overrides: Any) -> SlurmWorkerBackend:
     fields: dict[str, Any] = {
-        "max_workers": 2,
-        "resources": SlurmResources(partition="debug", cpus_per_worker=4),
+        "max_allocations": 2,
+        "resources": SlurmResources(partition="debug", cpus=4),
     }
     return SlurmWorkerBackend(**{**fields, **overrides})
 
@@ -127,6 +128,7 @@ _CLI_ARGS = {
     "--component": "100_3",
     "--log": "/logs/100_3.log",
     "--idle-timeout": "0.25",
+    "--slots": "4",
 }
 
 
@@ -147,6 +149,7 @@ def test_worker_cli_passes_arguments_and_reads_the_url_from_the_environment(
             "component": "100_3",
             "backend": "slurm",
             "worker_log": Path("/logs/100_3.log"),
+            "slots": 4,
         }
     ]
 
@@ -166,7 +169,7 @@ def test_worker_cli_requires_every_argument(
 
 def test_slurm_backend_describes_its_worker() -> None:
     backend = _slurm_backend(
-        resources=SlurmResources(cpus_per_worker=4, memory=MemoryPerNode(8), gpus=1),
+        resources=SlurmResources(cpus=4, memory=MemoryPerNode(8), gpus=1),
         labels=("hopper",),
     )
     assert backend.worker == Worker(cpus=4, gpus=1, memory_gib=8, labels=("hopper",))
@@ -193,18 +196,18 @@ def test_slurm_pool_key_ignores_size_job_name_and_idle_timeout() -> None:
     key = _slurm_backend().pool_key
 
     assert key.startswith("slurm:")
-    assert _slurm_backend(max_workers=9).pool_key == key
+    assert _slurm_backend(max_allocations=9).pool_key == key
     assert _slurm_backend(job_name="x", idle_timeout_seconds=5.0).pool_key == key
 
 
 @pytest.mark.parametrize(
     "override",
     [
-        {"resources": SlurmResources(partition="gpu", cpus_per_worker=4)},
-        {"resources": SlurmResources(partition="debug", cpus_per_worker=8)},
+        {"resources": SlurmResources(partition="gpu", cpus=4)},
+        {"resources": SlurmResources(partition="debug", cpus=8)},
         {
             "resources": SlurmResources(
-                partition="debug", cpus_per_worker=4, memory=MemoryPerNode(8)
+                partition="debug", cpus=4, memory=MemoryPerNode(8)
             )
         },
         {"labels": ("hopper",)},
@@ -212,6 +215,7 @@ def test_slurm_pool_key_ignores_size_job_name_and_idle_timeout() -> None:
         {"export": "NIL"},
         {"export": ("HF_TOKEN",)},
         {"use_job_arrays": False},
+        {"slots": 2},
     ],
     ids=lambda override: next(iter(override)),
 )
@@ -219,13 +223,45 @@ def test_slurm_pool_key_changes_with_the_recipe(override: dict[str, Any]) -> Non
     assert _slurm_backend(**override).pool_key != _slurm_backend().pool_key
 
 
+@pytest.mark.parametrize(
+    ("resources", "slots", "match"),
+    [
+        (SlurmResources(cpus=4), 0, "1 <= slots <= cpus=4"),
+        (SlurmResources(cpus=4), 5, "1 <= slots <= cpus=4"),
+        (SlurmResources(cpus=8, nodes=2), 2, "splits one node, not 2"),
+        (SlurmResources(cpus=8, gpus=6), 4, "gpus=6 does not split evenly"),
+    ],
+)
+def test_slurm_backend_refuses_slots_it_cannot_split_evenly(
+    resources: SlurmResources, slots: int, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _slurm_backend(resources=resources, slots=slots)
+
+
+def test_slurm_backend_asks_for_the_whole_allocation_and_its_workers_for_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node = {
+        "resources": SlurmResources(cpus=64, gpus=8, memory=MemoryPerNode(512)),
+        "slots": 8,
+    }
+    backend = _slurm_backend(**node)
+
+    assert backend.worker == Worker(cpus=64, gpus=8, memory_gib=512)
+    assert backend.pool().slots == 8
+    assert {"--cpus-per-task=64", "--gpus=8", "--mem=512G"} <= {
+        *backend.pool().sbatch_args
+    }
+    pool = _pool(tmp_path, monkeypatch, _StubManager(0), **node)
+    script = (tmp_path / "workers" / "slurm-x" / "worker.sh").read_text()
+    assert script.endswith("--slots 8\n")
+    pool.stop()
+
+
 def test_slurm_pool_key_distinguishes_memory_kinds() -> None:
-    per_node = _slurm_backend(
-        resources=SlurmResources(cpus_per_worker=4, memory=MemoryPerNode(8))
-    )
-    per_cpu = _slurm_backend(
-        resources=SlurmResources(cpus_per_worker=4, memory=MemoryPerCpu(8))
-    )
+    per_node = _slurm_backend(resources=SlurmResources(cpus=4, memory=MemoryPerNode(8)))
+    per_cpu = _slurm_backend(resources=SlurmResources(cpus=4, memory=MemoryPerCpu(8)))
 
     assert per_node.pool_key != per_cpu.pool_key
 
@@ -242,7 +278,7 @@ def test_slurm_resources_emit_one_memory_option(
     memory: MemoryPerNode | MemoryPerCpu | MemoryPerGpu,
     expected_arg: str,
 ) -> None:
-    assert SlurmResources(cpus_per_worker=1, memory=memory).to_sbatch_args() == [
+    assert SlurmResources(cpus=1, memory=memory).to_sbatch_args() == [
         "--nodes=1",
         "--cpus-per-task=1",
         expected_arg,
@@ -252,10 +288,10 @@ def test_slurm_resources_emit_one_memory_option(
 @pytest.mark.parametrize(
     ("resources", "expected_memory_gib"),
     [
-        (SlurmResources(cpus_per_worker=4), 0),
-        (SlurmResources(cpus_per_worker=4, memory=MemoryPerNode(8)), 8),
-        (SlurmResources(cpus_per_worker=4, memory=MemoryPerCpu(2)), 8),
-        (SlurmResources(cpus_per_worker=4, gpus=2, memory=MemoryPerGpu(16)), 32),
+        (SlurmResources(cpus=4), 0),
+        (SlurmResources(cpus=4, memory=MemoryPerNode(8)), 8),
+        (SlurmResources(cpus=4, memory=MemoryPerCpu(2)), 8),
+        (SlurmResources(cpus=4, gpus=2, memory=MemoryPerGpu(16)), 32),
     ],
 )
 def test_slurm_resources_derive_worker_memory_gib(
@@ -267,7 +303,7 @@ def test_slurm_resources_derive_worker_memory_gib(
 
 @pytest.mark.parametrize(("gpus", "expected_args"), [(0, []), (3, ["--gpus=3"])])
 def test_slurm_resources_emit_gpu_option(gpus: int, expected_args: list[str]) -> None:
-    assert SlurmResources(cpus_per_worker=1, gpus=gpus).to_sbatch_args() == [
+    assert SlurmResources(cpus=1, gpus=gpus).to_sbatch_args() == [
         "--nodes=1",
         "--cpus-per-task=1",
         *expected_args,
@@ -275,7 +311,7 @@ def test_slurm_resources_emit_gpu_option(gpus: int, expected_args: list[str]) ->
 
 
 def test_slurm_resources_emit_node_count() -> None:
-    assert SlurmResources(cpus_per_worker=1, nodes=3).to_sbatch_args() == [
+    assert SlurmResources(cpus=1, nodes=3).to_sbatch_args() == [
         "--nodes=3",
         "--cpus-per-task=1",
     ]
@@ -335,7 +371,7 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
         _StubManager(2),
         resources=SlurmResources(
             partition="debug",
-            cpus_per_worker=4,
+            cpus=4,
             memory=MemoryPerNode(8),
             gpus=1,
             extra_sbatch_args=("--exclusive",),
@@ -377,7 +413,7 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
     assert f"--pool {pool._key}" in script
     assert '--component "${component}"' in script
     assert f'--log {worker_dir / "logs"}/"${{component}}.log"' in script
-    assert "--idle-timeout 7.5\n" in script
+    assert "--idle-timeout 7.5 \\\n    --slots 1\n" in script
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
@@ -428,7 +464,7 @@ def test_slurm_pool_tracks_job_array_tasks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    pool = _pool(tmp_path, monkeypatch, _StubManager(3), max_workers=3)
+    pool = _pool(tmp_path, monkeypatch, _StubManager(3), max_allocations=3)
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
@@ -451,7 +487,7 @@ def test_slurm_pool_ignores_untracked_array_siblings_from_sacct(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    pool = _pool(tmp_path, monkeypatch, _StubManager(3), max_workers=3)
+    pool = _pool(tmp_path, monkeypatch, _StubManager(3), max_allocations=3)
     pool._scale_once()
     pool._job_ids[:] = ["100_1"]
     active_file.write_text(
@@ -477,7 +513,7 @@ def test_slurm_pool_replaces_vanished_array_workers_as_one_array(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    pool = _pool(tmp_path, monkeypatch, _StubManager(3), max_workers=3)
+    pool = _pool(tmp_path, monkeypatch, _StubManager(3), max_allocations=3)
     pool._scale_once()
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
 
@@ -496,7 +532,7 @@ def test_slurm_pool_keeps_preempted_and_requeued_array_workers(
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     manager = _StubManager(3)
-    pool = _pool(tmp_path, monkeypatch, manager, max_workers=3)
+    pool = _pool(tmp_path, monkeypatch, manager, max_allocations=3)
     pool._scale_once()
     monkeypatch.setattr(
         type(pool), "_active_job_states", lambda self: {"100_0": "RUNNING"}
@@ -518,7 +554,7 @@ def test_slurm_pool_keeps_every_worker_while_squeue_is_unavailable(
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     manager = _StubManager(3)
-    pool = _pool(tmp_path, monkeypatch, manager, max_workers=3)
+    pool = _pool(tmp_path, monkeypatch, manager, max_allocations=3)
     pool._scale_once()
 
     # sacct reports still-queued array tasks as one grouped row, which gives
@@ -574,7 +610,7 @@ def test_slurm_pool_follows_demand_up_to_what_it_asks(
         tmp_path,
         monkeypatch,
         _StubManager(lambda: next(demands)),
-        max_workers=3,
+        max_allocations=3,
         use_job_arrays=False,
     )
 
@@ -594,7 +630,9 @@ def test_slurm_pool_replaces_workers_that_exit_without_failing(
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     manager = _StubManager(3)
-    pool = _pool(tmp_path, monkeypatch, manager, max_workers=3, use_job_arrays=False)
+    pool = _pool(
+        tmp_path, monkeypatch, manager, max_allocations=3, use_job_arrays=False
+    )
     pool._scale_once()
     assert pool._job_ids == ["100", "101", "102"]
 
@@ -616,7 +654,7 @@ def test_slurm_pool_cancels_newest_queued_workers_when_demand_drops(
         tmp_path,
         monkeypatch,
         _StubManager(lambda: next(demands)),
-        max_workers=3,
+        max_allocations=3,
         use_job_arrays=use_job_arrays,
     )
     pool._scale_once()
@@ -721,7 +759,9 @@ def test_slurm_pool_is_broken_after_many_failures_over_a_long_time(
     monkeypatch.setattr(pool_module, "_BROKEN_AFTER_S", 100.0)
     _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     manager = _StubManager(1)
-    pool = _pool(tmp_path, monkeypatch, manager, max_workers=1, use_job_arrays=False)
+    pool = _pool(
+        tmp_path, monkeypatch, manager, max_allocations=1, use_job_arrays=False
+    )
     pool._scale_once()
 
     for failed, now in (("100", 10.0), ("101", 80.0), ("102", 150.0)):
@@ -800,8 +840,8 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     monkeypatch.setenv("FURU_FAKE_SLURM_LAUNCH", "1")
     monkeypatch.setattr(run_module, "_prepare_snapshot", lambda _: CodeLocation.here())
     backend = _slurm_backend(
-        max_workers=1,
-        resources=SlurmResources(cpus_per_worker=1),
+        max_allocations=1,
+        resources=SlurmResources(cpus=1),
         idle_timeout_seconds=5.0,
     )
     leaf = SlurmEndToEndLeaf(value=7)
@@ -826,6 +866,70 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     assert argv[-1] == str(worker_dir / "worker.sh")
 
 
+class SlurmSlotLeaf(furu.Spec):
+    """Says which job and GPUs ran it. With ``meet``, waits there until
+    another one has started too."""
+
+    value: int
+    gpus: int
+    meet: str = ""
+
+    def runs_on(self, worker: furu.Worker) -> bool:
+        return worker.gpus >= self.gpus
+
+    def create(self) -> str:
+        if self.meet:
+            (Path(self.meet) / str(self.value)).touch()
+            deadline = time.monotonic() + 30
+            while len(os.listdir(self.meet)) < 2:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("ran alone")
+                time.sleep(0.01)
+        return f"{os.environ['SLURM_JOB_ID']}:{os.environ['CUDA_VISIBLE_DEVICES']}"
+
+
+def test_one_allocation_runs_jobs_side_by_side_on_slots_of_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if len(os.sched_getaffinity(0)) < 4:
+        pytest.skip("needs a CPU for each of four slots")
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    monkeypatch.setenv("FURU_FAKE_SLURM_LAUNCH", "1")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    monkeypatch.setattr(run_module, "_prepare_snapshot", lambda _: CodeLocation.here())
+    backend = _slurm_backend(
+        max_allocations=1,
+        resources=SlurmResources(cpus=4, gpus=4),
+        slots=4,
+        idle_timeout_seconds=5.0,
+    )
+    meet = tmp_path / "meet"
+    meet.mkdir()
+    leaves = [
+        SlurmSlotLeaf(value=1, gpus=1, meet=str(meet)),
+        SlurmSlotLeaf(value=2, gpus=1, meet=str(meet)),
+        SlurmSlotLeaf(value=3, gpus=4),
+    ]
+
+    with Manager.serve(
+        listen_host="127.0.0.1",
+        connect_host="127.0.0.1",
+        manager_dir=tmp_path / "manager",
+    ) as manager:
+        monkeypatch.setattr(
+            run_module,
+            "_connect_to_manager",
+            lambda: connect(manager.url, max_size=None),
+        )
+        one, two, whole = furu.create(leaves, on=[backend])
+
+    # Both one-GPU jobs ran at once, each on a GPU of its own; the whole
+    # allocation's job waited for them.
+    assert sorted([one, two]) == ["100:0", "100:1"]
+    assert whole == "100:0,1,2,3"
+    assert len(_sbatch_argvs(record_file)) == 1
+
+
 @pytest.mark.parametrize(
     "override",
     [{"job_name": "other"}, {"idle_timeout_seconds": 5.0}],
@@ -845,7 +949,7 @@ def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
         config=get_config(),
         code=CodeLocation.here(),
     )
-    for overrides in ({}, {"max_workers": 9}, override):
+    for overrides in ({}, {"max_allocations": 9}, override):
         pool = _slurm_backend(**overrides).pool()
         manager._submit(
             script,

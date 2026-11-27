@@ -12,9 +12,9 @@ from websockets.sync.client import ClientConnection, connect
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker import messages
-from furu.worker.execute import ChildSlot
+from furu.worker.execute import Children
 
-type _Event = messages.ServerMessage | messages.JobResult | BaseException | None
+type _Event = messages.ServerMessage | messages.DoneMessage | BaseException | None
 
 
 def _read_messages(connection: ClientConnection, events: queue.Queue[_Event]) -> None:
@@ -29,18 +29,20 @@ def _read_messages(connection: ClientConnection, events: queue.Queue[_Event]) ->
 
 def _start_job_thread(
     job: messages.Job,
-    child_slot: ChildSlot,
+    children: Children,
     cancelled: threading.Event,
     events: queue.Queue[_Event],
 ) -> None:
     def run() -> None:
         try:
-            events.put(child_slot.run(job, cancelled=cancelled))
+            result = children.run(job, cancelled=cancelled)
         except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
             error = "".join(traceback.format_exception(exc))
-            events.put(messages.JobFailedResult(error=error))
+            result = messages.JobFailedResult(error=error)
         except BaseException as exc:  # noqa: BLE001 -- re-raised on the main thread
             events.put(exc)
+            return
+        events.put(messages.DoneMessage(lease=job.lease, result=result))
 
     threading.Thread(target=run, name="furu-worker-job", daemon=True).start()
 
@@ -53,26 +55,35 @@ def worker_loop(
     component: str,
     backend: str,
     worker_log: Path | None = None,
+    slots: int = 1,
 ) -> None:
     """Run jobs from the manager that started this worker, then exit.
 
-    The worker never reconnects: when the connection drops it finishes its
-    current job and exits. Only a worker with its own log (``worker_log``: a
-    Slurm worker's output file) notes what it ran there.
+    The worker is one allocation of ``slots`` slots, and runs a job of each
+    lease at once, each in a child of its own. Idle for ``idle_timeout``, it
+    says goodbye and exits once the manager closes the connection. It never
+    reconnects: when the connection drops it finishes its jobs and exits.
+    Only a worker with its own log (``worker_log``: a Slurm worker's output
+    file) notes what it ran there.
     """
     logger = get_logger(component)
     note = logger.info if worker_log is not None else logger.debug
-    child_slot = ChildSlot(worker=component, backend=backend, log=worker_log)
+    children = Children(worker=component, backend=backend, log=worker_log, slots=slots)
     events: queue.Queue[_Event] = queue.Queue()
-    job: messages.Job | None = None
-    cancelled = threading.Event()  # replaced with each new job
+    # What runs, by lease, and the event that says it was cancelled.
+    jobs: dict[int, tuple[messages.Job, threading.Event]] = {}
     execution_log: Path | None = None
     connected = True
+    said_bye = False
     try:
         with connect(url, max_size=None) as connection:
             connection.send(
                 messages.HelloMessage(
-                    worker=component, backend=backend, pool=pool, log=worker_log
+                    worker=component,
+                    backend=backend,
+                    pool=pool,
+                    log=worker_log,
+                    slots=slots,
                 ).model_dump_json()
             )
             threading.Thread(
@@ -81,28 +92,34 @@ def worker_loop(
                 name="furu-worker-reader",
                 daemon=True,
             ).start()
-            while connected or job is not None:
+            while connected or jobs:
                 try:
                     event = events.get(
-                        timeout=None if job is not None else idle_timeout
+                        timeout=None if jobs or said_bye else idle_timeout
                     )
                 except queue.Empty:
                     assert idle_timeout is not None
-                    note("no work for %s; exiting", format_duration(idle_timeout))
-                    return
+                    note(
+                        "no work for %s; saying goodbye", format_duration(idle_timeout)
+                    )
+                    said_bye = True
+                    try:
+                        connection.send(messages.ByeMessage().model_dump_json())
+                    except ConnectionClosed:
+                        return
+                    continue
                 match event:
                     case None:
                         connected = False
-                        if job is not None:
+                        if jobs:
                             note(
                                 "lost the manager; finishing %s, then exiting",
-                                job.label,
+                                ", ".join(job.label for job, _ in jobs.values()),
                             )
                     case BaseException():
                         raise event
-                    case messages.Job():
-                        assert job is None
-                        job = event
+                    case messages.Job() as job:
+                        said_bye = False
                         if worker_log is not None:
                             if job.execution_log != execution_log:
                                 execution_log = job.execution_log
@@ -112,34 +129,26 @@ def worker_loop(
                                     extra={"path": execution_log},
                                 )
                             logger.info(
-                                "running %s",
-                                job.label,
-                                extra={"path": job.folder},
+                                "running %s", job.label, extra={"path": job.folder}
                             )
                         cancelled = threading.Event()
-                        _start_job_thread(job, child_slot, cancelled, events)
-                    case messages.CancelMessage():
-                        if job is not None:
-                            note("cancelled %s; killing child", job.label)
+                        jobs[job.lease] = (job, cancelled)
+                        _start_job_thread(job, children, cancelled, events)
+                    case messages.CancelJobMessage(lease=lease):
+                        if lease in jobs:
+                            job, cancelled = jobs[lease]
+                            note("cancelled %s; killing its child", job.label)
                             cancelled.set()
-                            child_slot.kill()
-                    case (
-                        messages.JobCompletedResult()
-                        | messages.JobFailedResult()
-                        | messages.JobBlockedResult()
-                    ):
-                        job = None
+                            children.kill(lease)
+                    case messages.DoneMessage() as done:
+                        del jobs[done.lease]
                         if connected:
                             try:
-                                connection.send(
-                                    messages.job_result_adapter.dump_json(
-                                        event
-                                    ).decode()
-                                )
+                                connection.send(done.model_dump_json())
                             except ConnectionClosed:
                                 connected = False
                     case _:
                         assert_never(event)
         note("manager closed the connection; exiting")
     finally:
-        child_slot.close()
+        children.close()

@@ -9,12 +9,14 @@ import time
 from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import pytest
 from gitrepo import git, init_repo
 from runs import ends_of, events_of, log_of, run_of
 from subprocess_objects import (
     OtherSubprocessEnvLeaf,
+    SlotProbeLeaf,
     SubprocessBatchLeaf,
     SubprocessBlockedParent,
     SubprocessChattyLeaf,
@@ -39,8 +41,9 @@ from furu.provenance import (
 from furu.snapshot import CodeLocation
 from furu.storage._layout import list_names
 from furu.testing import override_config
+from furu.worker import execute
 from furu.worker.backends.local import LocalThreadWorkerBackend
-from furu.worker.execute import ChildSlot
+from furu.worker.execute import Children
 from furu.worker.messages import (
     Job,
     JobBlockedResult,
@@ -52,8 +55,8 @@ from furu.worker.messages import (
 
 
 @pytest.fixture
-def child_slot() -> Iterator[ChildSlot]:
-    slot = ChildSlot(worker="w0", backend="test")
+def child_slot() -> Iterator[Children]:
+    slot = Children(worker="w0", backend="test")
     try:
         yield slot
     finally:
@@ -75,7 +78,7 @@ def _job(objs: list[Spec], *, code: CodeLocation | None = None) -> Job:
     )
 
 
-def _run(slot: ChildSlot, obj: Spec) -> JobResult:
+def _run(slot: Children, obj: Spec) -> JobResult:
     return slot.run(_job([obj]), cancelled=threading.Event())
 
 
@@ -93,7 +96,7 @@ def test_metadata_defaults_to_warm_child_with_inherited_environment() -> None:
 
 
 def test_subprocess_environment_override_is_visible_in_child(
-    child_slot: ChildSlot,
+    child_slot: Children,
 ) -> None:
     leaf = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
@@ -115,7 +118,7 @@ def test_subprocess_environment_override_is_visible_in_child(
 
 
 def test_subprocess_none_unsets_variable_in_child(
-    monkeypatch: pytest.MonkeyPatch, child_slot: ChildSlot
+    monkeypatch: pytest.MonkeyPatch, child_slot: Children
 ) -> None:
     monkeypatch.setenv("FURU_TEST_VARIABLE", "from-parent")
     leaf = SubprocessEnvLeaf(
@@ -130,7 +133,7 @@ def test_subprocess_none_unsets_variable_in_child(
 
 
 def test_subprocess_missing_required_environment_variables_fails_before_spawn(
-    monkeypatch: pytest.MonkeyPatch, child_slot: ChildSlot
+    monkeypatch: pytest.MonkeyPatch, child_slot: Children
 ) -> None:
     monkeypatch.delenv("FURU_TEST_REQUIRED", raising=False)
     leaf = SubprocessEnvLeaf(
@@ -141,11 +144,11 @@ def test_subprocess_missing_required_environment_variables_fails_before_spawn(
 
     with pytest.raises(RuntimeError, match="FURU_TEST_REQUIRED"):
         _run(child_slot, leaf)
-    assert child_slot._child is None
+    assert child_slot._children == []
 
 
 def test_subprocess_required_environment_variables_satisfied_by_parent_or_override(
-    monkeypatch: pytest.MonkeyPatch, child_slot: ChildSlot
+    monkeypatch: pytest.MonkeyPatch, child_slot: Children
 ) -> None:
     monkeypatch.setenv("FURU_TEST_REQUIRED", "from-parent")
     leaf = SubprocessEnvLeaf(
@@ -158,7 +161,7 @@ def test_subprocess_required_environment_variables_satisfied_by_parent_or_overri
 
 
 def test_subprocess_child_is_reused_across_jobs_with_same_environment(
-    child_slot: ChildSlot,
+    child_slot: Children,
 ) -> None:
     first = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
@@ -177,7 +180,7 @@ def test_subprocess_child_is_reused_across_jobs_with_same_environment(
     assert _pid_and_value(first)[0] == _pid_and_value(second)[0]
 
 
-def test_subprocess_environment_change_spawns_new_child(child_slot: ChildSlot) -> None:
+def test_subprocess_environment_change_spawns_new_child(child_slot: Children) -> None:
     first = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
         variable_value="one",
@@ -194,7 +197,7 @@ def test_subprocess_environment_change_spawns_new_child(child_slot: ChildSlot) -
 
 
 def test_subprocess_reuse_never_gets_fresh_interpreter_and_leaves_nothing_warm(
-    child_slot: ChildSlot,
+    child_slot: Children,
 ) -> None:
     first = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
@@ -210,15 +213,15 @@ def test_subprocess_reuse_never_gets_fresh_interpreter_and_leaves_nothing_warm(
     )
 
     assert isinstance(_run(child_slot, first), JobCompletedResult)
-    assert child_slot._child is None
+    assert child_slot._children == []
     assert isinstance(_run(child_slot, second), JobCompletedResult)
-    assert child_slot._child is None
+    assert child_slot._children == []
 
     assert _pid_and_value(first)[0] != _pid_and_value(second)[0]
 
 
 def test_subprocess_same_environment_same_spec_honors_class_boundary(
-    child_slot: ChildSlot,
+    child_slot: Children,
 ) -> None:
     looser = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
@@ -256,7 +259,7 @@ def test_subprocess_same_environment_same_spec_honors_class_boundary(
 
 
 def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
-    child_slot: ChildSlot,
+    child_slot: Children,
 ) -> None:
     crashing = SubprocessCrashLeaf()
 
@@ -269,7 +272,7 @@ def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
     )
     # A start with no end: the attempt was killed.
     assert [event["event"] for event in events_of(crashing)] == ["opened", "start"]
-    assert child_slot._child is None
+    assert child_slot._children == []
     # The worker saw its child die, so the folder is free for the next attempt.
     (left,) = list_names(attempt_parent([crashing]))
     assert left.startswith("free__")
@@ -291,7 +294,7 @@ def _alive(pid: int) -> bool:
 
 
 def test_kill_takes_down_what_the_job_forked(
-    child_slot: ChildSlot, tmp_path: Path
+    child_slot: Children, tmp_path: Path
 ) -> None:
     # The helper inherits the child's end of the protocol pipe; if it survives
     # the kill, the worker waits for it to exit before it sees the child died.
@@ -308,7 +311,7 @@ def test_kill_takes_down_what_the_job_forked(
         time.sleep(0.01)
     helper = int(pid_file.read_text())
     try:
-        child_slot.kill()
+        child_slot.kill(0)
         job.join(timeout=5)
         assert results, "the worker waited on the job's helper"
         (result,) = results
@@ -324,7 +327,7 @@ def test_kill_takes_down_what_the_job_forked(
         job.join()
 
 
-def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None:
+def test_subprocess_blocked_dependency_is_relayed(child_slot: Children) -> None:
     parent = SubprocessBlockedParent()
     dependency = SubprocessDependencyLeaf()
 
@@ -343,7 +346,7 @@ def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None
 
 
 def test_subprocess_cache_hit_completes_without_recreating(
-    child_slot: ChildSlot,
+    child_slot: Children,
 ) -> None:
     leaf = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
@@ -370,7 +373,7 @@ def _snapshot_repo(repo: Path, marker: str) -> str:
     return git(init_repo(repo), "rev-parse", "HEAD")
 
 
-def test_child_receives_anchored_directories(child_slot: ChildSlot) -> None:
+def test_child_receives_anchored_directories(child_slot: Children) -> None:
     # A child's cwd may be a snapshot, so it must not anchor relative paths itself.
     config = get_config()
     relative = config.directories.model_copy(
@@ -385,7 +388,7 @@ def test_child_receives_anchored_directories(child_slot: ChildSlot) -> None:
 
 
 def test_one_worker_runs_jobs_from_two_repos_into_each_repo(tmp_path: Path) -> None:
-    slot = ChildSlot(worker="w0", backend="test")
+    slot = Children(worker="w0", backend="test")
     pids_and_cwds: list[tuple[int, str]] = []
     code_dirs: list[Path] = []
     repo_roots: list[Path] = []
@@ -484,7 +487,7 @@ def test_batched_subprocess_execution_through_local_worker_backend() -> None:
 
 
 def test_job_output_lands_in_its_own_log_on_a_reused_child(
-    child_slot: ChildSlot,
+    child_slot: Children,
 ) -> None:
     first, second = SubprocessChattyLeaf(marker=1), SubprocessChattyLeaf(marker=2)
     SubprocessDependencyLeaf().create()
@@ -499,3 +502,91 @@ def test_job_output_lands_in_its_own_log_on_a_reused_child(
         assert printed == f"print from job {obj.marker}"
         assert f"I chatty stdlib info from job {obj.marker}  [" in logged
         assert raw == f"raw fd 2 from job {obj.marker}"
+
+
+# --- slots ---------------------------------------------------------------------
+
+
+def test_slots_share_whole_cores_and_the_visible_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(execute.os, "sched_getaffinity", lambda pid: set(range(8)))
+    # Hyperthreads 0 and 4 are one core, 1 and 5 the next, and so on.
+    monkeypatch.setattr(execute, "_core", lambda cpu: cpu % 4)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,5")
+
+    assert execute._shares(2) == [(["3"], {0, 4, 1, 5}), (["5"], {2, 6, 3, 7})]
+    assert [cpus for _, cpus in execute._shares(4)] == [{0, 4}, {1, 5}, {2, 6}, {3, 7}]
+
+
+@pytest.fixture
+def four_slots(monkeypatch: pytest.MonkeyPatch) -> Iterator[Children]:
+    if len(os.sched_getaffinity(0)) < 4:
+        pytest.skip("needs a CPU for each of four slots")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    children = Children(worker="w0", backend="test", slots=4)
+    try:
+        yield children
+    finally:
+        children.close()
+
+
+def _probe(children: Children, leaf: SlotProbeLeaf, *, lease: int = 0) -> JobResult:
+    job = _job([leaf]).model_copy(update={"lease": lease, "slots": max(leaf.gpus, 1)})
+    return children.run(job, cancelled=threading.Event())
+
+
+def _probed(leaf: SlotProbeLeaf) -> dict[str, Any]:
+    return leaf.load_existing()
+
+
+def test_jobs_on_slots_of_their_own_see_only_their_gpus_and_cpus(
+    tmp_path: Path, four_slots: Children
+) -> None:
+    gate = tmp_path / "go"
+    leaves = [SlotProbeLeaf(marker=marker, gate=str(gate)) for marker in range(4)]
+    results: list[JobResult] = []
+    threads = [
+        threading.Thread(
+            target=lambda leaf=leaf, lease=lease: results.append(
+                _probe(four_slots, leaf, lease=lease)
+            )
+        )
+        for lease, leaf in enumerate(leaves)
+    ]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + 30
+    while len(four_slots._children) < 4 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    gate.touch()
+    for thread in threads:
+        thread.join()
+
+    assert results == [JobCompletedResult()] * 4
+    probed = [_probed(leaf) for leaf in leaves]
+    assert sorted(str(each["gpus"]) for each in probed) == ["0", "1", "2", "3"]
+    cpus = [set(each["cpus"]) for each in probed]
+    assert all(cpus) and sum(map(len, cpus)) == len(set().union(*cpus))
+
+
+def test_a_warm_child_stays_until_a_job_needs_its_slots(four_slots: Children) -> None:
+    first, again = SlotProbeLeaf(marker=1), SlotProbeLeaf(marker=2)
+    assert _probe(four_slots, first) == JobCompletedResult()
+    assert _probe(four_slots, again) == JobCompletedResult()
+    warm = _probed(first)["pid"]
+    assert _probed(again)["pid"] == warm
+
+    # A job of two GPUs needs no slot the warm child holds, so it stays.
+    two = SlotProbeLeaf(marker=3, gpus=2)
+    assert _probe(four_slots, two) == JobCompletedResult()
+    assert _probed(two)["gpus"] == "1,2"
+    assert _alive(warm)
+
+    # The whole allocation needs them all: both warm children are retired
+    # before its child starts.
+    whole = SlotProbeLeaf(marker=4, gpus=4)
+    assert _probe(four_slots, whole) == JobCompletedResult()
+    assert _probed(whole)["gpus"] == "0,1,2,3"
+    assert not _alive(warm)
+    assert [len(child.slots) for child in four_slots._children] == [4]

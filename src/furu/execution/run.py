@@ -28,7 +28,7 @@ from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
 from furu.utils import error_summary, format_duration
-from furu.worker.backends.protocol import WorkerBackend, can_run
+from furu.worker.backends.protocol import WorkerBackend, slots_for
 from furu.worker.messages import (
     Batch,
     ErrorMessage,
@@ -91,15 +91,23 @@ class Run:
         """Say how ``objs`` run, and wait for the ones that are new to this run.
 
         Specs that run the same way are one group: the same class folder and
-        process, and on each pool that can run them the same batch.
+        process, and on each pool that can run them the same batch. A spec
+        takes the fewest slots of a pool's allocation that it runs on, and its
+        batch follows what those slots offer.
         """
         groups: dict[tuple[object, ...], Group] = {}
         nowhere = []
         for obj in objs:
             pools = tuple(
-                (key, batch_of(obj, backend.worker, self.firsts))
+                (
+                    key,
+                    *batch_of(
+                        obj, backend.worker.share(slots, backend.slots), self.firsts
+                    ),
+                    slots,
+                )
                 for key, backend in self.backends.items()
-                if can_run(backend, obj)
+                if (slots := slots_for(backend, obj)) is not None
             )
             if not pools:
                 nowhere.append(obj.object_id)
@@ -118,7 +126,8 @@ class Run:
                     class_dir=obj._class_dir,
                     process=ProcessSettings.from_metadata(metadata),
                     pools={
-                        key: Batch(batch=name, cap=cap) for key, (name, cap) in pools
+                        key: Batch(batch=name, cap=cap, slots=slots)
+                        for key, name, cap, slots in pools
                     },
                     throttle=None
                     if throttle is None

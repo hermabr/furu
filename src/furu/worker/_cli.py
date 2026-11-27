@@ -23,6 +23,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         help="seconds to wait without a job before this worker exits",
     )
+    parser.add_argument(
+        "--slots",
+        required=True,
+        type=int,
+        help="the even shares of this allocation that jobs take",
+    )
     args = parser.parse_args(argv)
     worker_loop(
         url=os.environ[MANAGER_URL_ENV_VAR],
@@ -31,6 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         component=args.component,
         backend="slurm",
         worker_log=args.log,
+        slots=args.slots,
     )
     return 0
 

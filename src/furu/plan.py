@@ -284,17 +284,19 @@ class File:
     def new(cls, folder: Path, suffix: str = "") -> File:
         """Create this process's file in ``folder``.
 
-        It is named for the process's Slurm job, or for its machine and
-        process id. One name can stand for several processes, one after
-        another, and a process never adds to a file it did not create: when
-        the name is taken it adds -2, then -3.
+        It is named for the process's Slurm job, or its machine, and its
+        process id, so the children of one allocation do not race for one
+        name. One name can stand for several processes, one after another,
+        and a process never adds to a file it did not create: when the name
+        is taken it adds -2, then -3.
         """
         folder.mkdir(parents=True, exist_ok=True)
-        name = (
+        where = (
             f"job-{job}"
             if (job := os.environ.get("SLURM_JOB_ID"))
-            else f"{socket.gethostname()}-pid-{os.getpid()}"
+            else socket.gethostname()
         )
+        name = f"{where}-pid-{os.getpid()}"
         taken = 0
         while True:
             try:

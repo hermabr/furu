@@ -140,7 +140,7 @@ def test_a_job_the_queue_forgot_and_accounting_ended_cleanly_is_gone(
 ) -> None:
     ran = answers(squeue=_failed("squeue", FORGOTTEN), sacct="123|COMPLETED|None\n")
 
-    assert slurm.gone("sc", "123")
+    assert slurm.gone("sc", "123", 0)
     assert ran == [SQUEUE, SACCT]
 
 
@@ -166,7 +166,7 @@ def test_every_clean_end_is_gone(accounted: str, answers: Answers) -> None:
     # The queue can also answer with nothing for a job it has forgotten.
     answers(squeue="", sacct=accounted)
 
-    assert slurm.gone("sc", "123")
+    assert slurm.gone("sc", "123", 0)
 
 
 @pytest.mark.parametrize(
@@ -184,7 +184,7 @@ def test_a_job_the_queue_still_remembers_as_ended_is_gone(
 ) -> None:
     ran = answers(squeue=queued, sacct="123|COMPLETED|None\n")
 
-    assert slurm.gone("sc", "123")
+    assert slurm.gone("sc", "123", 0)
     assert ran == [SQUEUE, SACCT]
 
 
@@ -206,8 +206,30 @@ def test_a_job_the_queue_lists_as_anything_else_is_not_gone(
 ) -> None:
     ran = answers(squeue=queued, sacct="123|COMPLETED|None\n")
 
-    assert not slurm.gone("sc", "123")
-    assert ran == [SQUEUE]  # accounting is not asked
+    assert not slurm.gone("sc", "123", 0)
+    assert ran == [SQUEUE, SACCT]
+
+
+@pytest.mark.parametrize(
+    ("accounted", "gone"),
+    [
+        ("123|REQUEUED|None\n123|RUNNING|None\n", [True, False]),
+        ("123|PREEMPTED|None\n", [True, False]),
+        ("123|PREEMPTED|None\n123|REQUEUED|None\n", [True, True, False]),
+        # Not requeued, or by a node that may still run what it ran.
+        ("123|RUNNING|None\n", [False]),
+        ("123|COMPLETED|None\n", [False]),
+        ("123|NODE_FAIL|None\n123|PREEMPTED|None\n", [False, False, False]),
+        ("123|PREEMPTED|kill task failed\n", [False, False]),
+    ],
+)
+def test_a_run_of_a_job_the_queue_runs_again_is_gone(
+    accounted: str, gone: list[bool], answers: Answers
+) -> None:
+    # SLURM_RESTART_COUNT is one higher each time a requeued job runs again.
+    answers(squeue="123 RUNNING\n", sacct=accounted)
+
+    assert [slurm.gone("sc", "123", restart) for restart in range(len(gone))] == gone
 
 
 @pytest.mark.parametrize(
@@ -233,7 +255,7 @@ def test_an_end_accounting_does_not_call_clean_is_not_gone(
 ) -> None:
     answers(squeue=_failed("squeue", FORGOTTEN), sacct=accounted)
 
-    assert not slurm.gone("sc", "123")
+    assert not slurm.gone("sc", "123", 0)
 
 
 @pytest.mark.parametrize(
@@ -290,7 +312,7 @@ def test_a_slurm_failure_or_unexpected_output_raises(
     answers(**table)
 
     with pytest.raises(error):
-        slurm.gone("sc", "123")
+        slurm.gone("sc", "123", 0)
 
 
 @pytest.mark.parametrize("cluster", ["other", None])
@@ -299,7 +321,7 @@ def test_a_job_of_another_cluster_is_not_gone_and_slurm_is_not_asked(
 ) -> None:
     ran = answers(cluster, squeue="", sacct="123|COMPLETED|None\n")
 
-    assert not slurm.gone("sc", "123")
+    assert not slurm.gone("sc", "123", 0)
     assert ran == []
 
 
@@ -318,6 +340,6 @@ def test_the_cluster_a_job_is_checked_against_is_asked_of_the_controller_once(
 
     monkeypatch.setattr(slurm, "run", fake)
 
-    assert slurm.gone("sc", "123") and slurm.gone("sc", "123")
-    assert not slurm.gone("other", "123")
+    assert slurm.gone("sc", "123", 0) and slurm.gone("sc", "123", 0)
+    assert not slurm.gone("other", "123", 0)
     assert ran == ["scontrol", "squeue", "sacct", "squeue", "sacct"]
