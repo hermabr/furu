@@ -1,10 +1,11 @@
 import json
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -1108,6 +1109,64 @@ def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happe
     assert _lease(manager) is None and not manager.placed
 
 
+def test_scripts_that_share_a_slurm_pool_each_name_its_workers() -> None:
+    manager = Manager(url="ws://unused", manager_dir=None)
+    key = CPU_POOL.pool_key
+    backend = SlurmWorkerBackend(max_allocations=1, resources=SlurmResources(cpus=1))
+    pools = [replace(backend, job_name=name).pool() for name in ("a", "b")]
+    for value, pool in enumerate(pools):
+        script, _ = _submit(
+            manager, [RunLeaf(value=value)], plan_path=_plan(pool.job_name)
+        )
+        script.pools = {key: pool}
+
+    # A job says the name that the script that answers for its specs gives.
+    assert [_leased(manager).job.slurm_job_name for _ in pools] == ["a", "b"]
+
+
+def test_idle_workers_of_a_shared_slurm_pool_wait_as_its_scripts_ask() -> None:
+    manager = Manager(url="ws://unused", manager_dir=None)
+    two = SlurmWorkerBackend(
+        max_allocations=2,
+        resources=SlurmResources(cpus=1),
+        idle_timeout_seconds=100.0,
+    )
+    three = replace(two, max_allocations=3, idle_timeout_seconds=50.0)
+    manager.scripts = [
+        _Script(cast(ServerConnection, None), pools={"p": backend.pool()})
+        for backend in (two, three)
+    ]
+    manager.last_asked["p"] = two.pool()
+    # Each has been idle a second longer than the next.
+    workers = [
+        _Allocation(cast(ServerConnection, None), f"w{i}", "p", 1, idle_since=i)
+        for i in range(4)
+    ]
+    manager.allocations = list(workers)
+
+    def left() -> list[float]:
+        idle = manager._idle_left(10.0)
+        return [idle[worker] for worker in workers]
+
+    # The longest idle is the 4th, which no script asks for. The 3rd waits as
+    # the script with 3 workers asks, the others as the more patient one.
+    assert left() == [0 - 10, 50 - 9, 100 - 8, 100 - 7]
+    # A busy worker ranks before every idle one, and waits for nothing.
+    lease = _Lease([], cast(Job, None), "p", None, 0.0)
+    busy = _Allocation(cast(ServerConnection, None), "busy", "p", 1, leases={1: lease})
+    manager.allocations.append(busy)
+    assert left() == [0 - 10, 0 - 9, 50 - 8, 100 - 7]
+    assert busy not in manager._idle_left(10.0)
+    # Only the scripts that are connected count: here the one with 3 workers.
+    del manager.scripts[0]
+    assert left() == [0 - 10, 0 - 9, 50 - 8, 50 - 7]
+    # With none, the last to ask counts. A local pool's threads always stay.
+    manager.scripts.clear()
+    assert left() == [0 - 10, 0 - 9, 0 - 8, 100 - 7]
+    manager.last_asked["p"] = LocalPool(max_workers=9)
+    assert left() == [math.inf] * 4
+
+
 def test_each_script_answers_for_its_own_specs_of_a_batch_that_did_not_complete() -> (
     None
 ):
@@ -1663,9 +1722,7 @@ def _raw_slurm_pool(
     connects its workers."""
 
     def start(self: Manager, key: str, definition: SlurmPool) -> object:
-        return SimpleNamespace(
-            definition=definition, job_completed=lambda: None, stop=lambda: None
-        )
+        return SimpleNamespace(job_completed=lambda: None, stop=lambda: None)
 
     monkeypatch.setattr(Manager, "_start_pool", start)
     return SlurmPool(
@@ -1896,15 +1953,6 @@ def test_the_manager_sends_away_a_worker_that_had_no_job_for_the_idle_timeout(
         assert manager.allocations == []
 
 
-def test_a_local_worker_is_never_sent_away() -> None:
-    with Manager.serve(
-        listen_host="127.0.0.1", connect_host="127.0.0.1", manager_dir=None
-    ) as manager:
-        _submit_over(manager, RunLeaf(value=1)).close()
-        with _hello(manager.url) as worker, pytest.raises(TimeoutError):
-            worker.recv(timeout=0.5)
-
-
 class TogetherLeaf(Spec):
     """Finishes only once its sibling runs too."""
 
@@ -1925,6 +1973,7 @@ def test_a_worker_runs_its_jobs_at_once_and_leaves_when_it_is_sent_away(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     pool = _raw_slurm_pool(monkeypatch, slots=2, idle_timeout_seconds=0.2)
+    monkeypatch.setattr(slurm, "run", lambda *argv: None)  # naming its Slurm job
     leaves = [TogetherLeaf(value=value, folder=str(tmp_path)) for value in (1, 2)]
 
     with (
@@ -2185,6 +2234,35 @@ def test_worker_loop_exits_when_the_manager_closes_the_connection() -> None:
 
         assert len(server.hellos) == 1
         assert server.results == []
+
+
+def test_slurm_worker_takes_the_job_name_of_each_job_that_names_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran: list[tuple[str, ...]] = []
+    monkeypatch.setattr(slurm, "run", lambda *argv: ran.append(argv))
+    monkeypatch.setenv("SLURM_JOB_NAME", "a")
+    # The id of one task of each array is the array's, which names them all.
+    monkeypatch.setenv("SLURM_JOB_ID", "100")
+    jobs = [
+        _job(RunLeaf(value=value)).model_copy(update={"slurm_job_name": name})
+        for value, name in enumerate(["a", "b", "b", None, "a"])
+    ]
+
+    with _scripted_worker_server(jobs) as server:
+        worker_loop(
+            url=server.server_url,
+            pool="cpu",
+            component="100_1",
+            backend="test",
+        )
+        assert len(server.results) == len(jobs)
+
+    time.sleep(0.1)  # the renames are not waited for
+    assert sorted(ran) == [
+        ("scontrol", "update", "JobId=100_1", "JobName=a"),
+        ("scontrol", "update", "JobId=100_1", "JobName=b"),
+    ]
 
 
 def test_worker_with_its_own_log_notes_what_it_ran_there(

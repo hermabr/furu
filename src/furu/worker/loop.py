@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import traceback
@@ -9,6 +10,7 @@ from typing import assert_never
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
+from furu import slurm
 from furu.logging import get_logger
 from furu.worker import messages
 from furu.worker.execute import Children
@@ -75,6 +77,7 @@ def worker_loop(
     # Each running job and what tells its thread that it was cancelled.
     running: dict[int, tuple[messages.Job, threading.Event]] = {}
     execution_log: Path | None = None
+    slurm_job_name = os.environ.get("SLURM_JOB_NAME")
     connected = True
     try:
         with connect(url, max_size=None) as connection:
@@ -118,6 +121,13 @@ def worker_loop(
                         cancelled = threading.Event()
                         running[job.lease] = job, cancelled
                         _start_job_thread(job, children, cancelled, events)
+                        # So squeue shows whose job a worker of a shared pool
+                        # runs. Nice to have: not waited for, and may fail.
+                        if job.slurm_job_name not in (None, slurm_job_name):
+                            slurm_job_name = job.slurm_job_name
+                            me, name = f"JobId={component}", f"JobName={slurm_job_name}"
+                            rename = ("scontrol", "update", me, name)
+                            threading.Thread(target=slurm.run, args=rename).start()
                     case messages.CancelJobMessage(lease=lease):
                         if lease in running:
                             job, cancelled = running[lease]
