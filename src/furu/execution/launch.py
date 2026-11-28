@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Iterator, Sequence
+from contextlib import suppress
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from pydantic import BaseModel
 
 from furu._batched import is_batched
 from furu._tree import specs_in
+from furu.config import layers
 from furu.core import Spec
 from furu.dag import Dag
 from furu.dependencies import creation
@@ -217,13 +219,15 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
     unexplained: defaultdict[str, list[str]] = defaultdict(list)
     for class_dir, cls in class_dirs.items():
         explained = set(map(class_part_of, explained_names(cls)))
-        try:
-            folders = set(os.listdir(class_dir.parent))
-        except FileNotFoundError:
-            folders = set()
-        for folder in folders - explained:
-            path = class_dir.parent / folder
-            if os.listdir(path) == [REMEMBERED]:
+        # A folder in the store or in an overlay: either one's results are left.
+        folders: dict[str, list[Path]] = {}
+        for parent in layers(class_dir.parent):
+            with suppress(FileNotFoundError):
+                for folder in os.listdir(parent):
+                    folders.setdefault(folder, []).append(parent / folder)
+        for folder in folders.keys() - explained:
+            path = folders[folder][0]
+            if all(os.listdir(held) == [REMEMBERED] for held in folders[folder]):
                 continue  # what dependency methods returned, and no result
             unexplained[f"{stored_name(cls)}:{folder}"].append(
                 f"{stored_name(cls)}: {path} was {_stored(cls, schema.stored_names(path))}"

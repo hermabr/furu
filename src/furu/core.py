@@ -19,6 +19,7 @@ from typing import (
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
 from furu._declared_types import cached_type_hints
+from furu.config import get_config, layers
 from furu.dependencies import (
     Returned,
     _Dependency,
@@ -275,7 +276,8 @@ class Spec(_FuruDataclassTransform, ABC):
         the deleted results stays done. A spec with ``@furu.batched`` is a row
         in a run that other specs share, so this raises and names that run.
         A working folder that is not free to take raises too: its create() may
-        be running.
+        be running. In an overlay session only the overlay's folders go, and a
+        result that counts in the store raises: nothing hides it from here.
         """
         if is_batched(type(self)):
             row = stored_row(self)
@@ -288,6 +290,12 @@ class Spec(_FuruDataclassTransform, ABC):
                     else f"Its result is a row in {row.run}, and deleting that "
                     "folder deletes every spec in the batch."
                 )
+            )
+        if get_config().overlay is not None and (row := Stored(store=True).row(self)):
+            raise RuntimeError(
+                f"{self.object_id}.delete(): its result {row.run} is in the store, "
+                "which an overlay session reads and never changes. Delete it "
+                "without FURU_OVERLAY, or change a field to compute a new spec."
             )
         parent = attempt_parent([self])
         try:
@@ -376,7 +384,8 @@ class Spec(_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _class_dir(self) -> Path:
-        return self._metadata.storage / self._stored_name / self._class_part
+        """Where the class's folder is written: in the overlay of an overlay session."""
+        return layers(self._metadata.storage / self._stored_name / self._class_part)[0]
 
 
 def attempt_parent(specs: Sequence[Spec]) -> Path:

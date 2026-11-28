@@ -137,6 +137,9 @@ def _prepare_snapshot(provenance: SubmitProvenance) -> CodeLocation:
 def _connect_to_manager() -> ClientConnection:
     """Connect to the running manager, waiting for one to start."""
     address = get_config().manager_version_dir / "address.json"
+    # An overlay session's manager is its own, started in the session.
+    overlay = get_config().overlay
+    start = f"FURU_OVERLAY={overlay} " if overlay else ""
     waiting = False
     while True:
         try:
@@ -147,7 +150,8 @@ def _connect_to_manager() -> ClientConnection:
                 waiting = True
                 logger.warning(
                     "waiting for the furu manager (start one with "
-                    "uvx furu@%s manager) · %s",
+                    "%suvx furu@%s manager) · %s",
+                    start,
                     version("furu"),
                     type(exc).__name__,
                     extra={"path": address},

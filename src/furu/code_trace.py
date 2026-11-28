@@ -49,7 +49,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.config import get_config
+from furu.config import get_config, layers
 from furu.logging import get_logger
 from furu.storage._layout import FIXED, trace_path_in, version_dirs_in
 from furu.utils import _hash_dict_deterministically
@@ -682,9 +682,14 @@ def _check(path: Path, storage_root: Path) -> tuple[Trace, str | None] | None:
     key = os.path.normpath(path)
     if (checked := _CHECKED.get(key)) is not None:
         return checked
-    try:
-        trace = Trace.model_validate_json(Path(key).read_bytes())
-    except (OSError, ValueError):
+    # A code version's trace.json is the same in either layer.
+    for layer in layers(Path(key)):
+        try:
+            trace = Trace.model_validate_json(layer.read_bytes())
+            break
+        except (OSError, ValueError):
+            continue
+    else:
         return None
     why = _changed(trace)
     if why is None:
@@ -822,7 +827,8 @@ class _Collector:
         self.data_dirs = tuple(
             path
             for _, anchored in get_config().directories.anchored()
-            if not root.startswith(path := _realpath(str(anchored)) + os.sep)
+            for layer in layers(anchored)
+            if not root.startswith(path := _realpath(str(layer)) + os.sep)
         )
         self.opened: set[str] = set()  # repo files besides .py that create() read
         self.ran = {rel: set(names) for rel, names in state.ran.items()}
@@ -975,7 +981,8 @@ class Recording:
         version = run.parent.parent
         if version.name == FIXED:
             return
-        name = os.path.relpath(version, self.storage_root)
+        # Between the paths in the store, so the name holds in either layer.
+        name = os.path.relpath(layers(version)[-1], layers(self.storage_root)[-1])
         if name not in self.built_on:
             self.built_on.add(name)
             if self._log is not None:

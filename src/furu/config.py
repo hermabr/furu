@@ -1,10 +1,12 @@
 import functools
+import os
 import subprocess
+from contextlib import suppress
 from importlib.metadata import version
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -70,11 +72,13 @@ class _FuruDirectories(BaseModel):
     snapshots: Path = Path("furu-data") / "snapshots"
 
     def anchored(self) -> "_FuruDirectories":
+        """Absolute, and inside the overlay in an overlay session."""
+        absolute = {
+            name: path if path.is_absolute() else _project_anchor() / path
+            for name, path in self
+        }
         return _FuruDirectories(
-            **{
-                name: path if path.is_absolute() else _project_anchor() / path
-                for name, path in self
-            }
+            **{name: layers(path)[0] for name, path in absolute.items()}
         )
 
 
@@ -103,11 +107,22 @@ class _Config(BaseSettings):
     code_version: CodeVersion = "fixed"
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+    # FURU_OVERLAY only: see layers().
+    overlay: Path | None = None
+
+    @field_validator("overlay")
+    @classmethod
+    def _absolute(cls, overlay: Path | None) -> Path | None:
+        if overlay is not None and not overlay.is_absolute():
+            raise ValueError(f"FURU_OVERLAY must be an absolute path, got {overlay}")
+        return overlay if overlay is None else Path(os.path.normpath(overlay))
 
     @property
     def manager_version_dir(self) -> Path:
-        """This furu version's manager: one per version, so scripts never meet another."""
-        return self.manager_dir / version("furu")
+        """This furu version's manager: one per version, so scripts never meet
+        another, and one per overlay, so an overlay session never meets the
+        store's."""
+        return layers(self.manager_dir / version("furu"))[0]
 
     def anchored(self) -> "_Config":
         """This config with absolute directories, for processes whose working
@@ -127,9 +142,21 @@ class _Config(BaseSettings):
             init_settings,
             env_settings,
             dotenv_settings,
-            PyprojectTomlConfigSettingsSource(settings_cls),
+            _Pyproject(settings_cls),
             file_secret_settings,
         )
+
+
+class _Pyproject(PyprojectTomlConfigSettingsSource):
+    def __call__(self) -> dict[str, object]:
+        settings = super().__call__()
+        if "overlay" in settings:
+            raise ValueError(
+                "[tool.furu] sets overlay, which only the FURU_OVERLAY "
+                "environment variable may: a committed overlay would hide every "
+                "launch's results from the store"
+            )
+        return settings
 
 
 _config = _Config()
@@ -142,3 +169,44 @@ def get_config() -> _Config:
 def _set_config(config: _Config) -> None:
     global _config
     _config = config
+
+
+# Marks a folder as an overlay, and keeps it out of `git status`.
+_OVERLAY_MARK = "# a furu overlay: rm -rf this folder to undo its session\n*\n"
+
+
+def layers(path: Path) -> list[Path]:
+    """Where what furu keeps at ``path`` is: in the overlay, then in the store.
+
+    With ``FURU_OVERLAY`` set, furu writes nothing but the overlay: what it
+    would write to an absolute path goes to that path under the overlay, and
+    what it reads it looks for there first. The store is read, never written
+    or locked, so ``rm -rf`` of the overlay undoes the session. The mapping
+    goes both ways, so either path gives both layers. Without an overlay,
+    ``path`` is the only layer.
+    """
+    if (overlay := get_config().overlay) is None:
+        return [path]
+    path = Path(os.path.abspath(path))
+    store = (
+        Path("/", path.relative_to(overlay)) if path.is_relative_to(overlay) else path
+    )
+    return [_claimed(overlay) / store.relative_to(store.anchor), store]
+
+
+@functools.cache
+def _claimed(overlay: Path) -> Path:
+    """The overlay, made the first time: a folder of furu's own, never one in use."""
+    mark = overlay / ".gitignore"
+    with suppress(OSError):
+        if mark.read_text(encoding="utf-8") == _OVERLAY_MARK:
+            return overlay
+    with suppress(FileNotFoundError):
+        if any(overlay.iterdir()):
+            raise RuntimeError(
+                f"FURU_OVERLAY={overlay} is a folder that furu did not make. An "
+                "overlay is undone with rm -rf, so point it at a new folder."
+            )
+    overlay.mkdir(parents=True, exist_ok=True)
+    mark.write_text(_OVERLAY_MARK, encoding="utf-8")
+    return overlay
