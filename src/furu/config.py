@@ -91,18 +91,10 @@ class _FuruDirectories(BaseModel):
         )
 
 
-class _FuruWorkerConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    max_retries_per_object: int = 10
-
-
 class _Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FURU_",
         env_nested_delimiter="__",
-        env_file=".env",
-        env_file_encoding="utf-8",
         env_ignore_empty=True,
         pyproject_toml_depth=4,
         pyproject_toml_table_header=("tool", "furu"),
@@ -117,10 +109,10 @@ class _Config(BaseSettings):
     code_version: CodeVersion = "fixed"
     # A debug session: every write goes under this folder and the real store
     # is only read (see `upper`). Only FURU_OVERLAY in the environment sets it,
-    # so no checkout or file can turn one on for whoever runs there next.
+    # so no checkout can turn one on for whoever runs there next.
     overlay: Path | None = None
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
-    worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+    max_retries_per_object: int = 10
 
     @property
     def manager_version_dir(self) -> Path:
@@ -142,19 +134,12 @@ class _Config(BaseSettings):
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         pyproject = PyprojectTomlConfigSettingsSource(settings_cls)
-        for file, source in ((".env", dotenv_settings), ("pyproject.toml", pyproject)):
-            if "overlay" in source():
-                raise ValueError(
-                    f"{file} sets a furu overlay, which only the environment "
-                    f"may: run with {OVERLAY_ENV}=/an/absolute/folder"
-                )
-        return (
-            init_settings,
-            env_settings,
-            dotenv_settings,
-            pyproject,
-            file_secret_settings,
-        )
+        if "overlay" in pyproject():
+            raise ValueError(
+                "pyproject.toml sets a furu overlay, which only the environment "
+                f"may: run with {OVERLAY_ENV}=/an/absolute/folder"
+            )
+        return init_settings, env_settings, pyproject
 
 
 _config = _Config()

@@ -61,7 +61,7 @@ class Run:
     backends: dict[str, WorkerBackend]
     launch: Launch
     max_retries_per_object: int = field(
-        default_factory=lambda: get_config().worker.max_retries_per_object
+        default_factory=lambda: get_config().max_retries_per_object
     )
     # Every spec this run asked the manager for, and the ones still to end.
     specs: dict[str, Spec] = field(default_factory=dict)

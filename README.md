@@ -26,8 +26,8 @@ mirrored there, so `/data/objects/...` is written to
   the session; run again with the same folder to go on from it.
 - `Spec.delete()` deletes only what the overlay holds. For a result in the real
   store it raises and deletes nothing.
-- Only the environment turns an overlay on: `pyproject.toml` and `.env` may not
-  set it, an empty `FURU_OVERLAY=` is unset, and `pytest` runs ignore it.
+- Only the environment turns an overlay on: `pyproject.toml` may not set it, an
+  empty `FURU_OVERLAY=` is unset, and `pytest` runs ignore it.
 - The folder is an absolute path to a new or empty folder, or to an overlay an
   earlier session made. Furu refuses any other existing folder. An overlay
   inside a git repository stays out of `git status`.

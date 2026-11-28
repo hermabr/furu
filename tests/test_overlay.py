@@ -156,29 +156,18 @@ def test_an_empty_variable_is_no_overlay(monkeypatch: pytest.MonkeyPatch) -> Non
     assert _Config().overlay is None
 
 
-@pytest.mark.parametrize(
-    ("file", "text"),
-    [
-        ("pyproject.toml", '[tool.furu]\noverlay = "/tmp/furu-overlay"\n'),
-        (".env", "FURU_OVERLAY=/tmp/furu-overlay\n"),
-    ],
-)
-def test_a_file_cannot_set_the_overlay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file: str, text: str
+def test_pyproject_cannot_set_the_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / file).write_text(text, encoding="utf-8")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[tool.furu]\noverlay = "/tmp/furu-overlay"\n')
 
-    with pytest.raises(ValueError, match=f"{file} sets a furu overlay"):
+    with pytest.raises(ValueError, match="pyproject.toml sets a furu overlay"):
         _Config()
 
-    # The environment still may, beside a file that sets something else.
-    (tmp_path / file).write_text(
-        'tool.furu.code_version = "traced"\n'
-        if file == "pyproject.toml"
-        else "FURU_CODE_VERSION=traced\nFURU_OVERLAY=\n",
-        encoding="utf-8",
-    )
+    # The environment still may, beside a pyproject that sets something else.
+    pyproject.write_text('tool.furu.code_version = "traced"\n')
     monkeypatch.setenv("FURU_OVERLAY", str(tmp_path / "overlay"))
     config = _Config()
     assert (config.code_version, config.overlay) == ("traced", tmp_path / "overlay")

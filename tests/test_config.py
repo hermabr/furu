@@ -8,7 +8,6 @@ from pydantic import ValidationError
 from furu.config import (
     _Config,
     _FuruDirectories,
-    _FuruWorkerConfig,
     _project_anchor,
     _set_config,
     get_config,
@@ -21,7 +20,7 @@ pytestmark = pytest.mark.usefixtures("fresh_caches")
 def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
-    monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
+    monkeypatch.setenv("FURU_MAX_RETRIES_PER_OBJECT", "3")
 
     config = _Config()
 
@@ -29,9 +28,7 @@ def test_config_reads_environment(monkeypatch) -> None:
         objects=Path("/tmp/furu-objects"),
         executions=Path("/tmp/furu-executions"),
     )
-    assert config.worker == _FuruWorkerConfig(
-        max_retries_per_object=3,
-    )
+    assert config.max_retries_per_object == 3
 
 
 def test_relative_directories_anchor_to_main_worktree(tmp_path, monkeypatch) -> None:
@@ -153,13 +150,11 @@ def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
         """
 [tool.furu]
 code_version = "traced"
+max_retries_per_object = 3
 
 [tool.furu.directories]
 objects = "/tmp/furu-pyproject-objects"
 executions = "/tmp/furu-pyproject-executions"
-
-[tool.furu.worker]
-max_retries_per_object = 3
 """,
         encoding="utf-8",
     )
@@ -172,9 +167,7 @@ max_retries_per_object = 3
         objects=Path("/tmp/furu-pyproject-objects"),
         executions=Path("/tmp/furu-pyproject-executions"),
     )
-    assert config.worker == _FuruWorkerConfig(
-        max_retries_per_object=3,
-    )
+    assert config.max_retries_per_object == 3
 
 
 def test_config_discovers_pyproject_toml_in_parent_directory(

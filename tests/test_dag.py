@@ -297,12 +297,7 @@ def test_worker_run_reports_worker_failures():
     failing = AlwaysFails(name="boom")
     parent = DependsOnFailing(label="p", child=failing)
 
-    config = get_config()
-    no_retries = config.model_copy(
-        update={
-            "worker": config.worker.model_copy(update={"max_retries_per_object": 0})
-        }
-    )
+    no_retries = get_config().model_copy(update={"max_retries_per_object": 0})
     with (
         override_config(no_retries),
         pytest.raises(RuntimeError, match="1 spec failed"),
