@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from furu._declared_types import cached_type_hints
+from furu.config import layers
 from furu.migration.steps import MigrationError, describe, naming, stored_name
 from furu.serializer.artifact import to_json
 from furu.storage._layout import schema_lock_path_in, schema_path_in
@@ -132,15 +133,21 @@ def short_lock(path: Path) -> Generator[None]:
 
 
 def _read(path: Path) -> list[dict[str, Any]] | None:
-    """The file's whole lines; None when there is no file."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        if _missing(exc):
-            return None
-        raise
+    """The file's whole lines; None when there is no file.
+
+    With an overlay the file grows there: its lines follow the real store's.
+    """
+    texts = []
+    for layer in reversed(layers(path)):
+        try:
+            texts.append(layer.read_text(encoding="utf-8"))
+        except OSError as exc:
+            if not _missing(exc):
+                raise
+    if not texts:
+        return None
     lines = []
-    for line in text.splitlines():
+    for line in "\n".join(texts).splitlines():
         try:
             lines.append(json.loads(line))
         except ValueError:  # blank, or cut short when its writer was killed
@@ -184,6 +191,8 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
     lines = _read(path) if declared or record else None
     if lines is not None or record:
         if not lines or declared.keys() - _recorded_defaults(lines).keys():
+            # Not there yet when the file read is the real store's, under an overlay.
+            class_dir.mkdir(parents=True, exist_ok=True)
             with short_lock(schema_lock_path_in(class_dir)):
                 lines = _read(path) or []
                 recorded = _recorded_defaults(lines)

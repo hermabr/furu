@@ -19,6 +19,7 @@ from typing import (
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
 from furu._declared_types import cached_type_hints
+from furu.config import OVERLAY_ENV, lower, upper
 from furu.dependencies import (
     Returned,
     _Dependency,
@@ -276,6 +277,10 @@ class Spec(_FuruDataclassTransform, ABC):
         in a run that other specs share, so this raises and names that run.
         A working folder that is not free to take raises too: its create() may
         be running.
+
+        With an overlay, only what is in the overlay is removed. A spec whose
+        result the real store holds would stay done, so this raises and
+        removes nothing.
         """
         if is_batched(type(self)):
             row = stored_row(self)
@@ -288,6 +293,16 @@ class Spec(_FuruDataclassTransform, ABC):
                     else f"Its result is a row in {row.run}, and deleting that "
                     "folder deletes every spec in the batch."
                 )
+            )
+        real, name = lower(self._class_dir), self._artifact_hash
+        if real != self._class_dir and (
+            kept := Stored().named(real, self._metadata.code_version, name)
+        ):
+            raise RuntimeError(
+                f"{self.object_id}.delete(): its result is in the real store, at "
+                f"{kept[0]}, and a session with {OVERLAY_ENV} set changes only "
+                "its overlay. Nothing was deleted. To compute it again in the "
+                "overlay, change a field; to delete it, run without the overlay."
             )
         parent = attempt_parent([self])
         try:
@@ -376,7 +391,8 @@ class Spec(_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _class_dir(self) -> Path:
-        return self._metadata.storage / self._stored_name / self._class_part
+        """Where the class's runs are written: under the overlay when one is set."""
+        return upper(self._metadata.storage / self._stored_name / self._class_part)
 
 
 def attempt_parent(specs: Sequence[Spec]) -> Path:
