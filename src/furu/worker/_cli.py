@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -17,6 +18,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--component", required=True, help="this worker's name, e.g. its Slurm job id"
     )
     parser.add_argument("--log", required=True, type=Path, help="this worker's log")
+    parser.add_argument(
+        "--slots", type=int, default=1, help="how many slots its jobs share"
+    )
+    parser.add_argument(
+        "--steps",
+        type=json.loads,
+        default={},
+        help="JSON: the srun arguments of a job of each slot count",
+    )
     args = parser.parse_args(argv)
     worker_loop(
         url=os.environ[MANAGER_URL_ENV_VAR],
@@ -24,6 +34,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         component=args.component,
         backend="slurm",
         worker_log=args.log,
+        slots=args.slots,
+        steps={int(k): v for k, v in args.steps.items()},
     )
     return 0
 

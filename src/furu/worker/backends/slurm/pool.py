@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 import sys
@@ -90,7 +91,13 @@ class SlurmWorkerPool:
             # Workers run the manager's own furu, wherever it came from.
             f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
             f"    --pool {shlex.quote(key)} \\\n"
-            '    --component "${component}" \\\n'
+            + (
+                f"    --slots {definition.slots} \\\n"
+                f"    --steps {shlex.quote(json.dumps(definition.steps))} \\\n"
+                if definition.slots > 1
+                else ""
+            )
+            + '    --component "${component}" \\\n'
             f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log"\n'
         )
         self._sbatch_args = (

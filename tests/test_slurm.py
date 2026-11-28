@@ -11,8 +11,8 @@ from furu import slurm
 
 FORGOTTEN = "slurm_load_jobs error: Invalid job id specified\n"
 SQUEUE = (
-    *("squeue", "--all", "--array", "--noheader", "--format=%A %T"),
-    *("-j", "123"),
+    *("squeue", "--all", "--array", "--noheader"),
+    *("--Format=JobID:40,State:40,RestartCnt:20", "-j", "123"),
 )
 SACCT = (
     *("sacct", "-D", "-X", "--noheader", "--parsable2"),
@@ -172,11 +172,11 @@ def test_every_clean_end_is_gone(accounted: str, answers: Answers) -> None:
 @pytest.mark.parametrize(
     "queued",
     [
-        "123 COMPLETED\n",
-        "123 CANCELLED\n",
-        "123 PREEMPTED\n",
+        "123 COMPLETED 0\n",
+        "123 CANCELLED 0\n",
+        "123 PREEMPTED 0\n",
         # The other tasks of its array are listed with it, and may be running.
-        "122 RUNNING\n123 TIMEOUT\n124 PENDING\n",
+        "122 RUNNING 0\n123 TIMEOUT 0\n124 PENDING 0\n",
     ],
 )
 def test_a_job_the_queue_still_remembers_as_ended_is_gone(
@@ -191,14 +191,14 @@ def test_a_job_the_queue_still_remembers_as_ended_is_gone(
 @pytest.mark.parametrize(
     "queued",
     [
-        "123 RUNNING\n",
-        "123 PENDING\n",
-        "123 COMPLETING\n",
-        "123 STAGE_OUT\n",
-        "123 NODE_FAIL\n",
-        "123 BOOT_FAIL\n",
-        "123 SOMETHING_NEW\n",
-        "122 COMPLETED\n123 RUNNING\n",
+        "123 RUNNING 0\n",
+        "123 PENDING 0\n",
+        "123 COMPLETING 0\n",
+        "123 STAGE_OUT 0\n",
+        "123 NODE_FAIL 0\n",
+        "123 BOOT_FAIL 0\n",
+        "123 SOMETHING_NEW 0\n",
+        "122 COMPLETED 0\n123 RUNNING 0\n",
     ],
 )
 def test_a_job_the_queue_lists_as_anything_else_is_not_gone(
@@ -208,6 +208,29 @@ def test_a_job_the_queue_lists_as_anything_else_is_not_gone(
 
     assert not slurm.gone("sc", "123")
     assert ran == [SQUEUE]  # accounting is not asked
+
+
+@pytest.mark.parametrize(
+    ("queued", "restart", "is_gone"),
+    [
+        # Requeued: the run that holds the folder ended, and a later one waits
+        # or runs.
+        ("123 PENDING 1\n", 0, True),
+        ("123 RUNNING 2\n", 1, True),
+        # The run that holds the folder still waits or runs.
+        ("123 RUNNING 1\n", 1, False),
+        ("123 PENDING 0\n", 0, False),
+        # A later run that is ending says nothing yet.
+        ("123 COMPLETING 1\n", 0, False),
+    ],
+)
+def test_a_job_requeued_since_the_run_that_holds_a_folder_is_gone(
+    queued: str, restart: int, is_gone: bool, answers: Answers
+) -> None:
+    ran = answers(squeue=queued, sacct="123|RUNNING|None\n")
+
+    assert slurm.gone("sc", "123", restart) is is_gone
+    assert ran == [SQUEUE]
 
 
 @pytest.mark.parametrize(
@@ -250,7 +273,7 @@ def test_an_end_accounting_does_not_call_clean_is_not_gone(
         # It printed something before it failed.
         (
             {
-                "squeue": _failed("squeue", FORGOTTEN, stdout="123 RUNNING\n"),
+                "squeue": _failed("squeue", FORGOTTEN, stdout="123 RUNNING 0\n"),
                 "sacct": "123|COMPLETED|None\n",
             },
             subprocess.CalledProcessError,
@@ -272,9 +295,9 @@ def test_an_end_accounting_does_not_call_clean_is_not_gone(
         ),
         ({"squeue": ""}, FileNotFoundError),  # a Slurm machine without sacct
         ({}, FileNotFoundError),  # a Slurm machine without squeue
-        ({"squeue": "123\n", "sacct": "123|COMPLETED|None\n"}, ValueError),
+        ({"squeue": "123 RUNNING\n", "sacct": "123|COMPLETED|None\n"}, ValueError),
         (
-            {"squeue": "123 RUNNING extra\n", "sacct": "123|COMPLETED|None\n"},
+            {"squeue": "123 RUNNING 0 extra\n", "sacct": "123|COMPLETED|None\n"},
             ValueError,
         ),
         ({"squeue": "", "sacct": "123|COMPLETED\n"}, ValueError),

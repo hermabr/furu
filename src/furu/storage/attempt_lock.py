@@ -14,8 +14,10 @@ way in or out has a dotted name in ``attempts/``, never in ``attempts/<run>/``.
 
 Nothing in the folder says whether its owner is alive, no clock is read and
 nobody waits. A Slurm job's folder may be taken once Slurm says the job is
-gone. A process's outside Slurm is freed by the worker that started it and saw
-it die, and otherwise only by hand.
+gone, or that the run of it which took the folder, the restart count in its
+name, was followed by another: a requeued job runs again. A process's
+outside Slurm is freed by the worker that started it and saw it die, and
+otherwise only by hand.
 """
 
 from __future__ import annotations
@@ -89,12 +91,12 @@ def free(run: Path) -> Path | None:
         case ["slurm", cluster, job, restart, tok] if (
             cluster and job.isdigit() and restart.isdigit() and tok
         ):
-            if slurm.gone(cluster, job):
+            if slurm.gone(cluster, job, int(restart)):
                 return run / name
             whose = (
-                f"is the working folder of Slurm job {job} on cluster {cluster}, "
-                "which Slurm does not report from here as ended with all its "
-                "processes gone"
+                f"is the working folder of Slurm job {job} on cluster {cluster} "
+                f"(run {restart}), which Slurm does not report from here as "
+                "ended with all its processes gone, or as requeued"
             )
         case ["local", host, pid, tok] if host and pid.isdigit() and tok:
             whose = (

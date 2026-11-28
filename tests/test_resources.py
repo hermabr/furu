@@ -1,6 +1,8 @@
 from furu import Spec, Worker
 from furu.worker.backends.local import LocalThreadWorkerBackend
-from furu.worker.backends.protocol import can_run
+from furu.worker.backends.protocol import WorkerBackend, slice_for
+from furu.worker.backends.slurm.backend import SlurmWorkerBackend
+from furu.worker.backends.slurm.resources import MemoryPerNode, SlurmResources
 
 
 class Generate(Spec):
@@ -18,6 +20,10 @@ class Tokenize(Spec):
 
 def _pool(worker: Worker) -> LocalThreadWorkerBackend:
     return LocalThreadWorkerBackend(worker=worker)
+
+
+def can_run(backend: WorkerBackend, spec: Spec) -> bool:
+    return slice_for(backend, spec) is not None
 
 
 def test_runs_on_sees_the_pool_worker() -> None:
@@ -49,3 +55,36 @@ def test_accepts_and_runs_on_must_both_hold() -> None:
 
     assert can_run(gpu_pool, Generate())
     assert not can_run(gpu_pool, Tokenize())
+
+
+class Train(Spec):
+    gpus: int
+
+    def runs_on(self, worker: Worker) -> bool:
+        return worker.gpus >= self.gpus
+
+    def create(self) -> str:
+        return "x"
+
+
+NODE = SlurmWorkerBackend(
+    max_allocations=1,
+    resources=SlurmResources(cpus=64, gpus=8, memory=MemoryPerNode(512)),
+    slots=8,
+    labels=("hopper",),
+)
+
+
+def test_a_spec_takes_the_fewest_slots_it_runs_on() -> None:
+    assert [slice_for(NODE, Train(gpus=gpus)) for gpus in (0, 1, 2, 3, 8)] == [
+        (1, NODE.slice(1)),
+        (1, NODE.slice(1)),
+        (2, NODE.slice(2)),
+        (4, NODE.slice(4)),
+        (8, NODE.slice(8)),
+    ]
+    assert slice_for(NODE, Train(gpus=9)) is None
+    # Runs on the 1-GPU slice, which also has the label.
+    assert slice_for(NODE, Generate()) == (1, NODE.slice(1))
+    # A pool without slots has one slice: the whole worker.
+    assert slice_for(_pool(Worker(gpus=8)), Train(gpus=2)) == (1, Worker(gpus=8))

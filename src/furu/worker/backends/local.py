@@ -31,6 +31,9 @@ class LocalThreadWorkerBackend:
             {"worker": dataclasses.asdict(self.worker)}
         )
 
+    def slices(self) -> list[tuple[int, Worker]]:
+        return [(1, self.worker)]
+
     def pool(self) -> LocalPool:
         return LocalPool(max_workers=self.max_workers)
 

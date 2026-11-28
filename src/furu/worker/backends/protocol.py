@@ -17,6 +17,11 @@ class WorkerBackend(Protocol):
         """What every worker in this pool offers."""
         ...
 
+    def slices(self) -> list[tuple[int, Worker]]:
+        """Each slot count a job can take on a worker, fewest first, and what
+        it offers; the last is the whole worker."""
+        ...
+
     @property
     def accepts(self) -> Callable[[Spec], bool] | None:
         """Which specs this pool's workers take; None takes every spec."""
@@ -40,7 +45,9 @@ class WorkerPool(Protocol):
     def stop(self) -> None: ...
 
 
-def can_run(backend: WorkerBackend, spec: Spec) -> bool:
-    return (backend.accepts is None or backend.accepts(spec)) and spec.runs_on(
-        backend.worker
-    )
+def slice_for(backend: WorkerBackend, spec: Spec) -> tuple[int, Worker] | None:
+    """The fewest slots of ``backend``'s workers that ``spec`` runs on, and what
+    they offer; None if no worker of it can run ``spec``."""
+    if backend.accepts is not None and not backend.accepts(spec):
+        return None
+    return next(((k, w) for k, w in backend.slices() if spec.runs_on(w)), None)
