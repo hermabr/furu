@@ -434,45 +434,42 @@ def test_slurm_pool_tracks_job_array_tasks(
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
-    assert pool._active_job_states() == {
-        "100_0": "RUNNING",
-        "100_1": "RUNNING",
-        "100_2": "RUNNING",
-    }
     active_file.write_text("100_0\n100_1 FAILED\n100_2\n")
-    assert pool._task_states() == {
+    assert pool._job_states() == {
         "100_0": "RUNNING",
         "100_1": "FAILED",
         "100_2": "RUNNING",
     }
 
 
-def test_slurm_pool_ignores_untracked_array_siblings_from_sacct(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+def test_slurm_pool_scales_from_the_controller_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    pool = _pool(tmp_path, monkeypatch, _StubManager(3), max_workers=3)
-    pool._scale_once()
-    pool._job_ids[:] = ["100_1"]
-    active_file.write_text(
-        "100 COMPLETED\n"
-        "100_[0-2] COMPLETED\n"
-        "100_0 COMPLETED\n"
-        "100_0.batch COMPLETED\n"
-        "100_1 RUNNING\n"
-        "100_2 COMPLETED\n"
-        "100_2.batch COMPLETED\n"
+    # The accounting database can be down while the controller is not.
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _write_executable(
+        tmp_path / "bin" / "sacct",
+        'import sys; sys.exit("sacct: error: Problem talking to the database")',
     )
+    manager = _StubManager(3)
+    pool = _pool(tmp_path, monkeypatch, manager, max_workers=3, use_job_arrays=False)
+    pool._scale_once()
 
-    furu_logger = furu.get_logger()
-    furu_logger.addHandler(caplog.handler)
-    try:
-        assert pool._task_states() == {"100_1": "RUNNING"}
-    finally:
-        furu_logger.removeHandler(caplog.handler)
-    assert not any("unexpected slurm job id" in message for message in caplog.messages)
+    # 100 ended; 102 ended so long ago that the controller forgot it.
+    active_file.write_text("100 COMPLETED\n101\n")
+    pool._scale_once()
+    assert pool._job_ids == ["101", "103", "104"]
+
+    # The controller remembers none of them.
+    active_file.write_text("")
+    pool._scale_once()
+    assert pool._job_ids == ["105", "106", "107"]
+
+    assert manager.notes == []
+    executables = {r["executable"] for r in _read_records(record_file)}
+    assert executables == {"sbatch", "squeue"}
+    squeue_argv = _read_records(record_file)[-4]["argv"]
+    assert "--only-job-state" in squeue_argv and "--states=all" in squeue_argv
 
 
 def test_slurm_pool_replaces_vanished_array_workers_as_one_array(
@@ -501,11 +498,8 @@ def test_slurm_pool_keeps_preempted_and_requeued_array_workers(
     pool = _pool(tmp_path, monkeypatch, manager, max_workers=3)
     pool._scale_once()
     monkeypatch.setattr(
-        type(pool), "_active_job_states", lambda self: {"100_0": "RUNNING"}
-    )
-    monkeypatch.setattr(
         type(pool),
-        "_task_states",
+        "_job_states",
         lambda self: {"100_0": "RUNNING", "100_1": "PREEMPTED", "100_2": "REQUEUED"},
     )
     pool._scale_once()
@@ -518,53 +512,21 @@ def test_slurm_pool_keeps_preempted_and_requeued_array_workers(
 def test_slurm_pool_keeps_every_worker_while_squeue_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     manager = _StubManager(3)
     pool = _pool(tmp_path, monkeypatch, manager, max_workers=3)
     pool._scale_once()
-
-    # sacct reports still-queued array tasks as one grouped row, which gives
-    # the tasks no individual state; that must not look like an exit.
-    active_file.write_text("100_[0-1] PENDING\n100_2 FAILED\n")
 
     def squeue(self: object) -> dict[str, str]:
         pool._stop_event.set()
         raise subprocess.TimeoutExpired("squeue", 60.0)
 
-    monkeypatch.setattr(type(pool), "_active_job_states", squeue)
+    monkeypatch.setattr(type(pool), "_job_states", squeue)
     pool._scale_loop()
 
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
     assert manager.notes == []
     assert len(_sbatch_argvs(record_file)) == 1
-
-
-def test_slurm_pool_health_tracks_sacct_jobs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    pool = _pool(tmp_path, monkeypatch, _StubManager(2), use_job_arrays=False)
-    pool._scale_once()
-
-    assert pool._task_states() == {"100": "RUNNING", "101": "RUNNING"}
-
-    active_file.write_text("100\n100.batch COMPLETED\n101 FAILED\n101.extern FAILED\n")
-
-    assert pool._task_states() == {"100": "RUNNING", "101": "FAILED"}
-    sacct_records = [
-        record
-        for record in _read_records(record_file)
-        if record["executable"] == "sacct"
-    ]
-    assert sacct_records[-1]["argv"] == [
-        "-X",
-        "--noheader",
-        "-o",
-        "JobID,State",
-        "--parsable2",
-        "-j",
-        "100,101",
-    ]
 
 
 def test_slurm_pool_follows_demand_up_to_what_it_asks(
@@ -642,8 +604,8 @@ def test_slurm_pool_cancels_newest_queued_workers_when_demand_drops(
     pool._scale_once()
     if use_job_arrays:
         assert pool._job_ids == ["100_0", "100_1", "101_0"]
-        # Slurm holds still-queued array tasks in aggregate bracket form; sacct
-        # reports them that way while squeue --array expands them per task.
+        # Slurm holds still-queued array tasks in aggregate bracket form, which
+        # squeue --array expands per task.
         active_file.write_text("100_0\n100_[1] PENDING\n101_[0] PENDING\n")
     else:
         assert pool._job_ids == ["100", "101", "102"]
@@ -940,39 +902,6 @@ def _install_fake_slurm(
         """,
     )
     _write_executable(
-        bin_dir / "sacct",
-        """
-        import json
-        import os
-        import sys
-
-        record_file = os.environ["FURU_FAKE_SLURM_RECORD_FILE"]
-        active_file = os.environ["FURU_FAKE_SLURM_ACTIVE_FILE"]
-
-        with open(record_file, "a", encoding="utf-8") as file:
-            file.write(json.dumps({"executable": "sacct", "argv": sys.argv[1:]}) + "\\n")
-
-        requested_jobs = set()
-        for index, arg in enumerate(sys.argv[1:]):
-            if arg == "-j":
-                requested_jobs.update(sys.argv[index + 2].split(","))
-            elif arg.startswith("-j="):
-                requested_jobs.update(arg.removeprefix("-j=").split(","))
-
-        if "--noheader" not in sys.argv[1:]:
-            print("JobID|State")
-        with open(active_file, encoding="utf-8") as file:
-            active_jobs = file.read().splitlines()
-
-        for active_job in sorted(active_jobs):
-            job_id, _, state = active_job.partition(" ")
-            allocation_job_id = job_id.partition(".")[0].partition("_")[0]
-            if allocation_job_id not in requested_jobs:
-                continue
-            print(f"{job_id}|{state or 'RUNNING'}")
-        """,
-    )
-    _write_executable(
         bin_dir / "squeue",
         """
         import json
@@ -997,9 +926,10 @@ def _install_fake_slurm(
         active_jobs = {}
         with open(active_file, encoding="utf-8") as file:
             for line in file:
+                # The controller remembers ended jobs too; --states=all lists them.
                 active_job, _, state = line.strip().partition(" ")
-                if active_job and not state.upper().startswith("CANCELLED"):
-                    active_jobs[active_job] = state or "RUNNING"
+                if active_job:
+                    active_jobs[active_job] = state.partition(" ")[0] or "RUNNING"
 
         for active_job, state in sorted(active_jobs.items()):
             job_id, separator, task_spec = active_job.partition("_")
