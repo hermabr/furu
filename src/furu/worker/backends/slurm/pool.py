@@ -27,11 +27,14 @@ _REPLACE_INTERVAL_S = 60.0
 _BROKEN_AFTER_FAILURES = 10
 _BROKEN_AFTER_S = 30 * 60.0
 
-# States a job never leaves. Anything else, including no state at all or one
-# this code has never seen, keeps the worker owned until Slurm reports one of
-# these. Preempted jobs are requeued, so PREEMPTED is not one of them.
+# A worker the controller no longer lists: it ended so long ago that the
+# controller purged its record, so why it ended is unknown.
+_FORGOTTEN = "FORGOTTEN"
+# States a job never leaves. Anything else, including one this code has never
+# seen, keeps the worker owned until Slurm reports one of these. Preempted jobs are requeued, so PREEMPTED is not one of them.
 _FINISHED_STATES = frozenset(
     {
+        _FORGOTTEN,
         "BOOT_FAIL",
         "CANCELLED",
         "COMPLETED",
@@ -65,7 +68,7 @@ class SlurmWorkerPool:
         self._last_submit = -_REPLACE_INTERVAL_S
         self._stop_event = threading.Event()
 
-        # Workers are named after their Slurm job so `sacct -j <worker>` works.
+        # Workers are named after their Slurm job so `squeue -j <worker>` works.
         job_id = (
             "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
             if self._use_job_arrays
@@ -114,7 +117,7 @@ class SlurmWorkerPool:
         try:
             pending = [
                 job_id
-                for job_id, state in self._active_job_states().items()
+                for job_id, state in self._job_states().items()
                 if state == "PENDING"
             ]
             if pending:
@@ -123,15 +126,15 @@ class SlurmWorkerPool:
             logger.warning("could not cancel queued workers: %s", exc)
 
     def _scale_once(self) -> None:
-        active_job_states = self._active_job_states()
-        # squeue decides liveness; accounting only explains why a job left it.
-        states = self._task_states() | active_job_states
+        states = self._job_states()
         finished = {
             job_id: state
             for job_id in self._job_ids
-            if (state := states.get(job_id)) in _FINISHED_STATES
+            if (state := states.get(job_id, _FORGOTTEN)) in _FINISHED_STATES
         }
-        failed = {j: s for j, s in finished.items() if s != "COMPLETED"}
+        failed = {
+            j: s for j, s in finished.items() if s not in ("COMPLETED", _FORGOTTEN)
+        }
         if finished:
             logger.info(
                 "forgetting finished slurm workers: %s",
@@ -165,7 +168,7 @@ class SlurmWorkerPool:
 
         to_spawn = self._manager.demand(self._key) - len(self._job_ids)
         if to_spawn < 0:
-            self._cancel_queued_workers(-to_spawn, active_job_states)
+            self._cancel_queued_workers(-to_spawn, states)
             return
         if to_spawn == 0:
             return
@@ -195,13 +198,11 @@ class SlurmWorkerPool:
             else:
                 self._job_ids.append(job_id)
 
-    def _cancel_queued_workers(
-        self, excess: int, active_job_states: dict[str, str]
-    ) -> None:
+    def _cancel_queued_workers(self, excess: int, states: dict[str, str]) -> None:
         to_cancel = [
             job_id
             for job_id in reversed(self._job_ids)
-            if active_job_states.get(job_id) == "PENDING"
+            if states.get(job_id) == "PENDING"
         ][:excess]
         if not to_cancel:
             return
@@ -214,15 +215,20 @@ class SlurmWorkerPool:
     def _allocations(self) -> str:
         return ",".join(sorted({job_id.partition("_")[0] for job_id in self._job_ids}))
 
-    def _active_job_states(self) -> dict[str, str]:
-        """What squeue says of each worker still queued or running."""
+    def _job_states(self) -> dict[str, str]:
+        """What the controller says of each worker it still remembers.
+
+        It keeps an ended job, with the state it ended in, for MinJobAge
+        (300 s by default), far longer than a tick. Accounting is not asked:
+        its database can be down while the controller is not. Asking only for
+        states is the controller's cheapest query, and it lists forgotten jobs
+        as nothing rather than as an error.
+        """
         if not self._job_ids:
             return {}
         output = slurm.run(
-            "squeue",
-            "--noheader",
-            "--jobs",
-            self._allocations(),
+            *("squeue", "--only-job-state", "--states=all", "--noheader"),
+            *("--jobs", self._allocations()),
             *(
                 ("--array", "--format=%i %T")
                 if self._use_job_arrays
@@ -230,31 +236,6 @@ class SlurmWorkerPool:
             ),
         )
         return dict(line.split() for line in output.splitlines())
-
-    def _task_states(self) -> dict[str, str]:
-        """What accounting says of each worker, such as why it left squeue.
-
-        Lines for anything else, such as array tasks this pool did not submit
-        or the grouped row of still-queued tasks, are skipped.
-        """
-        if not self._job_ids:
-            return {}
-        output = slurm.run(
-            "sacct",
-            "-X",
-            "--noheader",
-            "-o",
-            "JobID,State",
-            "--parsable2",
-            "-j",
-            self._allocations(),
-        )
-        known = set(self._job_ids)
-        rows = (line.split("|") for line in output.splitlines())
-        # "CANCELLED by <uid>" is CANCELLED.
-        return {
-            job_id: state.partition(" ")[0] for job_id, state in rows if job_id in known
-        }
 
     def _scale_loop(self) -> None:
         # Slurm not answering only delays the pool. Any other failed tick fails
