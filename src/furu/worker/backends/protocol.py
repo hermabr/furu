@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -13,8 +13,9 @@ class WorkerBackend(Protocol):
     """What a script passes to ``create(..., on=[...])``: a pool's recipe."""
 
     @property
-    def worker(self) -> Worker:
-        """What every worker in this pool offers."""
+    def workers(self) -> Mapping[int, Worker]:
+        """What a job gets in this pool for each number of slots it may take,
+        fewest first. The last is a whole allocation."""
         ...
 
     @property
@@ -24,11 +25,11 @@ class WorkerBackend(Protocol):
 
     @property
     def pool_key(self) -> str:
-        """Equal for backends whose workers are interchangeable."""
+        """Equal for backends whose allocations are interchangeable."""
         ...
 
     def pool(self) -> Pool:
-        """The plain data the manager needs to start this pool's workers."""
+        """The plain data the manager needs to start this pool's allocations."""
         ...
 
 
@@ -40,7 +41,15 @@ class WorkerPool(Protocol):
     def stop(self) -> None: ...
 
 
-def can_run(backend: WorkerBackend, spec: Spec) -> bool:
-    return (backend.accepts is None or backend.accepts(spec)) and spec.runs_on(
-        backend.worker
+def slice_for(backend: WorkerBackend, spec: Spec) -> tuple[int, Worker] | None:
+    """The fewest slots of ``backend`` that run ``spec``, and what they offer."""
+    if backend.accepts is not None and not backend.accepts(spec):
+        return None
+    return next(
+        (
+            (slots, worker)
+            for slots, worker in backend.workers.items()
+            if spec.runs_on(worker)
+        ),
+        None,
     )

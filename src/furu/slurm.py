@@ -1,9 +1,12 @@
-"""Running Slurm's commands, and asking Slurm whether a job is gone."""
+"""Running Slurm's commands: whether a job is gone, and the steps of a job."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+import time
+from contextlib import suppress
+from pathlib import Path
 
 # The states of a job whose processes Slurm saw end. Not NODE_FAIL or
 # BOOT_FAIL: a node that stopped answering can still be running them.
@@ -19,6 +22,17 @@ _GONE = frozenset(
         "TIMEOUT",
     }
 )
+
+# A job in the queue: its id, its state and how many times it was started again.
+_SQUEUE = (
+    *("squeue", "--all", "--array", "--noheader"),
+    *("-O", "JobID:20,State:20,RestartCnt:10"),
+)
+
+# How long a killed step may take to leave the queue, and how often it is
+# asked: Slurm gives a step KillWait, 30 s by default, to end.
+_STEP_END_TIMEOUT_S = 120.0
+_STEP_POLL_S = 0.5
 
 # The cluster the controller named, once it has: asked at most once a process.
 _cluster: str | None = None
@@ -70,32 +84,38 @@ def cluster() -> str | None:
     return _cluster
 
 
-def gone(cluster_name: str, job: str) -> bool:
-    """Whether Slurm says that ``job`` ended and left no process behind.
+def gone(cluster_name: str, job: str, restart: int) -> bool:
+    """Whether Slurm says that run ``restart`` of ``job`` ended and left no
+    process behind.
 
-    True only when the queue no longer runs the job and accounting has a clean
-    end for it. Raises if a Slurm command fails, times out, or prints
-    unexpected output.
+    True when the queue no longer runs the job and accounting has a clean end
+    for it. Also when the queue has started the job again since, as it does
+    with a job it preempted, and accounting has a clean end for that run: a
+    job that runs again has ``SLURM_RESTART_COUNT`` one higher. Raises if a
+    Slurm command fails, times out, or prints unexpected output.
     """
     if cluster_name != cluster():
         return False
     # Asked by id, the queue also lists a job that ended, for as long as the
     # controller remembers it. Not -O JobIDRaw, which Slurm 25.11.5 refuses.
     try:
-        queued = run(
-            "squeue", "--all", "--array", "--noheader", "--format=%A %T", "-j", job
-        )
+        queued = run(*_SQUEUE, "-j", job)
     except subprocess.CalledProcessError as exc:
         # How the queue answers for a job it no longer remembers.
         if (exc.stdout or "").strip() or "Invalid job id" not in (exc.stderr or ""):
             raise
         queued = ""
+    again = False
     for line in queued.splitlines():
         match line.split():
-            case [job_id, state]:
+            case [job_id, state, restarts] if restarts.isdigit():
                 # The other tasks of its array are listed with it.
-                if job_id == job and state not in _GONE:
+                if job_id != job or state in _GONE:
+                    continue
+                # COMPLETING is a job whose processes are still being killed.
+                if state not in {"PENDING", "RUNNING"} or int(restarts) <= restart:
                     return False
+                again = True
             case _:
                 raise ValueError(f"unexpected squeue output: {line!r}")
     # -D: a requeued job has a row for each time it ran.
@@ -115,9 +135,87 @@ def gone(cluster_name: str, job: str) -> bool:
                 states.append(state.partition(" ")[0])  # "CANCELLED by <uid>"
             case _:
                 raise ValueError(f"unexpected sacct output: {line!r}")
+    clean = _GONE | {"REQUEUED"}
+    if again:
+        # A row for each run that ended, the first run's first, and one for
+        # the run the queue has now. None may be of a node that stopped
+        # answering, whichever run that was.
+        return restart < sum(state in clean for state in states) and all(
+            state in clean | {"PENDING", "RUNNING"} for state in states
+        )
     # A row that says the job was requeued is no end: accounting can have it
     # before the row of the run that followed. Without any row it is behind
     # the queue.
-    return all(state in _GONE | {"REQUEUED"} for state in states) and any(
+    return all(state in clean for state in states) and any(
         state in _GONE for state in states
     )
+
+
+def step(name: str, *, taken: int, slots: int) -> list[str]:
+    """The start of the command that runs a program as a step of this job,
+    named ``name``, on ``taken`` of the ``slots`` even parts of the job.
+
+    Slurm keeps the step to its part: it sees only its GPUs, runs only on its
+    CPUs and is killed if it uses more than its memory, as is everything it
+    starts, in a session of its own or not. A step that asks for what other
+    steps hold waits for them to end.
+    """
+    cpus = int(os.environ["SLURM_CPUS_ON_NODE"])
+    gpus = int(os.environ.get("SLURM_GPUS_ON_NODE") or 0)
+    # Slurm gives a step whole cores where it gives a job whole cores, so a
+    # step that asked for one of a core's two CPUs would take the other too,
+    # and the steps of a full job would wait for each other.
+    threads = _threads_per_core()
+    if not (cores := taken * (cpus // threads) // slots):
+        raise RuntimeError(
+            f"this Slurm job has {cpus // threads} cores for {slots} slots, and "
+            f"Slurm gives a job whole cores of {threads} CPUs: ask for at least "
+            f"{slots * threads} CPUs"
+        )
+    argv = ["srun", "--exact", "--ntasks=1", f"--cpus-per-task={cores * threads}"]
+    # A step that does not say takes every GPU of the job, and its memory.
+    if gpus:
+        argv.append(f"--gpus={taken * gpus // slots}")
+    # In MiB. A job that asked for memory by the CPU or GPU has what all of
+    # them come to; a job has the first of these that is set.
+    for per, count in (("CPU", cpus), ("GPU", gpus), ("NODE", 1)):
+        if count and (memory := os.environ.get(f"SLURM_MEM_PER_{per}")):
+            argv.append(f"--mem={taken * int(memory) * count // slots}M")
+            break
+    # --export: the step has this process's environment even where the job
+    # was submitted with --export=NIL, which a step would otherwise follow.
+    return [*argv, "--export=ALL", f"--job-name={name}"]
+
+
+def _threads_per_core() -> int:
+    """How many of the CPUs this process may run on share a core."""
+    cpus = os.sched_getaffinity(0)
+    siblings = "/sys/devices/system/cpu/cpu{}/topology/thread_siblings_list"
+    return len(cpus) // len({Path(siblings.format(cpu)).read_text() for cpu in cpus})
+
+
+def end_step(name: str) -> None:
+    """Kill the steps of this job named ``name``, and return once Slurm lists
+    none: every process of a step is dead by then, whatever started it.
+
+    Raises if a Slurm command fails or the steps outlive
+    ``_STEP_END_TIMEOUT_S``.
+    """
+    deadline = time.monotonic() + _STEP_END_TIMEOUT_S
+    while True:
+        listed = run(
+            *("squeue", "--steps", "--noheader", "--format=%i %j"),
+            *("-j", os.environ["SLURM_JOB_ID"]),
+        )
+        steps = [
+            line.split()[0]
+            for line in listed.splitlines()
+            if line.split()[1:] == [name]
+        ]
+        if not steps:
+            return
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"Slurm still lists the killed steps {steps}")
+        with suppress(subprocess.CalledProcessError):  # e.g. it just ended
+            run("scancel", "--signal=KILL", *steps)
+        time.sleep(_STEP_POLL_S)

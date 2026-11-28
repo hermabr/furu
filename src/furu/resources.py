@@ -21,13 +21,18 @@ class Worker:
     @classmethod
     def here(cls) -> Worker:
         """Describe this machine, honoring ``CUDA_VISIBLE_DEVICES``."""
-        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
         return cls(
             cpus=len(os.sched_getaffinity(0))
             if hasattr(os, "sched_getaffinity")
             else os.cpu_count() or 1,
-            gpus=len(glob.glob("/dev/nvidia[0-9]*"))
-            if visible is None
-            else len([device for device in visible.split(",") if device]),
+            gpus=len(visible_gpus()),
             memory_gib=os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") >> 30,
         )
+
+
+def visible_gpus() -> list[str]:
+    """The GPUs this process may use, as ``CUDA_VISIBLE_DEVICES`` names them."""
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is None:
+        return [str(index) for index in range(len(glob.glob("/dev/nvidia[0-9]*")))]
+    return [device.strip() for device in visible.split(",") if device.strip()]

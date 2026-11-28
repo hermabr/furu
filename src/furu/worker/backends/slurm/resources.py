@@ -29,7 +29,7 @@ class MemoryPerGpu:
 
 @dataclass(frozen=True, slots=True)
 class SlurmResources:
-    cpus_per_worker: int
+    cpus: int
     nodes: int = 1
     account: str | None = None
     partition: str | None = None
@@ -48,7 +48,7 @@ class SlurmResources:
             case MemoryPerNode(gib=gib):
                 return gib
             case MemoryPerCpu(gib=gib):
-                return gib * self.cpus_per_worker
+                return gib * self.cpus
             case MemoryPerGpu(gib=gib):
                 return gib * self.gpus
 
@@ -63,7 +63,7 @@ class SlurmResources:
         if self.time_limit is not None:
             args.append(f"--time={self.time_limit}")
         args.append(f"--nodes={self.nodes}")
-        args.append(f"--cpus-per-task={self.cpus_per_worker}")
+        args.append(f"--cpus-per-task={self.cpus}")
         if self.memory is not None:
             args.append(self.memory.to_sbatch_arg())
         if self.gpus > 0:

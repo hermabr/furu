@@ -118,6 +118,21 @@ class SubprocessChattyLeaf(Spec):
         return _pid_and_variable("FURU_TEST_VARIABLE")
 
 
+class SubprocessHeldLeaf(Spec):
+    """Says in ``hold``, a folder, that it started, and waits there for the
+    file ``go``."""
+
+    marker: int
+    hold: str
+
+    def create(self) -> str:
+        Path(self.hold, f"started-{self.marker}").touch()
+        deadline = time.monotonic() + 30
+        while not Path(self.hold, "go").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return str(os.getpid())
+
+
 class SubprocessForkingLeaf(Spec):
     """Forks a helper that outlives the job, then waits to be cancelled."""
 

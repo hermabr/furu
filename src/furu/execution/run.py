@@ -28,7 +28,7 @@ from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
 from furu.utils import error_summary, format_duration
-from furu.worker.backends.protocol import WorkerBackend, can_run
+from furu.worker.backends.protocol import WorkerBackend, slice_for
 from furu.worker.messages import (
     Batch,
     ErrorMessage,
@@ -91,15 +91,16 @@ class Run:
         """Say how ``objs`` run, and wait for the ones that are new to this run.
 
         Specs that run the same way are one group: the same class folder and
-        process, and on each pool that can run them the same batch.
+        process, and on each pool that can run them the same batch on the same
+        number of slots.
         """
         groups: dict[tuple[object, ...], Group] = {}
         nowhere = []
         for obj in objs:
             pools = tuple(
-                (key, batch_of(obj, backend.worker, self.firsts))
+                (key, batch)
                 for key, backend in self.backends.items()
-                if can_run(backend, obj)
+                if (batch := self._batch(obj, backend)) is not None
             )
             if not pools:
                 nowhere.append(obj.object_id)
@@ -117,9 +118,7 @@ class Run:
                     specs=[],
                     class_dir=obj._class_dir,
                     process=ProcessSettings.from_metadata(metadata),
-                    pools={
-                        key: Batch(batch=name, cap=cap) for key, (name, cap) in pools
-                    },
+                    pools=dict(pools),
                     throttle=None
                     if throttle is None
                     else JobThrottle(
@@ -129,7 +128,8 @@ class Run:
             group.specs.append(obj.object_id)
         if nowhere:
             workers = ", ".join(
-                str(backend.worker) for backend in self.backends.values()
+                str(list(backend.workers.values())[-1])
+                for backend in self.backends.values()
             )
             raise RuntimeError(
                 "no worker pool can run: "
@@ -141,6 +141,15 @@ class Run:
                 self.specs[obj.object_id] = obj
                 self.left.add(obj.object_id)
         return list(groups.values())
+
+    def _batch(self, obj: Spec, backend: WorkerBackend) -> Batch | None:
+        """The batch ``obj`` joins in a pool, if the pool runs it: on the fewest
+        slots that do, formed for what those offer."""
+        if (found := slice_for(backend, obj)) is None:
+            return None
+        slots, worker = found
+        name, cap = batch_of(obj, worker, self.firsts)
+        return Batch(batch=name, cap=cap, slots=slots)
 
     def submit(
         self, groups: list[Group], lines: list[str], plan_path: Path

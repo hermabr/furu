@@ -17,10 +17,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--component", required=True, help="this worker's name, e.g. its Slurm job id"
     )
     parser.add_argument("--log", required=True, type=Path, help="this worker's log")
+    parser.add_argument(
+        "--slots",
+        required=True,
+        type=int,
+        help="how many jobs of the smallest size this worker runs at once",
+    )
     args = parser.parse_args(argv)
     worker_loop(
         url=os.environ[MANAGER_URL_ENV_VAR],
         pool=args.pool,
+        slots=args.slots,
         component=args.component,
         backend="slurm",
         worker_log=args.log,

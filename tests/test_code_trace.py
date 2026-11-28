@@ -5,7 +5,7 @@ import shutil
 import threading
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from runs import ends_of, run_of, working_folder
@@ -24,8 +24,13 @@ from furu.storage._layout import (
     trace_path_in,
 )
 from furu.testing import override_config
-from furu.worker.execute import ChildSlot
-from furu.worker.messages import JobCompletedResult, JobFailedResult
+from furu.worker.execute import Children
+from furu.worker.messages import (
+    Job,
+    JobCompletedResult,
+    JobFailedResult,
+    JobResult,
+)
 
 PLOTS = """\
 from typing import ClassVar
@@ -1412,17 +1417,22 @@ def test_code_version_default_comes_from_config(
         assert Metadata(code_version="fixed").code_version == "fixed"
 
 
-def test_child_slot_retries_stale_code_in_a_fresh_child(
+def test_stale_code_is_retried_in_a_fresh_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     results = [JobFailedResult(error="stale", stale_code=True), JobCompletedResult()]
-    closed: list[bool] = []
-    slot = ChildSlot(worker="w", backend="local")
-    monkeypatch.setattr(slot, "_run", lambda job, cancelled: results.pop(0))
-    monkeypatch.setattr(slot, "close", lambda: closed.append(True))
+    tried: list[bool] = []
+    children = Children(worker="w", backend="local")
 
-    assert slot.run(object(), cancelled=threading.Event()) == JobCompletedResult()  # ty: ignore[invalid-argument-type]
-    assert closed == [True]
+    def _run(job: Job, *, cancelled: threading.Event, warm: bool) -> JobResult:
+        tried.append(warm)
+        return results.pop(0)
+
+    monkeypatch.setattr(children, "_run", _run)
+
+    job = cast(Job, object())
+    assert children.run(job, cancelled=threading.Event()) == JobCompletedResult()
+    assert tried == [True, False]  # the second time, not in a child kept warm
 
 
 def test_worker_child_publishes_the_version_the_submitter_checks(
