@@ -130,7 +130,7 @@ def _new_run(
     run = Run(
         backends={backend.pool_key: backend for backend in backends},
         launch=_launch(),
-        max_retries_per_object=get_config().worker.max_retries_per_object
+        max_retries_per_object=get_config().max_retries_per_object
         if max_retries_per_object is None
         else max_retries_per_object,
     )

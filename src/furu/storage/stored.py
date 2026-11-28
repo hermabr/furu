@@ -5,6 +5,9 @@ it is found by name: one file check per live code version. A batched spec is a
 row in some run of its class, so it is found by listing the class's runs/
 folders and reading each run's events.jsonl, whose first line lists the specs
 the run holds. No index is kept.
+
+With an overlay a class has two folders, and each is looked in as above: the
+overlay's first, then the real store's.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from furu._batched import is_batched
 from furu.code_trace import versions
+from furu.config import CodeVersion, layers
 from furu.dependencies import record_loaded
 from furu.migration.schema import check_defaults
 from furu.result.bundle import load_result_bundle
@@ -78,10 +82,11 @@ def look_again(class_dir: Path) -> None:
     folder above the name is opened or listed. Opening does not read the
     names, of which runs/ can hold very many.
     """
-    for version in version_dirs_in(class_dir):
-        for folder in (version, runs_dir_in(version)):
-            with suppress(OSError):
-                os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
+    for layer in layers(class_dir):
+        for version in version_dirs_in(layer):
+            for folder in (version, runs_dir_in(version)):
+                with suppress(OSError):
+                    os.close(os.open(folder, os.O_RDONLY | os.O_DIRECTORY))
 
 
 def _listed(version: Path, batches: bool) -> dict[str, _First]:
@@ -130,9 +135,8 @@ class Stored:
         self._live: dict[tuple[Path, str], list[Path]] = {}
         self._listed: dict[tuple[Path, bool], dict[str, _First]] = {}
 
-    def _versions(self, obj: Spec) -> list[Path]:
-        """The code versions whose runs count for obj: the live ones."""
-        class_dir, code_version = obj._class_dir, obj._metadata.code_version
+    def _versions(self, class_dir: Path, code_version: CodeVersion) -> list[Path]:
+        """The code versions in a class folder whose runs count: the live ones."""
         if (class_dir, code_version) not in self._live:
             self._live[class_dir, code_version] = (
                 [class_dir / FIXED]
@@ -150,14 +154,23 @@ class Stored:
             check_defaults(obj._class_dir, type(obj))
         if is_batched(type(obj)):
             return self.listed(obj)
-        held = [
+        for class_dir in layers(obj._class_dir):
+            held = self.named(class_dir, obj._metadata.code_version, name)
+            if len(held) > 1:  # the one published first, as for a batch
+                return self.listed(obj)
+            if held:
+                return Row(held[0], 0)
+        return None
+
+    def named(
+        self, class_dir: Path, code_version: CodeVersion, name: str
+    ) -> list[Path]:
+        """The runs called ``name`` in one class folder, whose code still matches."""
+        return [
             run
-            for version in self._versions(obj)
+            for version in self._versions(class_dir, code_version)
             if (run := run_dir_in(version, name)).is_dir()
         ]
-        if len(held) > 1:  # the one published first, as for a batch
-            return self.listed(obj)
-        return Row(held[0], 0) if held else None
 
     def listed(self, obj: Spec, *, batches: bool = False) -> Row | None:
         """obj's row in the run published first, among every run of its class.
@@ -165,18 +178,19 @@ class Stored:
         With ``batches``, among the batch runs only: one listing, and a read of
         each batch run this process has not read yet.
         """
-        held = []
-        for version in self._versions(obj):
-            if (version, batches) not in self._listed:
-                self._listed[version, batches] = _listed(version, batches)
-            if (
-                first := self._listed[version, batches].get(obj._artifact_hash)
-            ) is not None:
-                held.append(first)
-        if not held:
-            return None
-        _, _, index, run = min(held)
-        return Row(run, index)
+        for class_dir in layers(obj._class_dir):
+            held = []
+            for version in self._versions(class_dir, obj._metadata.code_version):
+                if (version, batches) not in self._listed:
+                    self._listed[version, batches] = _listed(version, batches)
+                if (
+                    first := self._listed[version, batches].get(obj._artifact_hash)
+                ) is not None:
+                    held.append(first)
+            if held:
+                _, _, index, run = min(held)
+                return Row(run, index)
+        return None
 
 
 def stored_row(obj: Spec) -> Row | None:
@@ -188,7 +202,8 @@ def why_rerun(class_dir: Path, run: str) -> str | None:
     """Why the newest run of this name under traced code no longer counts, if any."""
     outdated = [
         (folder.stat().st_mtime_ns, why)
-        for version, why in versions(class_dir)
+        for layer in layers(class_dir)
+        for version, why in versions(layer)
         if why is not None and (folder := run_dir_in(version, run)).is_dir()
     ]
     return max(outdated)[1] if outdated else None

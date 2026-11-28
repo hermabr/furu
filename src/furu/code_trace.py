@@ -41,7 +41,7 @@ import sysconfig
 import threading
 import time
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import CodeType
@@ -49,7 +49,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.config import get_config
+from furu.config import get_config, layers, lower
 from furu.logging import get_logger
 from furu.storage._layout import FIXED, trace_path_in, version_dirs_in
 from furu.utils import _hash_dict_deterministically
@@ -682,9 +682,14 @@ def _check(path: Path, storage_root: Path) -> tuple[Trace, str | None] | None:
     key = os.path.normpath(path)
     if (checked := _CHECKED.get(key)) is not None:
         return checked
-    try:
-        trace = Trace.model_validate_json(Path(key).read_bytes())
-    except (OSError, ValueError):
+    # A trace is named for what it holds, so with an overlay either store's
+    # file will do, and a trace there can name a code version in the other.
+    trace = None
+    for layer in layers(Path(key)):
+        with suppress(OSError, ValueError):
+            trace = Trace.model_validate_json(layer.read_bytes())
+            break
+    if trace is None:
         return None
     why = _changed(trace)
     if why is None:
@@ -819,10 +824,13 @@ class _Collector:
         self.log = log
         # furu's own data directories may live in the repo; reading them is fine.
         # A snapshot worker's root lies inside one, so skip those.
+        # With an overlay that is the real store's and all of the overlay.
+        config = get_config()
+        data_dirs = [lower(anchored) for _, anchored in config.directories.anchored()]
         self.data_dirs = tuple(
             path
-            for _, anchored in get_config().directories.anchored()
-            if not root.startswith(path := _realpath(str(anchored)) + os.sep)
+            for data_dir in (*data_dirs, *filter(None, [config.overlay]))
+            if not root.startswith(path := _realpath(str(data_dir)) + os.sep)
         )
         self.opened: set[str] = set()  # repo files besides .py that create() read
         self.ran = {rel: set(names) for rel, names in state.ran.items()}
@@ -975,7 +983,8 @@ class Recording:
         version = run.parent.parent
         if version.name == FIXED:
             return
-        name = os.path.relpath(version, self.storage_root)
+        # The same name whether the overlay or the real store holds the run.
+        name = os.path.relpath(lower(version), lower(self.storage_root))
         if name not in self.built_on:
             self.built_on.add(name)
             if self._log is not None:

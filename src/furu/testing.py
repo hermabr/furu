@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 
 from furu import provenance
-from furu.config import _Config, _FuruDirectories, _set_config, get_config
+from furu.config import (
+    OVERLAY_ENV,
+    _Config,
+    _FuruDirectories,
+    _set_config,
+    get_config,
+)
 
 
 @contextmanager
@@ -39,15 +45,6 @@ def _is_furu_pytest_mode_enabled() -> bool:
     return os.environ.get("FURU_PYTEST_MODE", "on").strip().lower() != "off"
 
 
-def _replace_config_directories(
-    config: _Config,
-    directories: _FuruDirectories,
-) -> _Config:
-    data = config.model_dump()
-    data["directories"] = directories
-    return _Config.model_validate(data)
-
-
 def pytest_configure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
@@ -63,14 +60,14 @@ def pytest_configure(config: pytest.Config) -> None:
         / f"furu-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
     )
 
-    run_config = _replace_config_directories(
-        get_config(),
-        _FuruDirectories(
-            **{
-                name: run_base_directory / name
-                for name in _FuruDirectories.model_fields
-            }
-        ),
+    # Tests store in folders of their own, whatever overlay the shell has set,
+    # and so do the processes they start.
+    os.environ.pop(OVERLAY_ENV, None)
+    directories = _FuruDirectories(
+        **{name: run_base_directory / name for name in _FuruDirectories.model_fields}
+    )
+    run_config = get_config().model_copy(
+        update={"overlay": None, "directories": directories}
     )
     # Tests run whatever the working tree holds; their results are throwaway.
     provenance._require_pushed_code = False
@@ -93,8 +90,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     provenance._require_pushed_code = True
 
     keep = os.environ.get("FURU_PYTEST_KEEP", "clean").strip().lower() == "keep"
-    for field_name in type(state.run_config.directories).model_fields:
-        path = getattr(state.run_config.directories, field_name)
+    for field_name, path in state.run_config.directories:
         if keep:
             print(f"kept furu {field_name} at {path}")
         else:
@@ -114,19 +110,11 @@ def _furu_per_test_base_directory(
     previous_config = get_config()
 
     test_id = hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
-    run_directories = state.run_config.directories
 
-    _set_config(
-        _replace_config_directories(
-            previous_config,
-            _FuruDirectories(
-                **{
-                    name: getattr(run_directories, name) / test_id
-                    for name in _FuruDirectories.model_fields
-                }
-            ),
-        )
+    directories = _FuruDirectories(
+        **{name: path / test_id for name, path in state.run_config.directories}
     )
+    _set_config(previous_config.model_copy(update={"directories": directories}))
     try:
         yield
     finally:
