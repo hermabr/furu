@@ -20,6 +20,10 @@ _GONE = frozenset(
     }
 )
 
+# The states of a job's later run that say the run before ended: Slurm starts a
+# requeued job again only once the processes of its last run are gone.
+_RUNS_AGAIN = frozenset({"PENDING", "RUNNING"})
+
 # The cluster the controller named, once it has: asked at most once a process.
 _cluster: str | None = None
 
@@ -70,20 +74,24 @@ def cluster() -> str | None:
     return _cluster
 
 
-def gone(cluster_name: str, job: str) -> bool:
-    """Whether Slurm says that ``job`` ended and left no process behind.
+def gone(cluster_name: str, job: str, restart: int = 0) -> bool:
+    """Whether Slurm says that run ``restart`` of ``job`` ended and left no
+    process behind.
 
-    True only when the queue no longer runs the job and accounting has a clean
-    end for it. Raises if a Slurm command fails, times out, or prints
-    unexpected output.
+    True when the queue lists a later run of the job that is pending or
+    running: it was requeued, as a preempted job is. Otherwise only when the
+    queue no longer runs the job and accounting has a clean end for it.
+    Raises if a Slurm command fails, times out, or prints unexpected output.
     """
     if cluster_name != cluster():
         return False
     # Asked by id, the queue also lists a job that ended, for as long as the
-    # controller remembers it. Not -O JobIDRaw, which Slurm 25.11.5 refuses.
+    # controller remembers it. JobID is the raw id, also of an array's task;
+    # Slurm 25.11.5 refuses JobIDRaw.
     try:
         queued = run(
-            "squeue", "--all", "--array", "--noheader", "--format=%A %T", "-j", job
+            *("squeue", "--all", "--array", "--noheader"),
+            *("--Format=JobID:40,State:40,RestartCnt:20", "-j", job),
         )
     except subprocess.CalledProcessError as exc:
         # How the queue answers for a job it no longer remembers.
@@ -92,9 +100,13 @@ def gone(cluster_name: str, job: str) -> bool:
         queued = ""
     for line in queued.splitlines():
         match line.split():
-            case [job_id, state]:
+            case [job_id, state, restarts] if restarts.isdigit():
                 # The other tasks of its array are listed with it.
-                if job_id == job and state not in _GONE:
+                if job_id != job:
+                    continue
+                if int(restarts) > restart and state in _RUNS_AGAIN:
+                    return True
+                if state not in _GONE:
                     return False
             case _:
                 raise ValueError(f"unexpected squeue output: {line!r}")

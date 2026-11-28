@@ -219,7 +219,10 @@ def worker() -> dict[str, object]:
     """Where this process runs create() calls: what its file in provenance/ begins with."""
     return {
         "host": socket.gethostname(),
-        "cpus": getattr(os, "process_cpu_count", os.cpu_count)() or 0,
+        # The CPUs it may run on, as a Slurm step's are, not all the machine's.
+        "cpus": len(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity")
+        else os.cpu_count() or 0,
         "gpus": list(_probe_accelerators()),
         "slurm_job": os.environ.get("SLURM_JOB_ID"),
         "pid": os.getpid(),
@@ -260,9 +263,22 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
 
 @functools.cache
 def _probe_accelerators() -> tuple[str, ...]:
+    """The GPUs this process may use: the ones ``CUDA_VISIBLE_DEVICES`` names."""
+    visible = [
+        device
+        for device in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+        if device.strip()
+    ]
+    if os.environ.get("CUDA_VISIBLE_DEVICES") is not None and not visible:
+        return ()
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            [
+                "nvidia-smi",
+                *([f"--id={','.join(visible)}"] if visible else []),
+                "--query-gpu=name",
+                "--format=csv,noheader",
+            ],
             capture_output=True,
             text=True,
             timeout=_ACCELERATOR_PROBE_TIMEOUT_SECONDS,
@@ -274,11 +290,6 @@ def _probe_accelerators() -> tuple[str, ...]:
                 name if count == 1 else f"{name} ×{count}"
                 for name, count in Counter(names).items()
             )
-    visible = [
-        device
-        for device in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
-        if device.strip()
-    ]
     if visible:
         return (f"cuda ×{len(visible)}",)
     return ()

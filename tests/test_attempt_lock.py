@@ -29,14 +29,16 @@ def run(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def job_is(monkeypatch: pytest.MonkeyPatch) -> Callable[[bool], list[tuple[str, str]]]:
-    """Say whether Slurm calls a job gone. Returns the jobs that were asked about."""
+def job_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[bool], list[tuple[str, str, int]]]:
+    """Say whether Slurm calls a job's run gone. Returns the runs asked about."""
 
-    def install(gone: bool) -> list[tuple[str, str]]:
-        asked: list[tuple[str, str]] = []
+    def install(gone: bool) -> list[tuple[str, str, int]]:
+        asked: list[tuple[str, str, int]] = []
 
-        def fake(cluster: str, job: str) -> bool:
-            asked.append((cluster, job))
+        def fake(cluster: str, job: str, restart: int) -> bool:
+            asked.append((cluster, job, restart))
             return gone
 
         monkeypatch.setattr(slurm, "gone", fake)
@@ -149,7 +151,7 @@ def test_a_process_holds_its_folder_whatever_became_of_it(run: Path, name: str) 
     ],
 )
 def test_a_name_of_another_shape_holds_the_run_and_slurm_is_not_asked(
-    run: Path, name: str, job_is: Callable[[bool], list[tuple[str, str]]]
+    run: Path, name: str, job_is: Callable[[bool], list[tuple[str, str, int]]]
 ) -> None:
     asked = job_is(True)
     (run / name).mkdir(parents=True)
@@ -162,8 +164,21 @@ def test_a_name_of_another_shape_holds_the_run_and_slurm_is_not_asked(
     assert os.listdir(run) == [name]
 
 
+def test_a_requeued_jobs_folder_asks_slurm_about_the_run_that_took_it(
+    run: Path, job_is: Callable[[bool], list[tuple[str, str, int]]]
+) -> None:
+    # Slurm keeps the id of a requeued job; its restart count tells the runs
+    # apart, so the folder of an earlier run is free once a later one starts.
+    folder = run / "slurm__sc__123__2__9f3c2a7d51b0e6a4"
+    folder.mkdir(parents=True)
+    asked = job_is(True)
+
+    assert attempt_lock.free(run) == folder
+    assert asked == [("sc", "123", 2)]
+
+
 def test_a_slurm_jobs_folder_is_held_until_slurm_calls_the_job_gone(
-    run: Path, job_is: Callable[[bool], list[tuple[str, str]]]
+    run: Path, job_is: Callable[[bool], list[tuple[str, str, int]]]
 ) -> None:
     (run / JOB).mkdir(parents=True)
     (run / JOB / "checkpoint").write_text("step 7")
@@ -172,11 +187,14 @@ def test_a_slurm_jobs_folder_is_held_until_slurm_calls_the_job_gone(
     with pytest.raises(HeldError) as refused:
         attempt_lock.free(run)
     why = str(refused.value)
-    assert f"{run / JOB} is the working folder of Slurm job 123 on cluster sc" in why
+    assert (
+        f"{run / JOB} is the working folder of Slurm job 123 on cluster sc (run 0)"
+        in why
+    )
     assert f"mv {run / JOB} {run}/free__manual" in why
     with pytest.raises(HeldError, match="Slurm job 123 on cluster sc"):
         attempt_lock.acquire(run)
-    assert asked == [("sc", "123")] * 2
+    assert asked == [("sc", "123", 0)] * 2
     assert os.listdir(run) == [JOB]
 
     job_is(True)

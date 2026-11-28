@@ -24,7 +24,7 @@ from furu.storage._layout import (
     trace_path_in,
 )
 from furu.testing import override_config
-from furu.worker.execute import ChildSlot
+from furu.worker.execute import Children
 from furu.worker.messages import JobCompletedResult, JobFailedResult
 
 PLOTS = """\
@@ -1412,17 +1412,16 @@ def test_code_version_default_comes_from_config(
         assert Metadata(code_version="fixed").code_version == "fixed"
 
 
-def test_child_slot_retries_stale_code_in_a_fresh_child(
+def test_children_retry_stale_code_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The child that found its code stale is retired, so the retry starts one.
     results = [JobFailedResult(error="stale", stale_code=True), JobCompletedResult()]
-    closed: list[bool] = []
-    slot = ChildSlot(worker="w", backend="local")
-    monkeypatch.setattr(slot, "_run", lambda job, cancelled: results.pop(0))
-    monkeypatch.setattr(slot, "close", lambda: closed.append(True))
+    children = Children(worker="w", backend="local")
+    monkeypatch.setattr(children, "_run", lambda job, cancelled: results.pop(0))
 
-    assert slot.run(object(), cancelled=threading.Event()) == JobCompletedResult()  # ty: ignore[invalid-argument-type]
-    assert closed == [True]
+    assert children.run(object(), cancelled=threading.Event()) == JobCompletedResult()  # ty: ignore[invalid-argument-type]
+    assert results == []
 
 
 def test_worker_child_publishes_the_version_the_submitter_checks(

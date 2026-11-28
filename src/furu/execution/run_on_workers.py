@@ -41,7 +41,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
     if len(by_key) != len(backends):
         raise ValueError(
             "worker backends with identical configuration; "
-            "use one backend with a larger max_workers instead"
+            "use one backend with a larger max_workers or max_allocations instead"
         )
     local = {isinstance(backend.pool(), LocalPool) for backend in backends}
     if len(local) > 1:

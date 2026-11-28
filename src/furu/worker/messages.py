@@ -54,6 +54,10 @@ class Launch(_Message):
 
 class Job(Launch):
     kind: Literal["job"] = "job"
+    # Which of the manager's leases this is, and how many of its worker's
+    # slots it takes.
+    lease: int
+    slots: int
     # One create() call: the ids of the specs of one batch in row order, or of
     # one spec.
     specs: list[str]
@@ -83,7 +87,16 @@ class Job(Launch):
 
 
 class CancelMessage(_Message):
+    """A script's: stop what runs only for it."""
+
     kind: Literal["cancel"] = "cancel"
+
+
+class CancelJobMessage(_Message):
+    """The manager's: stop one job of a worker."""
+
+    kind: Literal["cancel_job"] = "cancel_job"
+    lease: int
 
 
 class JobCompletedResult(_Message):
@@ -114,6 +127,13 @@ type JobResult = Annotated[
 job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
 
 
+class JobResultMessage(_Message):
+    """How the job of one lease ended: the only message a worker sends after hello."""
+
+    lease: int
+    result: JobResult
+
+
 # --- worker <-> manager --------------------------------------------------------
 
 
@@ -122,10 +142,12 @@ class HelloMessage(_Message):
     worker: str
     backend: str
     pool: str
+    # How many slots its jobs share: one job, or several smaller ones at once.
+    slots: int = 1
     log: Path | None = None  # the worker's own log file, if it has one
 
 
-type ServerMessage = Annotated[Job | CancelMessage, Field(discriminator="kind")]
+type ServerMessage = Annotated[Job | CancelJobMessage, Field(discriminator="kind")]
 
 server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
 
@@ -134,10 +156,17 @@ server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
 
 
 class SlurmPool(_Message):
-    """How the manager starts a worker; identical recipes share one pool."""
+    """How the manager starts a worker; identical recipes share one pool.
+
+    A worker is one allocation of ``slots`` slots. ``steps`` holds the srun
+    arguments of a job of each slot count, for its own Slurm step; there are
+    none with one slot, whose job runs in the allocation itself.
+    """
 
     kind: Literal["slurm"] = "slurm"
-    max_workers: int
+    max_allocations: int
+    slots: int
+    steps: dict[int, list[str]]
     sbatch_args: list[str]
     pre_worker_commands: list[str]
     use_job_arrays: bool
@@ -156,9 +185,11 @@ type Pool = Annotated[SlurmPool | LocalPool, Field(discriminator="kind")]
 
 
 class Batch(_Message):
-    # Specs of one plan with the same name may share a create() call.
+    # Specs of one plan with the same name and slot count may share a
+    # create() call, which takes ``slots`` of its worker's slots.
     batch: str
     cap: int
+    slots: int = 1
 
 
 class JobThrottle(_Message):

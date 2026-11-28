@@ -190,3 +190,26 @@ def test_accelerator_probe_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(provenance.subprocess, "run", missing_nvidia_smi)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     assert provenance._probe_accelerators() == ()
+
+
+def test_accelerator_probe_asks_only_for_the_visible_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[list[str]] = []
+
+    def nvidia_smi(argv: list[str], **kwargs: object) -> object:
+        asked.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="NVIDIA H100\n")
+
+    monkeypatch.setattr(provenance.subprocess, "run", nvidia_smi)
+    # A Slurm step's GPUs, which the machine's other jobs do not share.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+    assert provenance._probe_accelerators() == ("NVIDIA H100",)
+    assert asked == [
+        ["nvidia-smi", "--id=2", "--query-gpu=name", "--format=csv,noheader"]
+    ]
+
+    provenance._probe_accelerators.cache_clear()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert provenance._probe_accelerators() == ()
+    assert len(asked) == 1  # none are visible

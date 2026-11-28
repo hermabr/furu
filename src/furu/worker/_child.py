@@ -50,6 +50,10 @@ def main() -> int:
     assert isinstance(sys.stdout, io.TextIOWrapper)
     sys.stdout.reconfigure(line_buffering=True)
 
+    # First, the Slurm step this runs in, if any: the parent kills it by that.
+    step = os.environ.get("SLURM_STEP_ID")
+    protocol_out.write(f"{os.environ['SLURM_JOB_ID']}.{step}\n" if step else "\n")
+    protocol_out.flush()
     _set_config(_Config.model_validate_json(sys.stdin.readline()))
     provenance._started_as.update(json.loads(sys.stdin.readline()))
     _configure_child_logging(worker_stderr)

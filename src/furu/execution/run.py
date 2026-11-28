@@ -28,7 +28,7 @@ from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
 from furu.resources import Worker
 from furu.utils import error_summary, format_duration
-from furu.worker.backends.protocol import WorkerBackend, can_run
+from furu.worker.backends.protocol import WorkerBackend, slice_for
 from furu.worker.messages import (
     Batch,
     ErrorMessage,
@@ -91,22 +91,24 @@ class Run:
         """Say how ``objs`` run, and wait for the ones that are new to this run.
 
         Specs that run the same way are one group: the same class folder and
-        process, and on each pool that can run them the same batch.
+        process, and on each pool that can run them the same batch. On each
+        pool a spec takes the fewest of a worker's slots that it runs on.
         """
         groups: dict[tuple[object, ...], Group] = {}
         nowhere = []
         for obj in objs:
-            pools = tuple(
-                (key, batch_of(obj, backend.worker, self.firsts))
-                for key, backend in self.backends.items()
-                if can_run(backend, obj)
-            )
+            pools: list[tuple[str, Batch]] = []
+            for key, backend in self.backends.items():
+                if (found := slice_for(backend, obj)) is not None:
+                    slots, worker = found
+                    name, cap = batch_of(obj, worker, self.firsts)
+                    pools.append((key, Batch(batch=name, cap=cap, slots=slots)))
             if not pools:
                 nowhere.append(obj.object_id)
             metadata = obj._metadata
             how = (
                 obj._class_dir,
-                pools,
+                tuple(pools),
                 tuple(sorted(metadata.environment.items())),
                 metadata.required_environment_variables,
                 metadata.reuse,
@@ -117,9 +119,7 @@ class Run:
                     specs=[],
                     class_dir=obj._class_dir,
                     process=ProcessSettings.from_metadata(metadata),
-                    pools={
-                        key: Batch(batch=name, cap=cap) for key, (name, cap) in pools
-                    },
+                    pools=dict(pools),
                     throttle=None
                     if throttle is None
                     else JobThrottle(
