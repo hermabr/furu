@@ -88,15 +88,15 @@ def test_slurm_backend_runs_worker_job_end_to_end(
             final_tasks,
             on=[
                 SlurmWorkerBackend(
-                    max_workers=A_WORKER_COUNT,
-                    resources=SlurmResources(partition="debug", cpus_per_worker=1),
+                    max_allocations=A_WORKER_COUNT,
+                    resources=SlurmResources(partition="debug", cpus=1),
                     job_name="furu-worker-a",
                     idle_timeout_seconds=worker_idle_timeout,
                     use_job_arrays=use_job_arrays,
                 ),
                 SlurmWorkerBackend(
-                    max_workers=B_WORKER_COUNT,
-                    resources=SlurmResources(partition="debug", cpus_per_worker=2),
+                    max_allocations=B_WORKER_COUNT,
+                    resources=SlurmResources(partition="debug", cpus=2),
                     job_name="furu-worker-b",
                     idle_timeout_seconds=worker_idle_timeout,
                     use_job_arrays=use_job_arrays,

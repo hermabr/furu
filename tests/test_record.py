@@ -237,10 +237,12 @@ def test_a_process_creates_its_own_file_and_a_killed_writer_costs_one_line(
     notebook = plan.File.new(tmp_path)
     assert notebook.path.name == f"{socket.gethostname()}-pid-{os.getpid()}"
 
-    # A restarted Slurm job keeps its id, and never adds to the file it finds.
+    # A Slurm job runs several processes at once, so each names its own. A
+    # restarted job keeps its id, and never adds to the file it finds.
     monkeypatch.setenv("SLURM_JOB_ID", "18389503")
     first, second = plan.File.new(tmp_path), plan.File.new(tmp_path)
-    assert [first.path.name, second.path.name] == ["job-18389503", "job-18389503-2"]
+    name = f"job-18389503-pid-{os.getpid()}"
+    assert [first.path.name, second.path.name] == [name, f"{name}-2"]
 
     first.add([{"run": "b81e"}])
     first.add([{"run": "41d7"}])

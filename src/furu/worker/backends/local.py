@@ -26,6 +26,10 @@ class LocalThreadWorkerBackend:
     accepts: Callable[[Spec], bool] | None = None
 
     @property
+    def workers(self) -> dict[int, Worker]:
+        return {1: self.worker}
+
+    @property
     def pool_key(self) -> str:
         return "local:" + _hash_dict_deterministically(
             {"worker": dataclasses.asdict(self.worker)}

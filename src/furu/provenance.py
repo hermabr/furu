@@ -15,6 +15,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from furu.resources import Worker, visible_gpus
+
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
@@ -219,7 +221,7 @@ def worker() -> dict[str, object]:
     """Where this process runs create() calls: what its file in provenance/ begins with."""
     return {
         "host": socket.gethostname(),
-        "cpus": getattr(os, "process_cpu_count", os.cpu_count)() or 0,
+        "cpus": Worker.here().cpus,
         "gpus": list(_probe_accelerators()),
         "slurm_job": os.environ.get("SLURM_JOB_ID"),
         "pid": os.getpid(),
@@ -260,9 +262,20 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
 
 @functools.cache
 def _probe_accelerators() -> tuple[str, ...]:
+    """The GPUs this process may use: the ones CUDA_VISIBLE_DEVICES names, if set."""
+    visible = (
+        visible_gpus() if os.environ.get("CUDA_VISIBLE_DEVICES") is not None else None
+    )
+    if visible == []:
+        return ()
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            [
+                "nvidia-smi",
+                "--query-gpu=name",
+                "--format=csv,noheader",
+                *(() if visible is None else (f"--id={','.join(visible)}",)),
+            ],
             capture_output=True,
             text=True,
             timeout=_ACCELERATOR_PROBE_TIMEOUT_SECONDS,
@@ -274,11 +287,6 @@ def _probe_accelerators() -> tuple[str, ...]:
                 name if count == 1 else f"{name} ×{count}"
                 for name, count in Counter(names).items()
             )
-    visible = [
-        device
-        for device in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
-        if device.strip()
-    ]
     if visible:
         return (f"cuda ×{len(visible)}",)
     return ()

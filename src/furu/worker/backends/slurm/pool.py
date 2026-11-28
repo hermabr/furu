@@ -46,7 +46,11 @@ _FINISHED_STATES = frozenset(
 
 
 class SlurmWorkerPool:
-    """One sbatch recipe's workers, sized to the manager's queue every 10 s."""
+    """One sbatch recipe's workers, sized to the manager's queue every 10 s.
+
+    A worker is one allocation: a Slurm job that runs as many jobs at once as
+    its slots hold.
+    """
 
     def __init__(
         self,
@@ -91,7 +95,8 @@ class SlurmWorkerPool:
             f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
             f"    --pool {shlex.quote(key)} \\\n"
             '    --component "${component}" \\\n'
-            f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log"\n'
+            f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log" \\\n'
+            f"    --slots {definition.slots}\n"
         )
         self._sbatch_args = (
             f"--chdir={directory}",
