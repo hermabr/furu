@@ -159,7 +159,7 @@ def batch(
     lead = group[0]
     line: Line = {
         "run": run,
-        "storage": str(lead._metadata.storage),
+        "storage": str(lead._class_dir.parents[1]),
         "version": version,
         "launch": plan.launch(),
         "metadata": _process(lead._metadata)["metadata"],

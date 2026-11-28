@@ -26,6 +26,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from furu.code_trace import Trace, why_trace_outdated
+from furu.config import layers
 from furu.storage._layout import remembered_dir_in
 from furu.utils import _stable_json_dump, atomic_write_text
 
@@ -53,12 +54,15 @@ def lookup(class_dir: Path, method: str, fields: str, storage_root: Path) -> str
     """
     if (lines := _LINES.get(class_dir)) is None:
         lines = _LINES[class_dir] = {}
-        folder = remembered_dir_in(class_dir)
-        try:
-            files = sorted(folder.glob("launch-*.jsonl"), key=os.path.getmtime)
-            texts = [file.read_text(encoding="utf-8") for file in files]
-        except FileNotFoundError:  # deleted meanwhile, which is always allowed
-            texts = []
+        texts = []
+        # Under an overlay the store's lines first: the overlay's are newer.
+        for layer in reversed(layers(class_dir)):
+            folder = remembered_dir_in(layer)
+            try:
+                files = sorted(folder.glob("launch-*.jsonl"), key=os.path.getmtime)
+                texts += [file.read_text(encoding="utf-8") for file in files]
+            except FileNotFoundError:  # deleted meanwhile, which is always allowed
+                pass
         holds: dict[str, bool] = {}
         for text in texts:
             for line in map(json.loads, text.splitlines()):

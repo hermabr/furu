@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 
 from furu import provenance
-from furu.config import _Config, _FuruDirectories, _set_config, get_config
+from furu.config import (
+    OVERLAY_ENV_VAR,
+    _Config,
+    _FuruDirectories,
+    _set_config,
+    get_config,
+)
 
 
 @contextmanager
@@ -63,8 +69,11 @@ def pytest_configure(config: pytest.Config) -> None:
         / f"furu-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
     )
 
+    # A debug session asked for in the shell is not the tests', nor that of
+    # the processes they start.
+    os.environ.pop(OVERLAY_ENV_VAR, None)
     run_config = _replace_config_directories(
-        get_config(),
+        get_config().model_copy(update={"overlay": None}),
         _FuruDirectories(
             **{
                 name: run_base_directory / name

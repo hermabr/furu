@@ -9,7 +9,9 @@ from furu.utils import _hash_dict_deterministically
 # A class folder {storage}/{class name}/{class part} holds schema.ndjson,
 # attempts/, one folder per code version, and remembered/ when the class has a
 # @furu.dependency(remember=True) method. The class name is one path component,
-# so the folders under it are exactly its class parts.
+# so the folders under it are exactly its class parts. In a debug session the
+# class folder is under the overlay (see furu.config), and what is read is
+# looked for there first and then in the class folder it stands for.
 #
 #   attempts/<run>/<owner>/   the working folder of a run in progress, named for
 #                             who holds it (see attempt_lock); nothing else is
@@ -18,6 +20,8 @@ from furu.utils import _hash_dict_deterministically
 #   <code version>/trace.json which code its runs ran; "fixed" has none
 #   <code version>/runs/<run> a published run, which never changes again
 #   remembered/               what such methods returned, a file per launch
+#   deleted/<run>             in an overlay only: the store's runs of this name,
+#                             which a debug session cannot delete, do not count
 #
 # A working folder is renamed into runs/ under its run's name, so both share
 # the run layout below. A run holds one row per spec: the specs of one batch,
@@ -25,6 +29,7 @@ from furu.utils import _hash_dict_deterministically
 
 FIXED = "fixed"
 REMEMBERED = "remembered"
+DELETED = "deleted"
 # Starts the name of a run with more than one row; a spec hash is hex only.
 BATCH = "batch-"
 
@@ -72,16 +77,21 @@ def list_names(folder: Path) -> list[str]:
 
 
 def version_dirs_in(class_dir: Path) -> list[Path]:
-    """The class's code-version folders: not attempts/, remembered/ or the schema files."""
+    """The class's code-version folders: not attempts/, remembered/, deleted/
+    or the schema files."""
     return [
         class_dir / name
         for name in sorted(list_names(class_dir))
-        if name not in ("attempts", REMEMBERED) and "." not in name
+        if name not in ("attempts", REMEMBERED, DELETED) and "." not in name
     ]
 
 
 def remembered_dir_in(class_dir: Path) -> Path:
     return class_dir / REMEMBERED
+
+
+def deleted_dir_in(class_dir: Path) -> Path:
+    return class_dir / DELETED
 
 
 def trace_path_in(version_dir: Path) -> Path:

@@ -13,7 +13,7 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import ClientConnection, connect
 
 from furu import plan, record, remember
-from furu.config import get_config
+from furu.config import OVERLAY_ENV_VAR, get_config
 from furu.core import Spec
 from furu.execution.launch import ask, missing, stage_table
 from furu.execution.run import Run
@@ -145,9 +145,12 @@ def _connect_to_manager() -> ClientConnection:
         except (OSError, ValueError, InvalidHandshake) as exc:  # not up yet
             if not waiting:
                 waiting = True
+                overlay = get_config().overlay
                 logger.warning(
                     "waiting for the furu manager (start one with "
-                    "uvx furu@%s manager) · %s",
+                    "%suvx furu@%s manager) · %s",
+                    # A debug session's own, which no other launch meets.
+                    f"{OVERLAY_ENV_VAR}={overlay} " if overlay else "",
                     version("furu"),
                     type(exc).__name__,
                     extra={"path": address},

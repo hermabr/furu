@@ -19,6 +19,7 @@ from typing import (
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
 from furu._declared_types import cached_type_hints
+from furu.config import layers, over
 from furu.dependencies import (
     Returned,
     _Dependency,
@@ -39,6 +40,7 @@ from furu.spec_metadata import Metadata, Throttle
 from furu.storage import attempt_lock
 from furu.storage._layout import (
     attempt_parent_in,
+    deleted_dir_in,
     run_dir_in,
     run_name,
     version_dirs_in,
@@ -276,6 +278,10 @@ class Spec(_FuruDataclassTransform, ABC):
         in a run that other specs share, so this raises and names that run.
         A working folder that is not free to take raises too: its create() may
         be running.
+
+        A debug session deletes what is under its overlay. Runs in the store
+        stay, and no longer count for the session: delete a spec there to
+        compute it again in the overlay.
         """
         if is_batched(type(self)):
             row = stored_row(self)
@@ -294,17 +300,29 @@ class Spec(_FuruDataclassTransform, ABC):
             attempt = attempt_lock.free(parent)
         except attempt_lock.HeldError as exc:
             raise attempt_lock.HeldError(f"{self.object_id}.delete(): {exc}") from None
-        runs = [
-            run
-            for version in version_dirs_in(self._class_dir)
-            if (run := run_dir_in(version, self._artifact_hash)).is_dir()
-        ]
+        runs, *store = (
+            [
+                run
+                for version in version_dirs_in(layer)
+                if (run := run_dir_in(version, self._artifact_hash)).is_dir()
+            ]
+            for layer in layers(self._class_dir)
+        )
+        # The store under an overlay keeps its runs. A file in deleted/ says
+        # that they no longer count for the session.
+        deleted = deleted_dir_in(self._class_dir) / self._artifact_hash
+        kept = [] if deleted.exists() else [run for found in store for run in found]
         folders = [attempt, *runs] if attempt else runs
-        if not folders:
+        if not folders and not kept:
             return False
         if mode == "prompt":
-            listed = ", ".join(map(str, folders))
-            answer = input(f"Do you want to delete {listed}? [y/N] ")
+            asks = [f"delete {', '.join(map(str, folders))}"] if folders else []
+            if kept:
+                asks.append(
+                    f"stop counting {', '.join(map(str, kept))}, which this "
+                    "debug session leaves in the store"
+                )
+            answer = input(f"Do you want to {' and '.join(asks)}? [y/N] ")
             if answer.strip().lower() != "y":
                 return False
         # The working folder first: if a worker took it since, this raises
@@ -316,6 +334,9 @@ class Spec(_FuruDataclassTransform, ABC):
                 # Renamed first, so no reader finds half a run.
                 if (err := attempt_lock.trash(run, into=parent.parent)) is not None:
                     raise err
+        if kept:
+            deleted.parent.mkdir(parents=True, exist_ok=True)
+            deleted.touch()
         return True
 
     @final
@@ -376,7 +397,7 @@ class Spec(_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _class_dir(self) -> Path:
-        return self._metadata.storage / self._stored_name / self._class_part
+        return over(self._metadata.storage) / self._stored_name / self._class_part
 
 
 def attempt_parent(specs: Sequence[Spec]) -> Path:
