@@ -156,10 +156,11 @@ def _set_config(config: _Config) -> None:
 
 @functools.cache
 def _claim(overlay: Path) -> Path:
-    """Make ``overlay`` this session's, once per process: a new or empty folder,
+    """``overlay``, normalized, once it is this session's: a new or empty folder,
     or one an earlier session claimed. Any other folder is somebody's files."""
     if not overlay.is_absolute():
         raise ValueError(f"{OVERLAY_ENV}={overlay} must be an absolute path")
+    overlay = Path(os.path.normpath(overlay))
     mark = overlay / ".gitignore"
 
     def claimed() -> bool:
@@ -192,10 +193,9 @@ def upper(path: Path) -> Path:
     Everything furu writes goes through here, so a session with an overlay
     leaves the real store as it was. `layers` is where ``path`` is read.
     """
-    if (overlay := _config.overlay) is None:
+    if _config.overlay is None:
         return path
-    overlay = _claim(Path(os.path.normpath(overlay)))
-    path = Path(os.path.abspath(path))
+    overlay, path = _claim(_config.overlay), Path(os.path.abspath(path))
     if path.is_relative_to(overlay):
         return path
     return overlay / path.relative_to(path.anchor)
@@ -203,10 +203,9 @@ def upper(path: Path) -> Path:
 
 def lower(path: Path) -> Path:
     """The real store's ``path``, for one that `upper` put under the overlay."""
-    if (overlay := _config.overlay) is None:
+    if _config.overlay is None:
         return path
-    overlay = Path(os.path.normpath(overlay))
-    path = Path(os.path.abspath(path))
+    overlay, path = _claim(_config.overlay), Path(os.path.abspath(path))
     if not path.is_relative_to(overlay):
         return path
     return Path(path.anchor) / path.relative_to(overlay)
